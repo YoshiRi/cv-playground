@@ -22,6 +22,14 @@
         <select id="model"></select>
       </label>
       <div class="model-note muted" id="model-note"></div>
+      <label class="field row" id="input-size-row" hidden>モデル入力（長辺）
+        <select id="input-size">
+          <option value="320">320</option>
+          <option value="480">480</option>
+          <option value="640" selected>640</option>
+          <option value="960">960</option>
+        </select>
+      </label>
       <label class="field row" id="ort-opt-row" hidden>実行設定
         <select id="ort-opt">
           <option value="">標準（fp32）</option>

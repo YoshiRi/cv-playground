@@ -66,14 +66,17 @@ class Adapter:
 
 # ---------- 汎用 ONNX: 前処理・後処理を models.json の pre / post で組み立てる ----------
 
-def preprocess(im: Image.Image, pre: dict):
+def preprocess(im: Image.Image, pre: dict, input_size=None):
     """画像 → 入力テンソル。meta は入力座標 = 元座標 × (sx, sy) + (ox, oy) と、内容のある範囲 (cw, ch)"""
     W, H = im.size
     mode = pre.get("resize", "stretch")
-    if mode == "letterbox":
-        tw, th = pre["size"]
-        r = min(tw / W, th / H)
+    if mode in ("letterbox", "letterbox_rect"):
+        # letterbox_rect: 長辺を S に合わせ、縦横を stride の倍数まで余白で埋めた長方形
+        S = int(input_size) if pre.get("dynamic") and input_size else pre["size"][0]
+        r = S / max(W, H) if mode == "letterbox_rect" else min(pre["size"][0] / W, pre["size"][1] / H)
         cw, ch = round(W * r), round(H * r)
+        st = pre.get("stride", 32)
+        tw, th = (math.ceil(cw / st) * st, math.ceil(ch / st) * st) if mode == "letterbox_rect" else pre["size"]
         ox, oy = (tw - cw) // 2, (th - ch) // 2
         pad = pre.get("pad_value", 114)
         canvas = Image.new("RGB", (tw, th), (pad, pad, pad))
@@ -158,6 +161,31 @@ def post_depth(out, m, post, p):
     return res
 
 
+def post_ultra_e2e_detect(out, m, post, p):
+    # Ultralytics の end2end 書き出し: (1, 300, 6) = x1, y1, x2, y2, スコア, クラス（入力のピクセル座標）
+    th, items = float(p.get("threshold", 0.4)), []
+    for r in next(iter(out.values()))[0]:
+        if r[4] < th:
+            continue
+        x1, y1 = to_orig(r[0], r[1], m)
+        x2, y2 = to_orig(r[2], r[3], m)
+        items.append({"label": COCO[int(r[5])], "score": float(r[4]), "box": [float(x1), float(y1), float(x2), float(y2)]})
+    return {"kind": "boxes", "items": items}
+
+
+def post_ultra_e2e_pose(out, m, post, p):
+    # (1, 300, 57) = x1, y1, x2, y2, スコア, クラス, 17 ×（x, y, 可視度）（入力のピクセル座標）
+    th, items = float(p.get("threshold", 0.4)), []
+    for r in next(iter(out.values()))[0]:
+        if r[4] < th:
+            continue
+        x1, y1 = to_orig(r[0], r[1], m)
+        x2, y2 = to_orig(r[2], r[3], m)
+        kps = [[*map(float, to_orig(k[0], k[1], m)), float(k[2])] for k in r[6:].reshape(17, 3)]
+        items.append({"label": "person", "score": float(r[4]), "box": [float(x1), float(y1), float(x2), float(y2)], "keypoints": kps})
+    return {"kind": "boxes", "items": items}
+
+
 def post_deim_wholebody(out, m, post, p):
     # PINTO の DEIMv2 Wholebody: (1, Q, 6) = クラス, x1, y1, x2, y2（入力に対する正規化）, スコア。表示するクラスは post.show
     th, show, items = float(p.get("threshold", 0.35)), set(post["show"]), []
@@ -171,7 +199,7 @@ def post_deim_wholebody(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
-POST = {"deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+POST = {"ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):
@@ -181,7 +209,9 @@ class OnnxAdapter(Adapter):
         o = self.e["onnx"]
         # 外部データ（.onnx_data）は ONNX 本体と同じディレクトリに無いと onnxruntime が拒否する。
         # HF のキャッシュは実体が別ディレクトリの blobs に分かれるので、実ファイルとして models/ に落とす
-        if o.get("path"):  # リポジトリに同梱したモデル（web/pinto など）
+        if o.get("server_file"):  # このサーバーだけが配るモデル（models/ 以下、tools/export_yolo26_dynamic.py など）
+            path = str(ROOT / "models" / o["server_file"])
+        elif o.get("path"):  # リポジトリに同梱したモデル（web/pinto など）
             path = str(ROOT / "web" / o["path"])
         else:
             local = ROOT / "models" / o["repo"]
@@ -198,7 +228,7 @@ class OnnxAdapter(Adapter):
         self.outputs = [o.name for o in self.sess.get_outputs()]
 
     def run(self, im, p):
-        x, meta = preprocess(im, self.e["pre"])
+        x, meta = preprocess(im, self.e["pre"], p.get("input_size"))
         out = dict(zip(self.outputs, self.sess.run(None, {self.e["pre"]["input"]: x})))
         return POST[self.e["post"]["type"]](out, meta, self.e["post"], p)
 

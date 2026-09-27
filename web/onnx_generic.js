@@ -49,7 +49,9 @@ export async function onnxLoad(ort, e, device, onProgress) {
   if (e.opt === "wasm") device = "wasm";
   const opt = device === "webgpu" ? e.opt || "" : "";
   const file = opt.startsWith("fp16") && e.onnx.file_fp16 ? e.onnx.file_fp16 : e.onnx.file;
-  const model = e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
+  const model = e.onnx.server_file
+    ? await fetchModelFile(new URL("local-models/" + e.onnx.server_file, e.webRoot).href, onProgress)
+    : e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
   const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
   if (e.onnx.data) {
     opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
@@ -78,13 +80,16 @@ async function runSession(ort, session, name, tensor) {
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
 
-function preprocess(ort, bitmap, pre) {
+function preprocess(ort, bitmap, pre, inputSize) {
   const W = bitmap.width, H = bitmap.height;
   let iw, ih, meta;
   const c = new OffscreenCanvas(1, 1), x = c.getContext("2d", { willReadFrequently: true });
-  if (pre.resize === "letterbox") {
-    [iw, ih] = pre.size;
-    const r = Math.min(iw / W, ih / H), cw = Math.round(W * r), ch = Math.round(H * r);
+  if (pre.resize === "letterbox" || pre.resize === "letterbox_rect") {
+    // letterbox_rect: 長辺を S に合わせ、縦横を stride の倍数まで余白で埋めた長方形（正方形の余白の計算を省く）
+    const S = pre.dynamic && inputSize ? inputSize : pre.size[0];
+    const r = pre.resize === "letterbox_rect" ? S / Math.max(W, H) : Math.min(pre.size[0] / W, pre.size[1] / H);
+    const cw = Math.round(W * r), ch = Math.round(H * r), st = pre.stride || 32;
+    [iw, ih] = pre.resize === "letterbox_rect" ? [Math.ceil(cw / st) * st, Math.ceil(ch / st) * st] : pre.size;
     const ox = Math.floor((iw - cw) / 2), oy = Math.floor((ih - ch) / 2);
     c.width = iw; c.height = ih;
     const g = pre.pad_value ?? 114;
@@ -172,6 +177,28 @@ const POST = {
   },
   // PINTO の DEIMv2 Wholebody: (1, Q, 6) = クラス, x1, y1, x2, y2（入力に対する正規化）, スコア。NMS 済み。
   // 表示するクラスは post.show（年齢・性別・向きなどの属性クラスや関節のクラスは既定で出さない）
+  // Ultralytics の end2end 書き出し: (1, 300, 6) = x1, y1, x2, y2, スコア, クラス（入力のピクセル座標）
+  ultra_e2e_detect(out, m, post, p) {
+    const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.4, items = [];
+    for (let i = 0; i < Q; i++) {
+      const r = D.subarray(i * K, i * K + K);
+      if (r[4] < th) continue;
+      items.push({ label: COCO[r[5] | 0], score: r[4], box: [...toOrig(r[0], r[1], m), ...toOrig(r[2], r[3], m)] });
+    }
+    return { kind: "boxes", items };
+  },
+  // (1, 300, 57) = x1, y1, x2, y2, スコア, クラス, 17 ×（x, y, 可視度）（入力のピクセル座標）
+  ultra_e2e_pose(out, m, post, p) {
+    const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.4, items = [];
+    for (let i = 0; i < Q; i++) {
+      const r = D.subarray(i * K, i * K + K);
+      if (r[4] < th) continue;
+      const kps = [];
+      for (let k = 0; k < 17; k++) kps.push([...toOrig(r[6 + k * 3], r[7 + k * 3], m), r[8 + k * 3]]);
+      items.push({ label: "person", score: r[4], box: [...toOrig(r[0], r[1], m), ...toOrig(r[2], r[3], m)], keypoints: kps });
+    }
+    return { kind: "boxes", items };
+  },
   deim_wholebody(out, m, post, p) {
     const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.35, show = new Set(post.show), items = [];
     for (let i = 0; i < Q; i++) {
@@ -232,7 +259,7 @@ export async function onnxEmbed(ort, session, e, bitmaps) {
 
 export async function onnxRun(ort, session, e, bitmap, params) {
   const t0 = performance.now();
-  const { tensor, meta } = preprocess(ort, bitmap, e.pre);
+  const { tensor, meta } = preprocess(ort, bitmap, e.pre, params.input_size);
   const t1 = performance.now();
   const out = await runSession(ort, session, e.pre.input, tensor);
   const t2 = performance.now();

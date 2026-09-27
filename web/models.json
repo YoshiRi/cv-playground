@@ -9,7 +9,9 @@
   "mb: ブラウザが最初にダウンロードするおおよその大きさ。avoid: 既定では選ばない（動かない環境がある）。",
   "pre.resize: letterbox（縦横比を保って余白 pad_value で埋める。Ultralytics 公式）/ stretch（縦横をそのまま引き伸ばす）/ keep_aspect（短辺を short にし multiple の倍数に丸める）",
   "cascade: 検出のあと、指定したクラスの枠を切り出して小さな分類モデル（task: cascade）にかける。seq はフレーム列を使うモデル（追跡の ID ごとにためる）。",
-  "onnx.path: web/ 以下に置いたモデルのパス（ページと同じ場所から読む。読めない時は onnx.url、GitHub Pages の同じファイル）"
+  "onnx.path: web/ 以下に置いたモデルのパス（ページと同じ場所から読む。読めない時は onnx.url、GitHub Pages の同じファイル）",
+  "onnx.server_file: models/ 以下に置いた、このサーバーだけが配るモデル（ライセンス上リポジトリに入れないもの）。1ファイル版・GitHub Pages では出さない。",
+  "pre.dynamic: 入力サイズ可変のモデル。画面の「モデル入力」（既定は size）で長辺を選ぶ。resize: letterbox_rect は縦横比を保って長辺を合わせ、32 の倍数まで余白で埋める長方形（Ultralytics の推論と同じ）。"
  ],
  "models": [
   {
@@ -39,6 +41,37 @@
    },
    "post": {
     "type": "yolo_detect",
+    "classes": "coco"
+   }
+  },
+  {
+   "key": "yolo26n-dyn",
+   "task": "detect",
+   "name": "YOLO26n（入力サイズ可変、このサーバーのみ）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 10,
+   "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る",
+   "onnx": {
+    "server_file": "ultralytics/yolo26n_dyn.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox_rect",
+    "stride": 32,
+    "dynamic": true,
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "images"
+   },
+   "post": {
+    "type": "ultra_e2e_detect",
     "classes": "coco"
    }
   },
@@ -199,6 +232,36 @@
    },
    "post": {
     "type": "yolo_pose"
+   }
+  },
+  {
+   "key": "yolo26n-pose-dyn",
+   "task": "pose",
+   "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 12,
+   "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る",
+   "onnx": {
+    "server_file": "ultralytics/yolo26n-pose_dyn.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox_rect",
+    "stride": 32,
+    "dynamic": true,
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "images"
+   },
+   "post": {
+    "type": "ultra_e2e_pose"
    }
   },
   {

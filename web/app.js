@@ -99,12 +99,13 @@ function setStatus(text, cls = "") {
   el.className = `status ${cls}`;
 }
 
+// onnx.server_file のモデルはこのサーバーだけが配るので、1ファイル版では出さない
 // models.json の1件は where に実行できる場所を並べる。画面の選択肢は「モデル × 実行場所」ごとに1つ（値は key@where）。
 // 1ファイル版ではサーバーの選択肢を出さない
 function variants(task) {
   const out = [];
   for (const where of ["browser", "server"]) {
-    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where))) {
+    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where) && !(STANDALONE && x.onnx?.server_file))) {
       if (where === "server" && STANDALONE) continue;
       const avoid = where === "browser" ? e.avoid_browser : null;
       out.push({ ...e, where, avoid, id: `${e.key}@${where}`, ready: where === "browser" || state.serverModels.has(e.key) });
@@ -183,6 +184,7 @@ function updateModelNote() {
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.avoid) notes.push(m.avoid);
   $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
+  $("input-size-row").hidden = !m.pre?.dynamic;
   $("cascade").innerHTML = (m.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
@@ -499,6 +501,7 @@ function paramsFor(key, w, auto) {
     labels: $("labels").value,
     prompt: $("prompt").value,
     points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
+    input_size: parseInt($("input-size").value, 10), // 入力サイズ可変のモデルの長辺
     auto,
     _imageKey: key,
   };
@@ -732,6 +735,12 @@ async function init() {
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
   $("view").onchange = draw;
   $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
+  $("input-size").onchange = () => {
+    // graph capture は入力の形が変わると使えないので読み直す。フレームの処理解像度もモデル入力以上にそろえる
+    if ($("ort-opt").value.includes("graph")) { stopLive(); restartWorker("ort"); }
+    const s = $("input-size").value, f = $("infer-size");
+    if (+f.value < +s && [...f.options].some((o) => o.value === s)) f.value = s;
+  };
   $("tracker").onchange = () => {
     $("track-hint").hidden = !$("tracker").value;
     if ($("tracker").value) { $("threshold").value = 0.25; $("th-out").textContent = "0.25"; }

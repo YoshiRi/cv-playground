@@ -84,6 +84,16 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
 - BoT-SORT のカメラ移動の補正（GMC）は無い。そのため ReID なしの BoT-SORT はカルマンフィルタの状態が xywh になる点だけが ByteTrack と違う。カメラが動く映像では Ultralytics の BoT-SORT と結果が変わる
 - 連続実行は新しいフレームが表示された時だけ処理する。推論が動画より速いと同じフレームを何度も追跡器に渡してしまい、速度の推定が狂って ID が切り替わりやすくなるため（12fps の動画で ID の数が 9 → 5）。表示の fps は動画・カメラのフレームレートが上限になり、推論だけの上限も並べて出す
 
+## 入力サイズ可変の YOLO26（このサーバーのみ）
+
+onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動画の「処理解像度」を 960 にしてもモデルには 640 に縮めて入る（検出の細かさは変わらず、前処理が重くなるだけ）。
+`tools/export_yolo26_dynamic.py` で Ultralytics から入力サイズ可変・NMS 不要（end2end）の ONNX を書き出して `models/ultralytics/` に置くと、
+「YOLO26n（入力サイズ可変）」「YOLO26n-pose（入力サイズ可変）」が使え、「モデル入力（長辺）」を 320 / 480 / 640 / 960 から選べる（既定 640）。
+
+- 前処理は Ultralytics の推論と同じ長方形の letterbox（長辺を合わせ、32 の倍数まで余白で埋める）。16:9 なら 640×384 で、正方形の 640×640 より計算が約 4 割少ない。Ultralytics の `predict` と枠が ±1px で一致することを確認
+- M4 Mac の Chrome での YOLO26n-pose のモデル実行: 固定 640 が 24ms、可変 640 が 19ms、480 が 18ms、320 が 15ms、960 が 27ms（Mac の WebGPU は約 15〜20ms の下限があり差が出にくい。計算が支配的なスマホでは画素数にほぼ比例して効くはず）。960 では街の写真で信号機などの小さい物体が増える
+- YOLO26 の重みは AGPL-3.0 なので、書き出した ONNX はリポジトリに入れず、このサーバーの `/local-models/` からだけ配る。1ファイル版・GitHub Pages には出ない
+
 ## 手・目（PINTO の超軽量モデル）
 
 [PINTO_model_zoo](https://github.com/PINTO0309/PINTO_model_zoo) の DEIMv2 Wholebody34（体・頭・顔・目・手など 34 クラスを1つで検出、Atto は 2MB）で検出し、

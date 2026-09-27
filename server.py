@@ -112,6 +112,15 @@ def run(model: str = Form(...), params: str = Form("{}"), image: UploadFile = Fi
     return JSONResponse(res)
 
 
+@app.get("/local-models/{path:path}")
+def local_model(path: str):
+    """models/ 以下の、このサーバーだけが配るモデル（ライセンス上リポジトリに入れないもの）"""
+    f = (ROOT / "models" / path).resolve()
+    if not f.is_file() or (ROOT / "models").resolve() not in f.parents:
+        raise HTTPException(404)
+    return FileResponse(f)
+
+
 @app.get("/cv-playground.html")
 def standalone():
     """サーバーなし版（build.py で作る1ファイル）。保存して別の場所で開く用"""

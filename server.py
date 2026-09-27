@@ -59,6 +59,10 @@ async def no_stale_cache(request, call_next):
     res = await call_next(request)
     if not request.url.path.startswith("/api/"):
         res.headers["Cache-Control"] = "no-cache"
+        # crossOriginIsolated にして、ブラウザの WASM 推論で複数スレッドを使えるようにする。
+        # credentialless なら CDN や HF の読み込みは CORS のままで通る
+        res.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        res.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
     return res
 
 

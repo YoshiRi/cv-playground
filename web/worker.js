@@ -19,7 +19,12 @@ const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
 // トップレベル await で待つと、その間に届いたメッセージが onmessage 未設定で捨てられるので、ハンドラ内で待つ
 let ort, T;
 const libReady = self.name === "ort"
-  ? import(`${ORT_URL}ort.webgpu.min.mjs`).then((m) => { ort = m; ort.env.wasm.wasmPaths = ORT_URL; })
+  ? import(`${ORT_URL}ort.webgpu.min.mjs`).then((m) => {
+    ort = m;
+    ort.env.wasm.wasmPaths = ORT_URL;
+    // WASM の複数スレッドは crossOriginIsolated（COOP/COEP ヘッダ）の時だけ使える。server.py は付ける、GitHub Pages は付けられない
+    ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 4) : 1;
+  })
   : import(`https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TJS_VERSION}`).then((m) => { T = m; T.env.allowLocalModels = false; });
 
 let devicePromise;
@@ -269,8 +274,8 @@ self.onmessage = async (ev) => {
     const result = await A.run(st, img, params, e);
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
-    result.device = device;
-    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}` : e.dtype?.[device];
+    result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
+    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}` : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

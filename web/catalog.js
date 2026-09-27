@@ -3,6 +3,7 @@
 export const TASKS = [
   { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
   { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
+  { id: "wholebody", name: "手・目（PINTO）", hint: "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", params: ["threshold", "track", "cascade"] },
   { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold", "track"] },
   { id: "segment", name: "クリックで切り出し", hint: "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", params: ["points"] },
   { id: "depth", name: "深度推定", hint: "赤いほど近い（相対深度）", params: [] },
@@ -15,7 +16,7 @@ export const TASKS = [
 export const MODELS = (await (await fetch(new URL("./models.json", import.meta.url))).json()).models;
 
 export const DEFAULTS = {
-  threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3 },
+  threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3, wholebody: 0.35 },
   labels: { zsdetect: "person, bus, bag", classify: "bus, truck, tram, street, office, cat" },
   prompt: "この画像を日本語で詳しく説明してください。",
 };

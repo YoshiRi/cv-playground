@@ -9,6 +9,8 @@ const DISPLAY_SIDE = 1920;  // 動画・カメラを画面に描く長辺（元�
 // 1ファイル版（build.py）では、サーバーを使わず Worker を Blob URL から作る
 const STANDALONE = !!globalThis.CVPG_STANDALONE;
 const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
+// web/ の場所（同梱したモデルを読む基準）。1ファイル版は dist/ にあるので ../web/
+const WEB_ROOT = new URL(STANDALONE ? "../web/" : "./", location.href).href;
 
 const state = {
   task: "detect",
@@ -61,7 +63,7 @@ function embedInBrowser(model, crops) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model, crops }, crops);
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model: { ...model, webRoot: WEB_ROOT }, crops }, crops);
   });
 }
 
@@ -72,7 +74,7 @@ function runInBrowser(model, image, params) {
     const lib = workerLib(model);
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt }, image, params }, transfer);
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, webRoot: WEB_ROOT }, image, params }, transfer);
   });
 }
 
@@ -181,6 +183,8 @@ function updateModelNote() {
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.avoid) notes.push(m.avoid);
   $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
+  $("cascade").innerHTML = (m.cascade || []).map((c) =>
+    `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
   $("model-note").textContent = notes.join(" / ");
 }
@@ -374,7 +378,7 @@ function draw() {
         }
         ctx.strokeStyle = col; ctx.lineWidth = lw;
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}`;
+        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}${it.state ? " " + it.state : ""}`;
         const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
         ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
         ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
@@ -462,14 +466,14 @@ function renderResult(m, r, live) {
     body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
   }
   const bd = r.breakdown
-    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}</div>`
+    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}${r.cascade_ms != null ? ` ・ 切り出して分類 ${fmt(r.cascade_ms)}` : ""}</div>`
     : "";
   el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${bd}${body}`;
 }
 
 function summarizeBoxes(items) {
   const c = {};
-  for (const it of items) c[it.label] = (c[it.label] || 0) + 1;
+  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
   return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
 }
 
@@ -526,6 +530,7 @@ async function run() {
   setStatus(m.where === "browser" ? "ブラウザで実行中…（初回はモデルを取得）" : "サーバーで実行中…（初回はモデルを読み込み）");
   try {
     const r = await runOnce(m);
+    await applyCascade(m, r, null);
     renderResult(m, r);
     addHistory(m, r);
     setStatus("");
@@ -558,6 +563,7 @@ async function liveLoop() {
     : null;
   const trackerName = $("tracker").selectedOptions[0]?.textContent;
   const ids = new Set();
+  const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   try {
     while (state.live && state.video) {
@@ -571,6 +577,7 @@ async function liveLoop() {
         r.items.forEach((it) => ids.add(it.id));
         state.result = r;
       }
+      await applyCascade(m, r, tracker ? seqStore : null);
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
       inferSum += r.infer_ms;
@@ -584,6 +591,51 @@ async function liveLoop() {
   if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
   state.live = false;
   updateButtons();
+}
+
+// 検出のあと、models.json の cascade に書いたクラスの枠を切り出して小さな分類モデルにかけ、枠の表示に状態を足す
+// （例: 目 → OCEC で開/閉）。seq のモデルは追跡の ID ごとに切り出しをためて、T 枚そろったら判定する
+async function applyCascade(m, r, seqStore) {
+  if (!m.cascade || r.kind !== "boxes") return;
+  const src = state.video ? state.lastFrame : state.image.bitmap;
+  const on = new Set([...document.querySelectorAll("[data-cascade]")].filter((c) => c.checked).map((c) => c.dataset.cascade));
+  const t0 = performance.now();
+  for (const c of m.cascade) {
+    if (!on.has(c.id)) continue;
+    const e = MODELS.find((x) => x.key === c.model);
+    const [w, h] = e.pre.size;
+    const targets = r.items.filter((it) => it.label === c.on);
+    const crop = (it) => {
+      const x1 = Math.max(0, Math.floor(it.box[0])), y1 = Math.max(0, Math.floor(it.box[1]));
+      const x2 = Math.min(src.width, Math.ceil(it.box[2])), y2 = Math.min(src.height, Math.ceil(it.box[3]));
+      return x2 - x1 < 2 || y2 - y1 < 2 ? null : createImageBitmap(src, x1, y1, x2 - x1, y2 - y1, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" });
+    };
+    let use = [], crops = [];
+    if (c.seq) {
+      if (!seqStore) continue; // フレーム列は追跡の ID が無いと同じ手をつなげられない
+      for (const it of targets) {
+        const b = await crop(it);
+        if (!b) continue;
+        const hist = seqStore.get(`${c.id}:${it.id}`) || [];
+        const cv = new OffscreenCanvas(w, h);
+        cv.getContext("2d").drawImage(b, 0, 0);
+        b.close();
+        hist.push(cv);
+        if (hist.length > c.seq) hist.shift();
+        seqStore.set(`${c.id}:${it.id}`, hist);
+        if (hist.length === c.seq) { use.push(it); crops.push(...(await Promise.all(hist.map((x) => createImageBitmap(x))))); }
+      }
+    } else {
+      for (const it of targets) { const b = await crop(it); if (b) { use.push(it); crops.push(b); } }
+    }
+    if (!use.length) continue;
+    const res = await embedInBrowser({ ...e, where: "browser" }, crops);
+    use.forEach((it, i) => {
+      const prob = res.feats[i][0], word = prob >= 0.5 ? c.yes : c.no;
+      if (word) it.state = [it.state, `${word} ${(prob * 100).toFixed(0)}%`].filter(Boolean).join("・");
+    });
+  }
+  r.cascade_ms = performance.now() - t0;
 }
 
 // 追跡に使う検出（スコア > low）を、推論に使ったフレームから切り出して ReID の特徴にする。ほかは null

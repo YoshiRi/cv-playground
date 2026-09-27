@@ -89,6 +89,8 @@ def preprocess(im: Image.Image, pre: dict):
     else:
         raise ValueError(f"unknown resize {mode}")
     x = np.asarray(img, dtype=np.float32) * pre.get("scale", 1 / 255)
+    if pre.get("bgr"):
+        x = x[:, :, ::-1]
     if "mean" in pre:
         x = (x - np.array(pre["mean"], np.float32)) / np.array(pre["std"], np.float32)
     x = x.transpose(2, 0, 1)[None]
@@ -156,7 +158,20 @@ def post_depth(out, m, post, p):
     return res
 
 
-POST = {"yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+def post_deim_wholebody(out, m, post, p):
+    # PINTO の DEIMv2 Wholebody: (1, Q, 6) = クラス, x1, y1, x2, y2（入力に対する正規化）, スコア。表示するクラスは post.show
+    th, show, items = float(p.get("threshold", 0.35)), set(post["show"]), []
+    for r in next(iter(out.values()))[0]:
+        label = post["classes"][int(r[0])]
+        if r[5] < th or label not in show:
+            continue
+        x1, y1 = to_orig(r[1] * m["iw"], r[2] * m["ih"], m)
+        x2, y2 = to_orig(r[3] * m["iw"], r[4] * m["ih"], m)
+        items.append({"label": label, "score": float(r[5]), "box": [float(x1), float(y1), float(x2), float(y2)]})
+    return {"kind": "boxes", "items": items}
+
+
+POST = {"deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):
@@ -166,10 +181,13 @@ class OnnxAdapter(Adapter):
         o = self.e["onnx"]
         # 外部データ（.onnx_data）は ONNX 本体と同じディレクトリに無いと onnxruntime が拒否する。
         # HF のキャッシュは実体が別ディレクトリの blobs に分かれるので、実ファイルとして models/ に落とす
-        local = ROOT / "models" / o["repo"]
-        path = hf_hub_download(o["repo"], o["file"], local_dir=local)
-        if o.get("data"):
-            hf_hub_download(o["repo"], o["data"], local_dir=local)
+        if o.get("path"):  # リポジトリに同梱したモデル（web/pinto など）
+            path = str(ROOT / "web" / o["path"])
+        else:
+            local = ROOT / "models" / o["repo"]
+            path = hf_hub_download(o["repo"], o["file"], local_dir=local)
+            if o.get("data"):
+                hf_hub_download(o["repo"], o["data"], local_dir=local)
         # CoreML EP は既定の NeuralNetwork 形式だと YOLO26 の出力が壊れる（全スコアが負）。MLProgram なら CPU と一致し約2倍速い。
         # BiRefNet と DA3 は MLProgram への変換に失敗するので models.json で providers: cpu にしている
         if self.e.get("server", {}).get("providers") == "cpu":

@@ -1,94 +1,1009 @@
 {
-  "_doc": [
-    "モデルの一覧。ブラウザ（web/worker.js）とサーバー（adapters.py）の両方がこのファイルを読む。",
-    "where: 実行できる場所。両方書けば同じモデルをブラウザとサーバーで比べられる（その adapter が両方に実装されている時だけ）。",
-    "adapter: 読み込み・前処理・推論・後処理をまとめた実装の名前。",
-    "  onnx       … 汎用 ONNX。pre（前処理）と post（後処理）を名前付きの部品の組み合わせで書く。JS と Python に同じ部品がある。",
-    "  tjs-*      … ブラウザの transformers.js を使う専用の実装（プロセッサがライブラリにあるモデル）",
-    "  hf-* 等    … サーバーの transformers / Ollama を使う専用の実装",
-    "mb: ブラウザが最初にダウンロードするおおよその大きさ。avoid: 既定では選ばない（動かない環境がある）。",
-    "pre.resize: letterbox（縦横比を保って余白 pad_value で埋める。Ultralytics 公式）/ stretch（縦横をそのまま引き伸ばす）/ keep_aspect（短辺を short にし multiple の倍数に丸める）"
-  ],
-  "models": [
-    { "key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10,
-      "onnx": { "repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_detect", "classes": "coco" } },
-    { "key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38,
-      "onnx": { "repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_detect", "classes": "coco" } },
-    { "key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82,
-      "onnx": { "repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_detect", "classes": "coco" } },
-    { "key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223,
-      "onnx": { "repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_detect", "classes": "coco" } },
-    { "key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108,
-      "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": { "webgpu": "fp32", "wasm": "q8" } },
-    { "key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121,
-      "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": { "webgpu": "fp32", "wasm": "q8" } },
-    { "key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect",
-      "repo": "Roboflow/rf-detr-large" },
-
-    { "key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12,
-      "onnx": { "repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_pose" } },
-    { "key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231,
-      "onnx": { "repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx" },
-      "pre": { "size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values" },
-      "post": { "type": "yolo_pose" } },
-
-    { "key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719,
-      "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": { "webgpu": "fp32", "wasm": "q8" } },
-    { "key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino",
-      "repo": "IDEA-Research/grounding-dino-base" },
-
-    { "key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41,
-      "repo": "onnx-community/EdgeTAM-ONNX", "dtype": { "webgpu": "fp32", "wasm": "fp32" } },
-    { "key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156,
-      "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": { "webgpu": "fp32", "wasm": "fp32" } },
-    { "key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947,
-      "repo": "onnx-community/sam3-tracker-ONNX", "dtype": { "webgpu": "fp16", "wasm": "q8" } },
-    { "key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2",
-      "repo": "facebook/sam2.1-hiera-large" },
-
-    { "key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99,
-      "repo": "onnx-community/depth-anything-v2-small", "dtype": { "webgpu": "fp32", "wasm": "q8" } },
-    { "key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105,
-      "onnx": { "repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data" },
-      "pre": { "resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098,
-               "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1] },
-      "post": { "type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics" },
-      "server": { "providers": "cpu" } },
-    { "key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth",
-      "repo": "depth-anything/Depth-Anything-V2-Large-hf" },
-
-    { "key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750,
-      "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": { "webgpu": "fp16", "wasm": "q8" } },
-
-    { "key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224,
-      "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない",
-      "onnx": { "repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx" },
-      "pre": { "size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098,
-               "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image" },
-      "post": { "type": "alpha", "output": "output_image", "sigmoid": true },
-      "server": { "providers": "cpu" } },
-
-    { "key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3",
-      "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": { "webgpu": "fp16", "wasm": "q8" }, "prompt": "Describe this image in detail." },
-    { "key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373,
-      "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": { "webgpu": "q4f16", "wasm": "q4" } },
-    { "key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1,
-      "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）",
-      "onnx": { "repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx" },
-      "pre": { "size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098,
-               "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16 },
-      "post": { "type": "embedding" } },
-    { "key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm",
-      "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意" }
-  ]
+ "_doc": [
+  "モデルの一覧。ブラウザ（web/worker.js）とサーバー（adapters.py）の両方がこのファイルを読む。",
+  "where: 実行できる場所。両方書けば同じモデルをブラウザとサーバーで比べられる（その adapter が両方に実装されている時だけ）。",
+  "adapter: 読み込み・前処理・推論・後処理をまとめた実装の名前。",
+  "  onnx       … 汎用 ONNX。pre（前処理）と post（後処理）を名前付きの部品の組み合わせで書く。JS と Python に同じ部品がある。",
+  "  tjs-*      … ブラウザの transformers.js を使う専用の実装（プロセッサがライブラリにあるモデル）",
+  "  hf-* 等    … サーバーの transformers / Ollama を使う専用の実装",
+  "mb: ブラウザが最初にダウンロードするおおよその大きさ。avoid: 既定では選ばない（動かない環境がある）。",
+  "pre.resize: letterbox（縦横比を保って余白 pad_value で埋める。Ultralytics 公式）/ stretch（縦横をそのまま引き伸ばす）/ keep_aspect（短辺を short にし multiple の倍数に丸める）",
+  "cascade: 検出のあと、指定したクラスの枠を切り出して小さな分類モデル（task: cascade）にかける。seq はフレーム列を使うモデル（追跡の ID ごとにためる）。",
+  "onnx.path: web/ 以下に置いたモデルのパス（ページと同じ場所から読む。読めない時は onnx.url、GitHub Pages の同じファイル）"
+ ],
+ "models": [
+  {
+   "key": "yolo26n",
+   "task": "detect",
+   "name": "YOLO26n",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 10,
+   "onnx": {
+    "repo": "onnx-community/yolo26n-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_detect",
+    "classes": "coco"
+   }
+  },
+  {
+   "key": "yolo26s",
+   "task": "detect",
+   "name": "YOLO26s",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 38,
+   "onnx": {
+    "repo": "onnx-community/yolo26s-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_detect",
+    "classes": "coco"
+   }
+  },
+  {
+   "key": "yolo26m",
+   "task": "detect",
+   "name": "YOLO26m",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 82,
+   "onnx": {
+    "repo": "onnx-community/yolo26m-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_detect",
+    "classes": "coco"
+   }
+  },
+  {
+   "key": "yolo26x",
+   "task": "detect",
+   "name": "YOLO26x",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 223,
+   "onnx": {
+    "repo": "onnx-community/yolo26x-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_detect",
+    "classes": "coco"
+   }
+  },
+  {
+   "key": "rfdetr-nano",
+   "task": "detect",
+   "name": "RF-DETR Nano",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-detect",
+   "mb": 108,
+   "repo": "onnx-community/rfdetr_nano-ONNX",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "rfdetr-medium",
+   "task": "detect",
+   "name": "RF-DETR Medium",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-detect",
+   "mb": 121,
+   "repo": "onnx-community/rfdetr_medium-ONNX",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "rfdetr-large",
+   "task": "detect",
+   "name": "RF-DETR Large",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-detect",
+   "repo": "Roboflow/rf-detr-large"
+  },
+  {
+   "key": "yolo26n-pose",
+   "task": "pose",
+   "name": "YOLO26n-pose",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 12,
+   "onnx": {
+    "repo": "onnx-community/yolo26n-pose-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_pose"
+   }
+  },
+  {
+   "key": "yolo26x-pose",
+   "task": "pose",
+   "name": "YOLO26x-pose",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 231,
+   "onnx": {
+    "repo": "onnx-community/yolo26x-pose-ONNX",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 114,
+    "scale": 0.00392156862745098,
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "yolo_pose"
+   }
+  },
+  {
+   "key": "gdino-tiny",
+   "task": "zsdetect",
+   "name": "Grounding DINO tiny",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-gdino",
+   "mb": 719,
+   "repo": "onnx-community/grounding-dino-tiny-ONNX",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "gdino-base",
+   "task": "zsdetect",
+   "name": "Grounding DINO base",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-gdino",
+   "repo": "IDEA-Research/grounding-dino-base"
+  },
+  {
+   "key": "edgetam",
+   "task": "segment",
+   "name": "EdgeTAM",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-sam",
+   "mb": 41,
+   "repo": "onnx-community/EdgeTAM-ONNX",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "fp32"
+   }
+  },
+  {
+   "key": "sam2.1-tiny",
+   "task": "segment",
+   "name": "SAM 2.1 tiny",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-sam",
+   "mb": 156,
+   "repo": "onnx-community/sam2.1-hiera-tiny-ONNX",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "fp32"
+   }
+  },
+  {
+   "key": "sam3-tracker",
+   "task": "segment",
+   "name": "SAM 3（点指定）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-sam",
+   "mb": 947,
+   "repo": "onnx-community/sam3-tracker-ONNX",
+   "dtype": {
+    "webgpu": "fp16",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "sam2.1-large",
+   "task": "segment",
+   "name": "SAM 2.1 large",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-sam2",
+   "repo": "facebook/sam2.1-hiera-large"
+  },
+  {
+   "key": "dav2-small",
+   "task": "depth",
+   "name": "Depth Anything V2 small",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-depth",
+   "mb": 99,
+   "repo": "onnx-community/depth-anything-v2-small",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "da3-small",
+   "task": "depth",
+   "name": "Depth Anything 3 small",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 105,
+   "onnx": {
+    "repo": "onnx-community/depth-anything-v3-small",
+    "file": "onnx/model.onnx",
+    "data": "onnx/model.onnx_data"
+   },
+   "pre": {
+    "resize": "keep_aspect",
+    "short": 518,
+    "multiple": 14,
+    "scale": 0.00392156862745098,
+    "mean": [
+     0.485,
+     0.456,
+     0.406
+    ],
+    "std": [
+     0.229,
+     0.224,
+     0.225
+    ],
+    "input": "pixel_values",
+    "add_dims": [
+     1
+    ]
+   },
+   "post": {
+    "type": "depth",
+    "output": "predicted_depth",
+    "inverse": true,
+    "intrinsics": "intrinsics"
+   },
+   "server": {
+    "providers": "cpu"
+   }
+  },
+  {
+   "key": "dav2-large",
+   "task": "depth",
+   "name": "Depth Anything V2 large",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-depth",
+   "repo": "depth-anything/Depth-Anything-V2-Large-hf"
+  },
+  {
+   "key": "siglip2-base",
+   "task": "classify",
+   "name": "SigLIP2 base",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-siglip",
+   "mb": 750,
+   "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
+   "dtype": {
+    "webgpu": "fp16",
+    "wasm": "q8"
+   }
+  },
+  {
+   "key": "birefnet-lite",
+   "task": "matting",
+   "name": "BiRefNet lite",
+   "where": [
+    "server",
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 224,
+   "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない",
+   "onnx": {
+    "repo": "onnx-community/BiRefNet_lite-ONNX",
+    "file": "onnx/model.onnx"
+   },
+   "pre": {
+    "size": [
+     1024,
+     1024
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "mean": [
+     0.485,
+     0.456,
+     0.406
+    ],
+    "std": [
+     0.229,
+     0.224,
+     0.225
+    ],
+    "input": "input_image"
+   },
+   "post": {
+    "type": "alpha",
+    "output": "output_image",
+    "sigmoid": true
+   },
+   "server": {
+    "providers": "cpu"
+   }
+  },
+  {
+   "key": "smolvlm-256m",
+   "task": "vlm",
+   "name": "SmolVLM 256M",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-vlm",
+   "mb": 514,
+   "lib": "3",
+   "repo": "HuggingFaceTB/SmolVLM-256M-Instruct",
+   "dtype": {
+    "webgpu": "fp16",
+    "wasm": "q8"
+   },
+   "prompt": "Describe this image in detail."
+  },
+  {
+   "key": "qwen3vl-2b",
+   "task": "vlm",
+   "name": "Qwen3-VL 2B",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-vlm",
+   "mb": 1373,
+   "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX",
+   "dtype": {
+    "webgpu": "q4f16",
+    "wasm": "q4"
+   }
+  },
+  {
+   "key": "deimv2-atto192",
+   "task": "wholebody",
+   "name": "DEIMv2 Atto（192×192、最軽量）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 2,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx",
+    "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"
+   },
+   "pre": {
+    "size": [
+     192,
+     192
+    ],
+    "resize": "stretch",
+    "scale": 1,
+    "bgr": true,
+    "input": "input_bgr"
+   },
+   "post": {
+    "type": "deim_wholebody",
+    "classes": [
+     "body",
+     "adult",
+     "child",
+     "male",
+     "female",
+     "body_with_wheelchair",
+     "body_with_crutches",
+     "head",
+     "front",
+     "right-front",
+     "right-side",
+     "right-back",
+     "back",
+     "left-back",
+     "left-side",
+     "left-front",
+     "face",
+     "eye",
+     "nose",
+     "mouth",
+     "ear",
+     "collarbone",
+     "shoulder",
+     "solar_plexus",
+     "elbow",
+     "wrist",
+     "hand",
+     "hand_left",
+     "hand_right",
+     "abdomen",
+     "hip_joint",
+     "knee",
+     "ankle",
+     "foot"
+    ],
+    "show": [
+     "body",
+     "head",
+     "face",
+     "eye",
+     "hand"
+    ]
+   },
+   "server": {
+    "providers": "cpu"
+   },
+   "cascade": [
+    {
+     "id": "ocec",
+     "on": "eye",
+     "model": "ocec-p",
+     "name": "目の開閉（OCEC）",
+     "yes": "開",
+     "no": "閉"
+    },
+    {
+     "id": "pgc",
+     "on": "hand",
+     "model": "pgc-s",
+     "name": "指差し（PGC）",
+     "yes": "指差し",
+     "no": ""
+    },
+    {
+     "id": "whc",
+     "on": "hand",
+     "model": "whc-4",
+     "name": "手を振る（WHC、要追跡）",
+     "yes": "手を振る",
+     "no": "",
+     "seq": 4
+    }
+   ]
+  },
+  {
+   "key": "deimv2-atto",
+   "task": "wholebody",
+   "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 2,
+   "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255",
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx",
+    "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"
+   },
+   "pre": {
+    "size": [
+     320,
+     320
+    ],
+    "resize": "stretch",
+    "scale": 1,
+    "bgr": true,
+    "input": "input_bgr"
+   },
+   "post": {
+    "type": "deim_wholebody",
+    "classes": [
+     "body",
+     "adult",
+     "child",
+     "male",
+     "female",
+     "body_with_wheelchair",
+     "body_with_crutches",
+     "head",
+     "front",
+     "right-front",
+     "right-side",
+     "right-back",
+     "back",
+     "left-back",
+     "left-side",
+     "left-front",
+     "face",
+     "eye",
+     "nose",
+     "mouth",
+     "ear",
+     "collarbone",
+     "shoulder",
+     "solar_plexus",
+     "elbow",
+     "wrist",
+     "hand",
+     "hand_left",
+     "hand_right",
+     "abdomen",
+     "hip_joint",
+     "knee",
+     "ankle",
+     "foot"
+    ],
+    "show": [
+     "body",
+     "head",
+     "face",
+     "eye",
+     "hand"
+    ]
+   },
+   "server": {
+    "providers": "cpu"
+   },
+   "cascade": [
+    {
+     "id": "ocec",
+     "on": "eye",
+     "model": "ocec-p",
+     "name": "目の開閉（OCEC）",
+     "yes": "開",
+     "no": "閉"
+    },
+    {
+     "id": "pgc",
+     "on": "hand",
+     "model": "pgc-s",
+     "name": "指差し（PGC）",
+     "yes": "指差し",
+     "no": ""
+    },
+    {
+     "id": "whc",
+     "on": "hand",
+     "model": "whc-4",
+     "name": "手を振る（WHC、要追跡）",
+     "yes": "手を振る",
+     "no": "",
+     "seq": 4
+    }
+   ]
+  },
+  {
+   "key": "deimv2-femto",
+   "task": "wholebody",
+   "name": "DEIMv2 Femto（416×416）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 4,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx",
+    "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"
+   },
+   "pre": {
+    "size": [
+     416,
+     416
+    ],
+    "resize": "stretch",
+    "scale": 1,
+    "bgr": true,
+    "input": "input_bgr"
+   },
+   "post": {
+    "type": "deim_wholebody",
+    "classes": [
+     "body",
+     "adult",
+     "child",
+     "male",
+     "female",
+     "body_with_wheelchair",
+     "body_with_crutches",
+     "head",
+     "front",
+     "right-front",
+     "right-side",
+     "right-back",
+     "back",
+     "left-back",
+     "left-side",
+     "left-front",
+     "face",
+     "eye",
+     "nose",
+     "mouth",
+     "ear",
+     "collarbone",
+     "shoulder",
+     "solar_plexus",
+     "elbow",
+     "wrist",
+     "hand",
+     "hand_left",
+     "hand_right",
+     "abdomen",
+     "hip_joint",
+     "knee",
+     "ankle",
+     "foot"
+    ],
+    "show": [
+     "body",
+     "head",
+     "face",
+     "eye",
+     "hand"
+    ]
+   },
+   "server": {
+    "providers": "cpu"
+   },
+   "cascade": [
+    {
+     "id": "ocec",
+     "on": "eye",
+     "model": "ocec-p",
+     "name": "目の開閉（OCEC）",
+     "yes": "開",
+     "no": "閉"
+    },
+    {
+     "id": "pgc",
+     "on": "hand",
+     "model": "pgc-s",
+     "name": "指差し（PGC）",
+     "yes": "指差し",
+     "no": ""
+    },
+    {
+     "id": "whc",
+     "on": "hand",
+     "model": "whc-4",
+     "name": "手を振る（WHC、要追跡）",
+     "yes": "手を振る",
+     "no": "",
+     "seq": 4
+    }
+   ]
+  },
+  {
+   "key": "deimv2-pico",
+   "task": "wholebody",
+   "name": "DEIMv2 Pico（640×640）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 6,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx",
+    "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "stretch",
+    "scale": 1,
+    "bgr": true,
+    "input": "input_bgr"
+   },
+   "post": {
+    "type": "deim_wholebody",
+    "classes": [
+     "body",
+     "adult",
+     "child",
+     "male",
+     "female",
+     "body_with_wheelchair",
+     "body_with_crutches",
+     "head",
+     "front",
+     "right-front",
+     "right-side",
+     "right-back",
+     "back",
+     "left-back",
+     "left-side",
+     "left-front",
+     "face",
+     "eye",
+     "nose",
+     "mouth",
+     "ear",
+     "collarbone",
+     "shoulder",
+     "solar_plexus",
+     "elbow",
+     "wrist",
+     "hand",
+     "hand_left",
+     "hand_right",
+     "abdomen",
+     "hip_joint",
+     "knee",
+     "ankle",
+     "foot"
+    ],
+    "show": [
+     "body",
+     "head",
+     "face",
+     "eye",
+     "hand"
+    ]
+   },
+   "server": {
+    "providers": "cpu"
+   },
+   "cascade": [
+    {
+     "id": "ocec",
+     "on": "eye",
+     "model": "ocec-p",
+     "name": "目の開閉（OCEC）",
+     "yes": "開",
+     "no": "閉"
+    },
+    {
+     "id": "pgc",
+     "on": "hand",
+     "model": "pgc-s",
+     "name": "指差し（PGC）",
+     "yes": "指差し",
+     "no": ""
+    },
+    {
+     "id": "whc",
+     "on": "hand",
+     "model": "whc-4",
+     "name": "手を振る（WHC、要追跡）",
+     "yes": "手を振る",
+     "no": "",
+     "seq": 4
+    }
+   ]
+  },
+  {
+   "key": "ocec-p",
+   "task": "cascade",
+   "name": "OCEC P（目の開閉）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 0.1,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx",
+    "path": "pinto/ocec_p.onnx"
+   },
+   "pre": {
+    "size": [
+     40,
+     24
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "input": "images",
+    "batch": "dynamic"
+   },
+   "post": {
+    "type": "embedding"
+   }
+  },
+  {
+   "key": "pgc-s",
+   "task": "cascade",
+   "name": "PGC S（指差し）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 0.5,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx",
+    "path": "pinto/pgc_s_32x32.onnx"
+   },
+   "pre": {
+    "size": [
+     32,
+     32
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "input": "images",
+    "batch": "dynamic"
+   },
+   "post": {
+    "type": "embedding"
+   }
+  },
+  {
+   "key": "whc-4",
+   "task": "cascade",
+   "name": "WHC（手を振る、4 フレーム）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 1.1,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx",
+    "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"
+   },
+   "pre": {
+    "size": [
+     32,
+     32
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "input": "images",
+    "seq": 4
+   },
+   "post": {
+    "type": "embedding"
+   }
+  },
+  {
+   "key": "osnet-x025",
+   "task": "reid",
+   "name": "OSNet x0.25（MSMT17）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 1,
+   "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）",
+   "onnx": {
+    "repo": "anriha/osnet_x0_25_msmt17",
+    "file": "osnet_x0_25_msmt17.onnx"
+   },
+   "pre": {
+    "size": [
+     128,
+     256
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "mean": [
+     0.485,
+     0.456,
+     0.406
+    ],
+    "std": [
+     0.229,
+     0.224,
+     0.225
+    ],
+    "input": "input",
+    "batch": 16
+   },
+   "post": {
+    "type": "embedding"
+   }
+  },
+  {
+   "key": "ollama-vlm",
+   "task": "vlm",
+   "name": "Ollama の VLM",
+   "where": [
+    "server"
+   ],
+   "adapter": "ollama-vlm",
+   "ollama": "qwen3-vl:8b",
+   "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"
+  }
+ ]
 }

@@ -1,0 +1,13 @@
+# 1ファイル版（dist/）が web/ から作り直されているかを確かめる（作り忘れると、1ファイル版だけ古いまま残る）
+name: check-dist
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python build.py
+      - run: git diff --exit-code dist/ || (echo "::error::dist/cv-playground.html が古い。python3 build.py を実行してコミットする" && exit 1)

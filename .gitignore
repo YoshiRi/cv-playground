@@ -3,3 +3,4 @@ logs/
 __pycache__/
 models/
 ref.json
+.env

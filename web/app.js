@@ -6,7 +6,9 @@ const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのま�
 const DISPLAY_SIDE = 1920;  // 動画・カメラを画面に描く長辺（元の解像度のまま、大きすぎる時だけ縮める）
 // 動画・カメラで推論に渡すフレームの長辺は画面で選ぶ（#infer-size、既定 640）。
 // YOLO26 は 640、RF-DETR は約 576、DA-V2 は 518 に内部で縮めるので、大きくしても効くのは主に SAM（1024）と送信量
-// 1ファイル版（build.py）では、サーバーを使わず Worker を Blob URL から作る
+// 配り方は3通りで、どれも web/ の同じコードが動く:
+//   サーバー版（server.py が web/ と API を配る）/ 静的版（GitHub Pages などが web/ をそのまま配る）/ 1ファイル版（build.py）
+// 違いは実行時に判定する: API に届けばサーバーのモデルも出す（state.hasServer）。1ファイル版だけは Worker を Blob URL から作る
 const STANDALONE = !!globalThis.CVPG_STANDALONE;
 const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
 // web/ の場所（同梱したモデルを読む基準）。1ファイル版は dist/ にあるので ../web/
@@ -21,6 +23,7 @@ const state = {
   result: null,      // 最後の結果（layer: 事前に描いた重ね画像）
   busy: false,
   serverModels: new Set(),
+  hasServer: false,  // server.py の API に届くか（静的版・1ファイル版では false）
   frameNo: 0,
   auto: false,       // クリックで切り出しの「全体を自動分割」
 };
@@ -99,14 +102,14 @@ function setStatus(text, cls = "") {
   el.className = `status ${cls}`;
 }
 
-// onnx.server_file のモデルはこのサーバーだけが配るので、1ファイル版では出さない
+// onnx.server_file のモデルは server.py だけが配るので、サーバーが無い時は出さない
 // models.json の1件は where に実行できる場所を並べる。画面の選択肢は「モデル × 実行場所」ごとに1つ（値は key@where）。
 // 1ファイル版ではサーバーの選択肢を出さない
 function variants(task) {
   const out = [];
   for (const where of ["browser", "server"]) {
-    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where) && !(STANDALONE && x.onnx?.server_file))) {
-      if (where === "server" && STANDALONE) continue;
+    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where) && (state.hasServer || !x.onnx?.server_file))) {
+      if (where === "server" && !state.hasServer) continue;
       const avoid = where === "browser" ? e.avoid_browser : null;
       out.push({ ...e, where, avoid, id: `${e.key}@${where}`, ready: where === "browser" || state.serverModels.has(e.key) });
     }
@@ -698,7 +701,7 @@ function canvasPoint(ev) {
 // ---------- サーバー状態 ----------
 
 async function refreshServer() {
-  if (STANDALONE) return;
+  if (!state.hasServer) return;
   try {
     const s = await (await fetch("api/status")).json();
     const parts = [`サーバー ${s.device}`];
@@ -713,18 +716,21 @@ async function refreshServer() {
 }
 
 async function init() {
-  $("env").textContent = (navigator.gpu ? "WebGPU あり" : "WebGPU なし（WASM で実行、遅い）") + (STANDALONE ? " ・ サーバーなし版" : "");
+  // サーバーの有無（API に 3 秒で届かなければ無しとみなす）
+  if (!STANDALONE) {
+    try {
+      const list = await (await fetch("api/models", { signal: AbortSignal.timeout(3000) })).json();
+      state.serverModels = new Set(list.map((m) => m.key));
+      state.hasServer = true;
+    } catch { /* 静的版 */ }
+  }
+  $("env").textContent = (navigator.gpu ? "WebGPU あり" : "WebGPU なし（WASM で実行、遅い）")
+    + (state.hasServer ? "" : " ・ サーバーなし（ブラウザ実行のみ）")
+    + (crossOriginIsolated ? "" : " ・ WASM は1スレッド");
   if (navigator.gpu) {
     try { if (!(await navigator.gpu.requestAdapter())) $("env").textContent = "WebGPU アダプタなし（WASM で実行）"; } catch { /* noop */ }
   }
-  if (STANDALONE) {
-    $("server-box").hidden = true;
-  } else {
-    try {
-      const list = await (await fetch("api/models")).json();
-      state.serverModels = new Set(list.map((m) => m.key));
-    } catch { /* サーバーなし */ }
-  }
+  $("server-box").hidden = !state.hasServer;
   $("prompt").value = DEFAULTS.prompt;
   $("threshold").oninput = () => { $("th-out").textContent = $("threshold").value; };
   $("model").onchange = () => { stopLive(); clearResult(); setStatus(""); updateModelNote(); draw(); };
@@ -772,7 +778,7 @@ async function init() {
   selectTask("detect");
   await setImage(document.querySelector("[data-sample]").dataset.sample);
   refreshServer();
-  if (!STANDALONE) setInterval(refreshServer, 15000);
+  if (state.hasServer) setInterval(refreshServer, 15000);
 }
 
 init();

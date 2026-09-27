@@ -14,16 +14,22 @@ UI は日本語。
 
 ## 使い方
 
-### ブラウザだけで使う（サーバーなし）
+### 配り方は3通り（どれも web/ の同じコード）
 
-**https://yoshiri.github.io/cv-playground/ で開ける**（GitHub Pages。スマホ可）。手元では `dist/cv-playground.html` をブラウザで開く（file:// でも、GitHub Pages などの静的ホスティングでも動く）。ブラウザ実行のモデルだけが選べる。
-WebGPU がある Chrome / Edge / Safari 推奨（無ければ WASM で遅く動く）。
+| 配り方 | 中身 | 違い |
+| --- | --- | --- |
+| サーバー版 | `server.py` が `web/` と API を配る | サーバー（Mac など）で動くモデルも選べる。COOP/COEP ヘッダで WASM が複数スレッド |
+| 静的版 | GitHub Pages などが `web/` をそのまま配る（**https://yoshiri.github.io/cv-playground/**） | API に届かないのでブラウザ実行のモデルだけ。WASM の複数スレッドは同梱の coi-serviceworker で有効にする |
+| 1ファイル版 | `python3 build.py` で作る `dist/cv-playground.html` | ファイルを開くだけで動く（file:// 可）。ブラウザ実行のみ、WASM は1スレッド |
+
+サーバーの有無はページが実行時に判定する（`api/models` に届くか）。1ファイル版の作り忘れは GitHub Actions（`.github/workflows/check-dist.yml`）で検出する。
 
 ### サーバーも使う
 
 ```sh
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
-.venv/bin/python server.py      # http://127.0.0.1:8010
+cp .env.example .env            # 環境ごとの設定（任意。.env は git に入れない）
+scripts/serve.sh                # http://127.0.0.1:8010（--bg で裏で起動）
 ```
 
 - サーバー側のモデルは初回に Hugging Face から取得する（合計で数GB）。最大3つをメモリに置き、超えたら古い順に外す

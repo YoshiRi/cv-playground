@@ -39,6 +39,7 @@ def main() -> None:
     css = (WEB / "style.css").read_text()
 
     html = html.replace('<link rel="stylesheet" href="style.css">', f"<style>\n{css}</style>")
+    html = re.sub(r"  <!-- 静的配信.*?\n  <script src=\"coi-serviceworker.js\"></script>\n", "", html, flags=re.S)
     html = html.replace("<title>CV Playground</title>", "<title>CV Playground（サーバーなし版）</title>")
     assert "</script>" not in worker and "</script>" not in app
     boot = ("<script>\n"

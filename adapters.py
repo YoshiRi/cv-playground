@@ -262,7 +262,9 @@ class HfDepth(Adapter):
 
 class HfGdino(Adapter):
     # transformers の zero-shot-object-detection パイプラインは Grounding DINO だとスコアが極端に低く、
-    # 猫の写真で cat を1つも返さなかった（5.17.0）。プロセッサに候補名のリストを直接渡すと正しく出る
+    # 猫の写真で cat を1つも返さなかった（5.17.0）。プロセッサに候補名のリストを直接渡して呼ぶ。
+    # 後処理は自前: 標準の後処理は閾値を超えた単語をつなげて "orange lemon" のような混ざった名前を返すので、
+    # 候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ
     def load(self):
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
         self.proc = AutoProcessor.from_pretrained(self.e["repo"])
@@ -272,11 +274,28 @@ class HfGdino(Adapter):
     def run(self, im, p):
         labels = [s.strip() for s in p.get("labels", "person").split(",") if s.strip()]
         inputs = self.proc(images=im, text=[labels], return_tensors="pt").to(DEVICE)
-        r = self.proc.post_process_grounded_object_detection(
-            self.model(**inputs), inputs.input_ids, threshold=float(p.get("threshold", 0.3)), text_threshold=0.25,
-            target_sizes=[im.size[::-1]])[0]
-        return {"kind": "boxes", "items": [{"label": l, "score": float(sc), "box": [float(v) for v in b]}
-                                           for l, sc, b in zip(r["text_labels"], r["scores"], r["boxes"])]}
+        out = self.model(**inputs)
+        prob = out.logits[0].sigmoid().float().cpu().numpy()                  # (クエリ, トークン)
+        spans = label_spans(inputs.input_ids[0].tolist(), self.proc.tokenizer.convert_tokens_to_ids("."), len(labels))
+        per_label = np.stack([prob[:, sp].max(1) for sp in spans], 1)       # (クエリ, 候補)
+        th, W, H, items = float(p.get("threshold", 0.3)), im.size[0], im.size[1], []
+        for q in np.where(per_label.max(1) > th)[0]:
+            k = int(per_label[q].argmax())
+            cx, cy, w, h = out.pred_boxes[0, q].float().cpu().numpy() * [W, H, W, H]
+            items.append({"label": labels[k], "score": float(per_label[q, k]), "box": [float(cx - w / 2), float(cy - h / 2), float(cx + w / 2), float(cy + h / 2)]})
+        return {"kind": "boxes", "items": items}
+
+
+def label_spans(ids, dot, n):
+    """"a. b. c." のトークン列から、候補ごとのトークン位置（[CLS] や "." を除く）を取り出す"""
+    spans, cur = [], []
+    for i, t in enumerate(ids[1:], start=1):
+        if t == dot:
+            spans.append(cur)
+            cur = []
+        elif len(spans) < n and t not in (0, 101, 102):
+            cur.append(i)
+    return [sp or [0] for sp in (spans + [cur])[:n]]
 
 
 class HfSam2(Adapter):

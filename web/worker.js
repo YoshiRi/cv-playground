@@ -81,21 +81,32 @@ const ADAPTERS = {
     },
   },
 
-  // pipeline は候補ごとに別バッチで渡して ONNX（バッチ 1 固定）が落ちるので、公式例どおり "a. b." の1文にする
+  // この ONNX（transformers.js）は、文に候補を並べると先頭の候補しか正しいスコアにならない
+  // （猫の写真で "remote control. cat. sofa." だと cat の最大が 0.09、"cat." だけなら 0.83）。
+  // そこで候補ごとに1回ずつ推論してまとめる（候補の数だけ時間がかかる）。サーバーの base（adapters.py）は1回でよい
   "tjs-gdino": {
     load: async (e, d, pr) => ({
       model: await T.AutoModelForZeroShotObjectDetection.from_pretrained(e.repo, tjsOpts(e, d, pr)),
       proc: await T.AutoProcessor.from_pretrained(e.repo),
     }),
     async run(st, img, p) {
-      const labels = splitLabels(p.labels).map((l) => l.toLowerCase());
-      const inputs = await st.proc(img, labels.map((l) => l + ".").join(" "));
-      const out = await st.model(inputs);
-      const th = p.threshold ?? 0.3;
-      const [r] = st.proc.post_process_grounded_object_detection(out, inputs.input_ids, {
-        box_threshold: th, text_threshold: Math.min(th, 0.25), target_sizes: [[img.height, img.width]],
-      });
-      return { kind: "boxes", items: r.boxes.map((b, i) => ({ label: r.labels[i] || "?", score: r.scores[i], box: b })) };
+      const th = p.threshold ?? 0.3, items = [];
+      for (const label of splitLabels(p.labels).map((l) => l.toLowerCase())) {
+        const inputs = await st.proc(img, label + ".");
+        const out = await st.model(inputs);
+        // 候補の単語の位置（[CLS] の次から、末尾の "." と [SEP] の前まで）で確率の最大を取る
+        const ids = Array.from(inputs.input_ids.data, Number);
+        const toks = ids.map((_, i) => i).filter((i) => i > 0 && i < ids.length - 2 && ![0, 101, 102].includes(ids[i]));
+        const [, Q, Tn] = out.logits.dims, L = out.logits.data, B = out.pred_boxes.data;
+        for (let q = 0; q < Q; q++) {
+          let s = 0;
+          for (const t of toks) s = Math.max(s, sigmoid(L[q * Tn + t]));
+          if (s <= th) continue;
+          const [cx, cy, w, h] = [B[q * 4] * img.width, B[q * 4 + 1] * img.height, B[q * 4 + 2] * img.width, B[q * 4 + 3] * img.height];
+          items.push({ label, score: s, box: [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2] });
+        }
+      }
+      return { kind: "boxes", items };
     },
   },
 

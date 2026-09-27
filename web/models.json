@@ -1,17 +1,102 @@
 {
  "_doc": [
-  "モデルの一覧。ブラウザ（web/worker.js）とサーバー（adapters.py）の両方がこのファイルを読む。",
-  "where: 実行できる場所。両方書けば同じモデルをブラウザとサーバーで比べられる（その adapter が両方に実装されている時だけ）。",
-  "adapter: 読み込み・前処理・推論・後処理をまとめた実装の名前。",
-  "  onnx       … 汎用 ONNX。pre（前処理）と post（後処理）を名前付きの部品の組み合わせで書く。JS と Python に同じ部品がある。",
-  "  tjs-*      … ブラウザの transformers.js を使う専用の実装（プロセッサがライブラリにあるモデル）",
-  "  hf-* 等    … サーバーの transformers / Ollama を使う専用の実装",
-  "mb: ブラウザが最初にダウンロードするおおよその大きさ。avoid: 既定では選ばない（動かない環境がある）。",
-  "pre.resize: letterbox（縦横比を保って余白 pad_value で埋める。Ultralytics 公式）/ stretch（縦横をそのまま引き伸ばす）/ keep_aspect（短辺を short にし multiple の倍数に丸める）",
-  "cascade: 検出のあと、指定したクラスの枠を切り出して小さな分類モデル（task: cascade）にかける。seq はフレーム列を使うモデル（追跡の ID ごとにためる）。",
-  "onnx.path: web/ 以下に置いたモデルのパス（ページと同じ場所から読む。読めない時は onnx.url、GitHub Pages の同じファイル）",
-  "onnx.server_file: models/ 以下に置いた、このサーバーだけが配るモデル（ライセンス上リポジトリに入れないもの）。1ファイル版・GitHub Pages では出さない。",
-  "pre.dynamic: 入力サイズ可変のモデル。画面の「モデル入力」（既定は size）で長辺を選ぶ。resize: letterbox_rect は縦横比を保って長辺を合わせ、32 の倍数まで余白で埋める長方形（Ultralytics の推論と同じ）。"
+  "UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"
+ ],
+ "tasks": [
+  {
+   "id": "detect",
+   "name": "物体検出",
+   "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる",
+   "params": [
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   }
+  },
+  {
+   "id": "pose",
+   "name": "人物の姿勢",
+   "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる",
+   "params": [
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   }
+  },
+  {
+   "id": "wholebody",
+   "name": "手・目（PINTO）",
+   "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ",
+   "params": [
+    "threshold",
+    "track",
+    "cascade"
+   ],
+   "defaults": {
+    "threshold": 0.35
+   }
+  },
+  {
+   "id": "zsdetect",
+   "name": "テキスト指定検出",
+   "hint": "英語の名詞をカンマ区切り（例: cat, remote control）",
+   "params": [
+    "labels",
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.3,
+    "labels": "person, bus, bag"
+   }
+  },
+  {
+   "id": "segment",
+   "name": "クリックで切り出し",
+   "hint": "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）",
+   "params": [
+    "points"
+   ],
+   "click": true
+  },
+  {
+   "id": "depth",
+   "name": "深度推定",
+   "hint": "赤いほど近い（相対深度）",
+   "params": []
+  },
+  {
+   "id": "classify",
+   "name": "ゼロショット分類",
+   "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア",
+   "params": [
+    "labels"
+   ],
+   "defaults": {
+    "labels": "bus, truck, tram, street, office, cat"
+   }
+  },
+  {
+   "id": "matting",
+   "name": "背景除去",
+   "hint": "前景だけを残す",
+   "params": []
+  },
+  {
+   "id": "vlm",
+   "name": "画像の説明・質問",
+   "hint": "SmolVLM は英語のみ。日本語は Qwen",
+   "params": [
+    "prompt"
+   ],
+   "defaults": {
+    "prompt": "この画像を日本語で詳しく説明してください。"
+   }
+  }
  ],
  "models": [
   {

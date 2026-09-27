@@ -1,4 +1,5 @@
-import { DEFAULTS, MODELS, SKELETON, TASKS } from "./catalog.js";
+import { MODELS, TASKS } from "./catalog.js";
+import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { Tracker } from "./tracker.js";
 
 const $ = (id) => document.getElementById(id);
@@ -142,9 +143,10 @@ function selectTask(id) {
   $("task-hint").textContent = t.hint;
   for (const el of document.querySelectorAll("[data-param]")) el.hidden = !t.params.includes(el.dataset.param);
   $("track-hint").hidden = !t.params.includes("track") || !$("tracker").value;
-  if (DEFAULTS.threshold[id]) { $("threshold").value = DEFAULTS.threshold[id]; $("th-out").textContent = DEFAULTS.threshold[id]; }
-  if (DEFAULTS.labels[id]) $("labels").value = DEFAULTS.labels[id];
-  $("canvas-wrap").classList.toggle("clickable", id === "segment");
+  const def = t.defaults || {};
+  if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
+  if (def.labels) $("labels").value = def.labels;
+  $("canvas-wrap").classList.toggle("clickable", !!t.click);
 
   const sel = $("model");
   sel.innerHTML = "";
@@ -171,15 +173,19 @@ function selectTask(id) {
   draw();
 }
 
+const curTask = () => TASKS.find((t) => t.id === state.task);
+
 function currentModel() {
   return variants(state.task).find((v) => v.id === $("model").value);
 }
 
-const DEFAULT_PROMPTS = new Set([DEFAULTS.prompt, ...MODELS.filter((x) => x.prompt).map((x) => x.prompt)]);
+// 質問欄は、既定の文のままならモデルごとの既定（models.json の prompt、無ければタスクの defaults.prompt）に入れ替える
+const TASK_PROMPT = (task) => TASKS.find((t) => t.id === task)?.defaults?.prompt || "";
+const DEFAULT_PROMPTS = new Set([...TASKS.map((t) => t.defaults?.prompt), ...MODELS.map((x) => x.prompt)].filter(Boolean));
 function updateModelNote() {
   const m = currentModel();
   if (!m) return;
-  if (DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || DEFAULTS.prompt;
+  if (!$("prompt").value || DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || TASK_PROMPT(m.task);
   const notes = [];
   notes.push(m.repo || m.onnx?.repo || m.ollama || "");
   notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
@@ -191,11 +197,12 @@ function updateModelNote() {
   $("cascade").innerHTML = (m.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
-  $("model-note").textContent = notes.join(" / ");
+  $("model-note").textContent = notes.filter(Boolean).join(" / ");
 }
 
 function updateButtons() {
-  $("run").hidden = state.task === "segment" && !state.video && !state.auto;
+  // クリックで点を置くタスク（tasks[].click）は、静止画ではクリックが実行の合図なので実行ボタンを出さない
+  $("run").hidden = !!curTask().click && !state.video && !state.auto;
   $("auto").checked = state.auto;
   $("run").textContent = state.video ? "今のフレームで1回実行" : "実行";
   $("video-controls").hidden = !state.video;
@@ -304,40 +311,24 @@ async function grabFrame(forServer) {
   return { image, key };
 }
 
-// ---------- 描画 ----------
-
-function loadImg(url) {
-  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-}
-
-const COLORS = ["#2f6fdf", "#e0457b", "#16a34a", "#f59e0b", "#8b5cf6", "#0ea5e9", "#ef4444", "#14b8a6"];
-const colorOf = (label) => COLORS[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
-const idColor = (id) => `hsl(${(id * 137.508) % 360} 75% 50%)`;
+// ---------- 描画（結果の種類ごとの描き方は renderers.js） ----------
 
 function baseSource() {
   if (state.video) { const [w, h] = videoSize(DISPLAY_SIDE); return w ? { src: $("video"), w, h } : null; }
   return state.image ? { src: state.image.bitmap, w: state.image.width, h: state.image.height } : null;
 }
 
-// 結果の見せ方。種類ごとに選べる表示と、最初の既定（先頭）
-const VIEWS = {
-  boxes: [["overlay", "重ねる"], ["only", "結果だけ"], ["original", "元画像"]],
-  mask: [["overlay", "重ねる"], ["only", "マスクだけ（白黒）"], ["cutout", "切り抜き"], ["original", "元画像"]],
-  cutout: [["cutout", "切り抜き"], ["only", "マスクだけ（白黒）"], ["original", "元画像"]],
-  depth: [["only", "深度だけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
-  segmap: [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
-};
-const viewKind = (r) => (r.kind === "mask" && r.cutout ? "cutout" : r.kind);
-let shownKind = null;
+// 「表示」の選択肢は結果の種類ごと（KINDS[kind].views）。同じ種類の結果が続く間は選んだ見せ方を保つ
+let shownViews = "";
 function updateViewSelect() {
-  const r = state.result, kind = r && VIEWS[viewKind(r)] ? viewKind(r) : null;
-  $("view-toggle").hidden = !kind;
-  if (!kind || kind === shownKind) return;
-  shownKind = kind;
-  $("view").innerHTML = VIEWS[kind].map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  const r = state.result, views = r ? KINDS[r.kind]?.views(r) ?? [] : [];
+  $("view-toggle").hidden = !views.length;
+  const key = views.map(([v]) => v).join();
+  if (key === shownViews) return;
+  shownViews = key;
+  $("view").innerHTML = views.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join("");
 }
 
-let cutCanvas = null;
 function draw() {
   const cv = $("canvas");
   const ctx = cv.getContext("2d");
@@ -346,51 +337,11 @@ function draw() {
   if (cv.width !== b.w || cv.height !== b.h) { cv.width = b.w; cv.height = b.h; }
   const r = state.result;
   updateViewSelect();
-  const view = r ? $("view").value : "original";
-  const lw = Math.max(2, b.w / 400);
   ctx.globalAlpha = 1;
   ctx.drawImage(b.src, 0, 0, b.w, b.h);
-
-  if (r && view !== "original") {
-    if (view === "only" && ["boxes", "segmap", "mask"].includes(r.kind)) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, b.w, b.h); }
-    if (r.kind === "depth" || r.kind === "segmap") {
-      ctx.globalAlpha = view === "overlay" ? 0.55 : 1;
-      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
-      ctx.globalAlpha = 1;
-    } else if (r.kind === "mask" && view === "cutout") {
-      // 前景の度合いを不透明度にした層へ、今の画像を source-in で重ねて切り抜く（動画でも毎フレーム軽い）
-      if (!cutCanvas || cutCanvas.width !== b.w || cutCanvas.height !== b.h) cutCanvas = new OffscreenCanvas(b.w, b.h);
-      const x = cutCanvas.getContext("2d");
-      x.globalCompositeOperation = "copy";
-      x.drawImage(r.alpha, 0, 0, b.w, b.h);
-      x.globalCompositeOperation = "source-in";
-      x.drawImage(b.src, 0, 0, b.w, b.h);
-      drawChecker(ctx, b.w, b.h);
-      ctx.drawImage(cutCanvas, 0, 0);
-    } else if (r.kind === "mask") {
-      ctx.drawImage(view === "only" ? r.gray : r.tint, 0, 0, b.w, b.h);
-    } else if (r.kind === "boxes") {
-      const sx = b.w / r.w, sy = b.h / r.h;
-      ctx.font = `${Math.max(12, b.w / 60)}px system-ui, sans-serif`;
-      ctx.textBaseline = "top";
-      for (const it of r.items) {
-        const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
-        const col = it.id != null ? idColor(it.id) : colorOf(it.label);
-        if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
-          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
-          it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));
-          ctx.stroke();
-        }
-        ctx.strokeStyle = col; ctx.lineWidth = lw;
-        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}${it.state ? " " + it.state : ""}`;
-        const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
-        ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
-        ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
-        if (it.keypoints) drawPose(ctx, it.keypoints.map(([x, y, s]) => [x * sx, y * sy, s]), lw);
-      }
-    }
-  }
+  const view = $("view").value;
+  if (r && KINDS[r.kind] && view !== "original" && !$("view-toggle").hidden) KINDS[r.kind].draw(ctx, r, b, view);
+  const lw = Math.max(2, b.w / 400);
   for (const [x, y, l] of state.points) {
     ctx.beginPath(); ctx.arc(x, y, lw * 3, 0, Math.PI * 2);
     ctx.fillStyle = l ? "#16a34a" : "#ef4444"; ctx.fill();
@@ -398,98 +349,35 @@ function draw() {
   }
 }
 
-function drawPose(ctx, kps, lw) {
-  ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = lw;
-  for (const [a, b] of SKELETON) {
-    ctx.beginPath(); ctx.moveTo(kps[a][0], kps[a][1]); ctx.lineTo(kps[b][0], kps[b][1]); ctx.stroke();
-  }
-  ctx.fillStyle = "#e0457b";
-  for (const [x, y] of kps) { ctx.beginPath(); ctx.arc(x, y, lw * 1.6, 0, Math.PI * 2); ctx.fill(); }
-}
-
-// 結果の画像（マスク・深度・色分け）は届いた時に1回だけ表示用の層に変換しておく（描画は毎フレームなので）
-async function prepareLayer(r) {
-  const src = r.kind === "mask" ? r.mask : r.image;
-  if (!src || !["mask", "depth", "segmap"].includes(r.kind)) return;
-  const url = src instanceof Blob ? URL.createObjectURL(src) : src;
-  const img = await loadImg(url);
-  if (src instanceof Blob) URL.revokeObjectURL(url);
-  const w = img.naturalWidth, h = img.naturalHeight;
-  const layer = (fn) => {
-    const c = new OffscreenCanvas(w, h), x = c.getContext("2d");
-    x.drawImage(img, 0, 0);
-    if (!fn) return c;
-    const d = x.getImageData(0, 0, w, h);
-    for (let i = 0; i < d.data.length; i += 4) fn(d.data, i, d.data[i] / 255);
-    x.putImageData(d, 0, 0);
-    return c;
-  };
-  if (r.kind === "segmap") { r.layer = layer(); return; }
-  if (r.kind === "depth") { // jet。赤＝近い、青＝遠い
-    r.layer = layer((d, i, t) => {
-      d[i] = 255 * clamp01(1.5 - Math.abs(4 * t - 3)); d[i + 1] = 255 * clamp01(1.5 - Math.abs(4 * t - 2));
-      d[i + 2] = 255 * clamp01(1.5 - Math.abs(4 * t - 1)); d[i + 3] = 255;
-    });
-    return;
-  }
-  r.gray = layer((d, i) => { d[i + 1] = d[i + 2] = d[i]; d[i + 3] = 255; });                  // 白＝前景
-  r.alpha = layer((d, i) => { d[i + 3] = d[i]; });                                           // 前景の度合い＝不透明度
-  r.tint = layer((d, i, t) => { d[i] = 47; d[i + 1] = 111; d[i + 2] = 223; d[i + 3] = t > 0.5 ? 120 : 0; });
-}
-const clamp01 = (v) => Math.min(1, Math.max(0, v));
-
-function drawChecker(ctx, w, h) {
-  const s = Math.max(8, Math.round(w / 60));
-  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
-    ctx.fillStyle = ((x / s + y / s) & 1) ? "#d0d4da" : "#f2f4f7";
-    ctx.fillRect(x, y, s, s);
-  }
-}
-
+// 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
 function renderResult(m, r, live) {
-  const el = $("result");
-  const where = m.where === "browser" ? `ブラウザ（${r.device}, ${r.dtype}）` : `サーバー（${r.device}）`;
-  const net = r.roundtrip_ms ? ` / 通信込み ${fmt(r.roundtrip_ms)}` : "";
-  // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
-  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
-  let body = "";
-  if (r.kind === "boxes" && live?.ids) {
-    const reidNote = r.reid_ms != null ? ` ・ ReID ${fmt(r.reid_ms)}` : "";
-    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}${reidNote}）</div>`;
-  } else if (r.kind === "boxes") {
-    body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
-  } else if (r.kind === "labels") {
-    body = r.items.map((it) => `<div class="bar"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${(it.score * 100).toFixed(1)}%"></span></span><span class="num">${(it.score * 100).toFixed(1)}%</span></div>`).join("")
-      + (r.items[0]?.abs != null ? `<div class="dets">絶対スコア: ${r.items.map((it) => `${esc(it.label)} ${(it.abs * 100).toFixed(1)}%`).join("、")}</div>` : "");
-  } else if (r.kind === "text") {
-    body = `<pre>${esc(r.text)}</pre>`;
-  } else if (r.kind === "segmap") {
-    body = `<div class="dets">${r.count} 領域（${r.prompts} 点のプロンプトから重なりを除いたもの）</div>`;
-  } else if (r.kind === "depth" && r.note) {
-    body = `<div class="dets">${esc(r.note)}</div>`;
-  } else if (r.kind === "mask" && r.score != null) {
-    body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
+  const where = m.where === "browser" ? `ブラウザ ・ ${r.device}${r.dtype ? " ・ " + r.dtype : ""}` : `サーバー ・ ${r.device}`;
+  const stats = [
+    ["推論", fmt(r.infer_ms)],
+    r.roundtrip_ms ? ["通信込み", fmt(r.roundtrip_ms)] : null,
+    // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
+    live ? ["fps", live.fps.toFixed(1)] : null,
+    live ? ["推論だけなら", `${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps`] : null,
+    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms)] : null,
+  ].filter(Boolean).map(([k, v]) => `<span class="stat"><small>${k}</small><b>${v}</b></span>`).join("");
+  let bd = "";
+  if (r.breakdown) {
+    const parts = [["取り込み", r.breakdown.grab, "#94a3b8"], ["前処理", r.breakdown.pre, "#f59e0b"], ["モデル実行", r.breakdown.run, "#3b82f6"],
+      ["後処理", r.breakdown.post, "#22c55e"], ["切り出して分類", r.cascade_ms, "#ec4899"]].filter(([, v]) => v != null);
+    const total = parts.reduce((a, [, v]) => a + v, 0) || 1;
+    bd = `<div class="breakdown"><div class="bd-bar">${parts.map(([k, v, c]) => `<i style="width:${(100 * v / total).toFixed(1)}%;background:${c}" title="${k} ${fmt(v)}"></i>`).join("")}</div>`
+      + `<div class="bd-legend">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} ${fmt(v)}</span>`).join("")}</div></div>`;
   }
-  const bd = r.breakdown
-    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}${r.cascade_ms != null ? ` ・ 切り出して分類 ${fmt(r.cascade_ms)}` : ""}</div>`
-    : "";
-  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${bd}${body}`;
+  const body = KINDS[r.kind]?.panel(r, { live, points: state.points.length }) ?? "";
+  $("result").innerHTML = `<div class="result-head"><b>${esc(m.name)}</b><span class="badge ${m.where}">${esc(where)}</span></div>`
+    + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
 }
-
-function summarizeBoxes(items) {
-  const c = {};
-  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
-  return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
-}
-
-const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : ms >= 10 ? `${ms.toFixed(0)}ms` : `${ms.toFixed(1)}ms`);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function addHistory(m, r, summaryOverride) {
   const tr = document.createElement("tr");
   const task = TASKS.find((t) => t.id === m.task).name;
   const where = m.where === "browser" ? `ブラウザ ${r.device}` : `サーバー ${r.device}`;
-  const summary = summaryOverride ?? (r.kind === "boxes" ? `${r.items.length}件` : r.kind === "labels" ? `${r.items[0]?.label ?? ""}` : r.kind === "text" ? r.text.slice(0, 24) + "…" : r.kind);
+  const summary = summaryOverride ?? KINDS[r.kind]?.summary(r) ?? r.kind;
   tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${task}</td><td>${esc(m.name)}</td><td>${where}</td><td>${r.w}×${r.h}</td><td class="num">${fmt(r.load_ms)}</td><td class="num">${fmt(r.infer_ms)}</td><td>${esc(summary)}</td>`;
   $("history").prepend(tr);
 }
@@ -521,7 +409,7 @@ async function runOnce(m, overrides = {}) {
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
   if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
-  await prepareLayer(r);
+  await KINDS[r.kind]?.prepare?.(r);
   state.result = r;
   return r;
 }
@@ -675,7 +563,7 @@ function nextVideoFrame(v) {
 function toggleLive() {
   if (state.live) { stopLive(); return; }
   if (!state.video || !currentModel()) return;
-  if (state.task === "segment" && !state.points.length && !state.auto) { setStatus("先に画面をクリックして点を置くか、「全体を自動分割」を選んでください", "warn"); return; }
+  if (curTask().click && !state.points.length && !state.auto) { setStatus("先に画面をクリックして点を置くか、「全体を自動分割」を選んでください", "warn"); return; }
   state.live = true;
   updateButtons();
   liveLoop();
@@ -731,7 +619,6 @@ async function init() {
     try { if (!(await navigator.gpu.requestAdapter())) $("env").textContent = "WebGPU アダプタなし（WASM で実行）"; } catch { /* noop */ }
   }
   $("server-box").hidden = !state.hasServer;
-  $("prompt").value = DEFAULTS.prompt;
   $("threshold").oninput = () => { $("th-out").textContent = $("threshold").value; };
   $("model").onchange = () => { stopLive(); clearResult(); setStatus(""); updateModelNote(); draw(); };
   $("run").onclick = run;
@@ -769,7 +656,7 @@ async function init() {
   };
   for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
   $("canvas").addEventListener("click", (ev) => {
-    if (state.task !== "segment" || state.auto || (!state.image && !state.video) || state.busy) return;
+    if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;
     const [x, y] = canvasPoint(ev);
     state.points.push([x, y, ev.shiftKey || $("negative").checked ? 0 : 1]);
     draw();

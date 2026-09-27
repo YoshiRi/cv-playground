@@ -48,8 +48,14 @@ body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
 }
-header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; padding: 14px 16px 6px; }
-h1 { font-size: 20px; margin: 0; letter-spacing: .01em; }
+header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; padding: 16px 16px 8px; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { color: var(--text); flex: none; }
+h1 { font-size: 20px; margin: 0; letter-spacing: .01em; line-height: 1.2; }
+.tagline { margin: 2px 0 0; font-size: 13px; color: var(--muted); }
+.header-side { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.env { font-size: 12.5px; color: var(--muted); background: var(--chip); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+a.ghost { text-decoration: none; }
 h2 { font-size: 16px; margin: 0; }
 .muted { color: var(--muted); }
 .small { font-size: 12.5px; }
@@ -111,9 +117,30 @@ canvas { display: block; max-width: 100%; max-height: 70vh; width: auto; height:
 .view-toggle select { width: auto; }
 .video-controls select { width: auto; padding: 4px 6px; }
 
-.result { font-size: 14px; }
-.result .meta { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
-.result pre { white-space: pre-wrap; margin: 0; font: inherit; }
+.result { font-size: 14px; display: flex; flex-direction: column; gap: 10px; }
+.result:empty { display: none; }
+.result-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.result-head b { font-size: 15px; }
+.badge { font-size: 12px; border-radius: 999px; padding: 2px 9px; border: 1px solid var(--line); background: var(--chip); color: var(--muted); }
+.badge.browser { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--accent); }
+.badge.server { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); color: var(--ok); }
+.stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.stat { display: flex; flex-direction: column; min-width: 78px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.stat small { font-size: 11.5px; color: var(--muted); }
+.stat b { font-size: 17px; font-variant-numeric: tabular-nums; }
+.breakdown { display: flex; flex-direction: column; gap: 4px; }
+.bd-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--chip); }
+.bd-bar i { display: block; height: 100%; min-width: 2px; }
+.bd-legend, .chips { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12.5px; color: var(--muted); }
+.bd-legend i, .chip i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.chips { gap: 6px; }
+.chip { color: var(--text); background: var(--chip); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
+.chip b { margin-left: 3px; font-variant-numeric: tabular-nums; }
+.sub { font-size: 13px; color: var(--muted); }
+.legend { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); }
+.legend i { flex: 1; max-width: 260px; height: 10px; border-radius: 5px; }
+.answer { margin: 0; padding: 10px 12px; border-left: 3px solid var(--accent); background: var(--bg); border-radius: 0 8px 8px 0; white-space: pre-wrap; line-height: 1.7; }
+.bar.top span:first-child { font-weight: 600; }
 .bar { display: grid; grid-template-columns: minmax(80px, 180px) 1fr 52px; gap: 8px; align-items: center; margin: 3px 0; font-size: 13.5px; }
 .bar .track { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; }
 .bar .fill { height: 100%; background: var(--accent); }
@@ -132,8 +159,17 @@ th { color: var(--muted); font-weight: 500; }
 </head>
 <body>
   <header>
-    <h1>CV Playground</h1>
-    <div id="env" class="muted"></div>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><rect x="2.5" y="2.5" width="19" height="19" rx="5" fill="none" stroke="currentColor" stroke-width="2"/><rect x="7" y="7" width="10" height="10" rx="2" fill="none" stroke="var(--accent)" stroke-width="2"/><circle cx="12" cy="12" r="1.8" fill="var(--accent)"/></svg>
+      <div>
+        <h1>CV Playground</h1>
+        <p class="tagline">画像認識モデルを、この端末のブラウザとサーバーで動かして比べる</p>
+      </div>
+    </div>
+    <div class="header-side">
+      <div id="env" class="env"></div>
+      <a class="ghost" href="https://github.com/YoshiRi/cv-playground" target="_blank" rel="noopener">GitHub</a>
+    </div>
   </header>
 
   <main>
@@ -615,21 +651,32 @@ const ADAPTERS = {
     },
   },
 
-  // pipeline は候補ごとに別バッチで渡して ONNX（バッチ 1 固定）が落ちるので、公式例どおり "a. b." の1文にする
+  // この ONNX（transformers.js）は、文に候補を並べると先頭の候補しか正しいスコアにならない
+  // （猫の写真で "remote control. cat. sofa." だと cat の最大が 0.09、"cat." だけなら 0.83）。
+  // そこで候補ごとに1回ずつ推論してまとめる（候補の数だけ時間がかかる）。サーバーの base（adapters.py）は1回でよい
   "tjs-gdino": {
     load: async (e, d, pr) => ({
       model: await T.AutoModelForZeroShotObjectDetection.from_pretrained(e.repo, tjsOpts(e, d, pr)),
       proc: await T.AutoProcessor.from_pretrained(e.repo),
     }),
     async run(st, img, p) {
-      const labels = splitLabels(p.labels).map((l) => l.toLowerCase());
-      const inputs = await st.proc(img, labels.map((l) => l + ".").join(" "));
-      const out = await st.model(inputs);
-      const th = p.threshold ?? 0.3;
-      const [r] = st.proc.post_process_grounded_object_detection(out, inputs.input_ids, {
-        box_threshold: th, text_threshold: Math.min(th, 0.25), target_sizes: [[img.height, img.width]],
-      });
-      return { kind: "boxes", items: r.boxes.map((b, i) => ({ label: r.labels[i] || "?", score: r.scores[i], box: b })) };
+      const th = p.threshold ?? 0.3, items = [];
+      for (const label of splitLabels(p.labels).map((l) => l.toLowerCase())) {
+        const inputs = await st.proc(img, label + ".");
+        const out = await st.model(inputs);
+        // 候補の単語の位置（[CLS] の次から、末尾の "." と [SEP] の前まで）で確率の最大を取る
+        const ids = Array.from(inputs.input_ids.data, Number);
+        const toks = ids.map((_, i) => i).filter((i) => i > 0 && i < ids.length - 2 && ![0, 101, 102].includes(ids[i]));
+        const [, Q, Tn] = out.logits.dims, L = out.logits.data, B = out.pred_boxes.data;
+        for (let q = 0; q < Q; q++) {
+          let s = 0;
+          for (const t of toks) s = Math.max(s, sigmoid(L[q * Tn + t]));
+          if (s <= th) continue;
+          const [cx, cy, w, h] = [B[q * 4] * img.width, B[q * 4 + 1] * img.height, B[q * 4 + 2] * img.width, B[q * 4 + 3] * img.height];
+          items.push({ label, score: s, box: [cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2] });
+        }
+      }
+      return { kind: "boxes", items };
     },
   },
 
@@ -836,36 +883,230 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
 
 return { COCO };
 })();
-const { TASKS, MODELS, DEFAULTS, SKELETON } = await (async () => {
-// タスクの一覧と既定値。モデルの一覧は models.json。
+const { CATALOG, TASKS, MODELS, SKELETON } = await (async () => {
+// タブ（tasks）とモデル（models）の定義は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
+const CATALOG = {"_doc": ["UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"], "tasks": [{"id": "detect", "name": "物体検出", "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}}, {"id": "pose", "name": "人物の姿勢", "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}}, {"id": "wholebody", "name": "手・目（PINTO）", "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.35}}, {"id": "zsdetect", "name": "テキスト指定検出", "hint": "英語の名詞をカンマ区切り（例: cat, remote control）", "params": ["labels", "threshold", "track"], "defaults": {"threshold": 0.3, "labels": "person, bus, bag"}}, {"id": "segment", "name": "クリックで切り出し", "hint": "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", "params": ["points"], "click": true}, {"id": "depth", "name": "深度推定", "hint": "赤いほど近い（相対深度）", "params": []}, {"id": "classify", "name": "ゼロショット分類", "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", "params": ["labels"], "defaults": {"labels": "bus, truck, tram, street, office, cat"}}, {"id": "matting", "name": "背景除去", "hint": "前景だけを残す", "params": []}, {"id": "vlm", "name": "画像の説明・質問", "hint": "SmolVLM は英語のみ。日本語は Qwen", "params": ["prompt"], "defaults": {"prompt": "この画像を日本語で詳しく説明してください。"}}], "models": [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}]};
+const TASKS = CATALOG.tasks;
+const MODELS = CATALOG.models;
 
-const TASKS = [
-  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
-  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
-  { id: "wholebody", name: "手・目（PINTO）", hint: "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", params: ["threshold", "track", "cascade"] },
-  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold", "track"] },
-  { id: "segment", name: "クリックで切り出し", hint: "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", params: ["points"] },
-  { id: "depth", name: "深度推定", hint: "赤いほど近い（相対深度）", params: [] },
-  { id: "classify", name: "ゼロショット分類", hint: "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", params: ["labels"] },
-  { id: "matting", name: "背景除去", hint: "前景だけを残す", params: [] },
-  { id: "vlm", name: "画像の説明・質問", hint: "SmolVLM は英語のみ。日本語は Qwen", params: ["prompt"] },
-];
-
-// モデルの一覧は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
-const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}]}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
-
-const DEFAULTS = {
-  threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3, wholebody: 0.35 },
-  labels: { zsdetect: "person, bus, bag", classify: "bus, truck, tram, street, office, cat" },
-  prompt: "この画像を日本語で詳しく説明してください。",
-};
-
-// COCO 17 関節の骨格（YOLO の順番）
+// COCO 17 関節の骨格（YOLO の順番）。左半身・右半身・体幹で色を分ける
 const SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6], [5, 7], [6, 8],
   [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]];
 
+return { CATALOG, TASKS, MODELS, SKELETON };
+})();
+const { esc, labelColor, idColor, TURBO_CSS, KINDS, fmtMs } = await (async () => {
+// 結果の種類（kind）ごとの見せ方。新しい種類の結果を足す時はここに1件足す（書き方は docs/ADDING_UI.md）。
+//
+//   KINDS[kind] = {
+//     views(r)                    → 画面の「表示」で選べる見せ方 [[値, 表示名], ...]（先頭が既定）
+//     prepare?(r)                 → 結果が届いた時に1回だけ呼ぶ（画像の読み込みなど重い下ごしらえ。描画は毎フレームなので）
+//     draw(ctx, r, base, view)    → canvas に描く。base = {src, w, h}（元画像は描画済み）、view = 選ばれた見せ方
+//     panel(r, ctx)               → 結果欄の本文（HTML）。ctx = {live, points}
+//     summary(r)                  → 実行履歴の「結果」欄（短い文字列）
+//   }
+//
+// 結果 r の座標は、推論に渡した画像（r.w × r.h）のピクセル。画面の大きさ（base.w × base.h）へは各 draw で縮尺を合わせる。
 
-return { TASKS, MODELS, DEFAULTS, SKELETON };
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+const pct = (v, d = 0) => `${(v * 100).toFixed(d)}%`;
+
+// ---------- 色 ----------
+
+const PALETTE = ["#3b82f6", "#ec4899", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4", "#ef4444", "#14b8a6", "#eab308", "#6366f1"];
+const labelColor = (label) => PALETTE[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % PALETTE.length];
+const idColor = (id) => `hsl(${(id * 137.508) % 360} 80% 55%)`;
+// 姿勢の骨格: 左半身（奇数の関節）・右半身（偶数）・体幹で色を分ける
+const LIMB = { left: "#38bdf8", right: "#fb923c", center: "#a3e635" };
+const limbColor = ([a, b]) => (a >= 5 && b >= 5 && a % 2 === 1 && b % 2 === 1 ? LIMB.left : a >= 5 && b >= 5 && a % 2 === 0 && b % 2 === 0 ? LIMB.right : LIMB.center);
+
+// ---------- 描画の部品 ----------
+
+function loadImg(src) {
+  const url = src instanceof Blob ? URL.createObjectURL(src) : src;
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => { if (src instanceof Blob) URL.revokeObjectURL(url); res(i); };
+    i.onerror = rej;
+    i.src = url;
+  });
+}
+
+// グレースケールの結果画像を、画素ごとの関数で色付きの層にする
+async function layerFrom(src, fn) {
+  const img = await loadImg(src), w = img.naturalWidth, h = img.naturalHeight;
+  const c = new OffscreenCanvas(w, h), x = c.getContext("2d");
+  x.drawImage(img, 0, 0);
+  if (fn) {
+    const d = x.getImageData(0, 0, w, h);
+    for (let i = 0; i < d.data.length; i += 4) fn(d.data, i, d.data[i] / 255);
+    x.putImageData(d, 0, 0);
+  }
+  return c;
+}
+
+// 深度の色（turbo の近似。赤＝近い、青＝遠い）
+function turbo(t) {
+  const r = 0.13572138 + t * (4.6153926 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
+  const g = 0.09140261 + t * (2.19418839 + t * (4.84296658 + t * (-14.18503333 + t * (4.27729857 + t * 2.82956604))));
+  const b = 0.1066733 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
+  return [255 * clamp01(r), 255 * clamp01(g), 255 * clamp01(b)];
+}
+const TURBO_CSS = `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1].map((t) => `rgb(${turbo(t).map(Math.round).join(",")})`).join(", ")})`;
+
+function checker(ctx, w, h) {
+  const s = Math.max(8, Math.round(w / 60));
+  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
+    ctx.fillStyle = ((x / s + y / s) & 1) ? "#d0d4da" : "#f2f4f7";
+    ctx.fillRect(x, y, s, s);
+  }
+}
+
+// 枠のラベル（角丸の札。枠が画面の上端にかかる時は枠の内側に置く）
+function tag(ctx, x, y, text, color, size) {
+  ctx.font = `600 ${size}px system-ui, -apple-system, "Hiragino Sans", sans-serif`;
+  const pad = size * 0.35, tw = ctx.measureText(text).width + pad * 2, th = size + pad * 1.2;
+  const ty = y - th < 0 ? y : y - th;
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, ty, tw, th, size * 0.3); ctx.fill();
+  ctx.fillStyle = "#fff"; ctx.textBaseline = "middle";
+  ctx.fillText(text, x + pad, ty + th / 2 + 1);
+}
+
+function drawPose(ctx, kps, lw) {
+  // 可視度が出ているモデルでは、見えていない関節（< 0.3）を描かない
+  const hasVis = kps.some(([, , v]) => v > 0.05), ok = (k) => !hasVis || k[2] >= 0.3;
+  ctx.lineCap = "round";
+  for (const pair of SKELETON) {
+    const [a, b] = pair;
+    if (!ok(kps[a]) || !ok(kps[b])) continue;
+    ctx.strokeStyle = limbColor(pair); ctx.lineWidth = lw * 1.4;
+    ctx.beginPath(); ctx.moveTo(kps[a][0], kps[a][1]); ctx.lineTo(kps[b][0], kps[b][1]); ctx.stroke();
+  }
+  for (const k of kps) {
+    if (!ok(k)) continue;
+    ctx.beginPath(); ctx.arc(k[0], k[1], lw * 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = "#fff"; ctx.fill(); ctx.lineWidth = lw * 0.8; ctx.strokeStyle = "#111"; ctx.stroke();
+  }
+}
+
+let cutCanvas = null;
+
+// ---------- 種類ごとの見せ方 ----------
+
+const KINDS = {
+  // 枠（検出・姿勢・追跡）: items: [{label, score, box, keypoints?, id?, trail?, state?}]
+  boxes: {
+    views: () => [["overlay", "重ねる"], ["only", "結果だけ"], ["original", "元画像"]],
+    draw(ctx, r, b, view) {
+      if (view === "only") { ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h); }
+      const sx = b.w / r.w, sy = b.h / r.h, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
+      for (const it of r.items) {
+        const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
+        const col = it.id != null ? idColor(it.id) : labelColor(it.label);
+        if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
+          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = 0.8; ctx.beginPath();
+          it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));
+          ctx.stroke(); ctx.globalAlpha = 1;
+        }
+        // 暗い縁取りの上に色の線を重ねて、明るい背景でも見えるように
+        ctx.lineWidth = lw + 2; ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        if (it.keypoints) drawPose(ctx, it.keypoints.map(([x, y, v]) => [x * sx, y * sy, v]), lw);
+        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${pct(it.score)}${it.state ? " · " + it.state : ""}`;
+        tag(ctx, x1, y1, text, col, size);
+      }
+    },
+    panel(r, { live }) {
+      const chips = countBy(r.items).map(([k, v]) => `<span class="chip"><i style="background:${labelColor(k.split("（")[0])}"></i>${esc(k)} <b>${v}</b></span>`).join("") || `<span class="muted">検出なし</span>`;
+      const track = live?.ids ? `<div class="sub">追跡中 ${r.items.length} 件 ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}${r.reid_ms != null ? ` ・ ReID ${fmtMs(r.reid_ms)}` : ""}）</div>` : "";
+      return `<div class="chips">${chips}</div>${track}`;
+    },
+    summary: (r) => `${r.items.length}件`,
+  },
+
+  // マスク（クリックで切り出し・背景除去）: mask = 白が前景の画像、cutout = 背景除去の時 true
+  mask: {
+    views: (r) => (r.cutout
+      ? [["cutout", "切り抜き"], ["only", "マスクだけ（白黒）"], ["original", "元画像"]]
+      : [["overlay", "重ねる"], ["only", "マスクだけ（白黒）"], ["cutout", "切り抜き"], ["original", "元画像"]]),
+    async prepare(r) {
+      r.gray = await layerFrom(r.mask, (d, i) => { d[i + 1] = d[i + 2] = d[i]; d[i + 3] = 255; });   // 白＝前景
+      r.alpha = await layerFrom(r.mask, (d, i) => { d[i + 3] = d[i]; });                               // 前景の度合い＝不透明度
+      r.tint = await layerFrom(r.mask, (d, i, t) => { d[i] = 59; d[i + 1] = 130; d[i + 2] = 246; d[i + 3] = t > 0.5 ? 130 : 0; });
+    },
+    draw(ctx, r, b, view) {
+      if (view === "only") { ctx.drawImage(r.gray, 0, 0, b.w, b.h); return; }
+      if (view === "overlay") { ctx.drawImage(r.tint, 0, 0, b.w, b.h); return; }
+      // 切り抜き: 前景の度合いを不透明度にした層へ、今の画像を source-in で重ねる（動画でも毎フレーム軽い）
+      if (!cutCanvas || cutCanvas.width !== b.w || cutCanvas.height !== b.h) cutCanvas = new OffscreenCanvas(b.w, b.h);
+      const x = cutCanvas.getContext("2d");
+      x.globalCompositeOperation = "copy"; x.drawImage(r.alpha, 0, 0, b.w, b.h);
+      x.globalCompositeOperation = "source-in"; x.drawImage(b.src, 0, 0, b.w, b.h);
+      checker(ctx, b.w, b.h);
+      ctx.drawImage(cutCanvas, 0, 0);
+    },
+    panel: (r, { points }) => (r.score != null ? `<div class="sub">マスクの推定品質 ${pct(r.score)}（点 ${points} 個）</div>` : ""),
+    summary: (r) => (r.cutout ? "背景除去" : "マスク"),
+  },
+
+  // 深度: image = 明るいほど近いグレースケール
+  depth: {
+    views: () => [["only", "深度だけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+    async prepare(r) {
+      r.layer = await layerFrom(r.image, (d, i, t) => { const [cr, cg, cb] = turbo(t); d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = 255; });
+    },
+    draw(ctx, r, b, view) {
+      ctx.globalAlpha = view === "overlay" ? 0.55 : 1;
+      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
+      ctx.globalAlpha = 1;
+    },
+    panel: (r) => `<div class="legend"><span>遠い</span><i style="background:${TURBO_CSS}"></i><span>近い</span></div>${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}`,
+    summary: () => "深度",
+  },
+
+  // 全体の自動分割: image = 領域ごとに色分けした画像（透明＝どの領域でもない）
+  segmap: {
+    views: () => [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+    async prepare(r) { r.layer = await layerFrom(r.image); },
+    draw(ctx, r, b, view) {
+      if (view === "only") { ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h); }
+      ctx.globalAlpha = view === "overlay" ? 0.6 : 1;
+      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
+      ctx.globalAlpha = 1;
+    },
+    panel: (r) => `<div class="sub">${r.count} 領域（${r.prompts} 点のプロンプトから、品質の良いマスクを重なりを除いて残したもの）</div>`,
+    summary: (r) => `${r.count}領域`,
+  },
+
+  // 分類: items: [{label, score, abs?}]（score の大きい順）
+  labels: {
+    views: () => [],
+    draw() {},
+    panel: (r) => r.items.map((it, i) => `<div class="bar${i === 0 ? " top" : ""}"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${pct(it.score, 1)}"></span></span><span class="num">${pct(it.score, 1)}</span></div>`).join("")
+      + (r.items[0]?.abs != null ? `<div class="sub">モデルの絶対スコア: ${r.items.map((it) => `${esc(it.label)} ${pct(it.abs, 1)}`).join("、")}</div>` : ""),
+    summary: (r) => r.items[0]?.label ?? "",
+  },
+
+  // 文章（画像の説明・質問）
+  text: {
+    views: () => [],
+    draw() {},
+    panel: (r) => `<blockquote class="answer">${esc(r.text)}</blockquote>`,
+    summary: (r) => r.text.slice(0, 24) + "…",
+  },
+};
+
+function countBy(items) {
+  const c = {};
+  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
+  return Object.entries(c).sort((a, b) => b[1] - a[1]);
+}
+
+const fmtMs = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : ms >= 10 ? `${ms.toFixed(0)}ms` : `${ms.toFixed(1)}ms`);
+
+return { esc, labelColor, idColor, TURBO_CSS, KINDS, fmtMs };
 })();
 const { TRACKER_DEFAULTS, Tracker } = await (async () => {
 // 複数物体追跡（ByteTrack / BoT-SORT）。Ultralytics の実装（ultralytics/trackers、2026-09 の main）を JS に移したもの。
@@ -1222,6 +1463,7 @@ class Tracker {
 return { TRACKER_DEFAULTS, Tracker };
 })();
 (async () => {
+const fmt = fmtMs;
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -1364,9 +1606,10 @@ function selectTask(id) {
   $("task-hint").textContent = t.hint;
   for (const el of document.querySelectorAll("[data-param]")) el.hidden = !t.params.includes(el.dataset.param);
   $("track-hint").hidden = !t.params.includes("track") || !$("tracker").value;
-  if (DEFAULTS.threshold[id]) { $("threshold").value = DEFAULTS.threshold[id]; $("th-out").textContent = DEFAULTS.threshold[id]; }
-  if (DEFAULTS.labels[id]) $("labels").value = DEFAULTS.labels[id];
-  $("canvas-wrap").classList.toggle("clickable", id === "segment");
+  const def = t.defaults || {};
+  if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
+  if (def.labels) $("labels").value = def.labels;
+  $("canvas-wrap").classList.toggle("clickable", !!t.click);
 
   const sel = $("model");
   sel.innerHTML = "";
@@ -1393,15 +1636,19 @@ function selectTask(id) {
   draw();
 }
 
+const curTask = () => TASKS.find((t) => t.id === state.task);
+
 function currentModel() {
   return variants(state.task).find((v) => v.id === $("model").value);
 }
 
-const DEFAULT_PROMPTS = new Set([DEFAULTS.prompt, ...MODELS.filter((x) => x.prompt).map((x) => x.prompt)]);
+// 質問欄は、既定の文のままならモデルごとの既定（models.json の prompt、無ければタスクの defaults.prompt）に入れ替える
+const TASK_PROMPT = (task) => TASKS.find((t) => t.id === task)?.defaults?.prompt || "";
+const DEFAULT_PROMPTS = new Set([...TASKS.map((t) => t.defaults?.prompt), ...MODELS.map((x) => x.prompt)].filter(Boolean));
 function updateModelNote() {
   const m = currentModel();
   if (!m) return;
-  if (DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || DEFAULTS.prompt;
+  if (!$("prompt").value || DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || TASK_PROMPT(m.task);
   const notes = [];
   notes.push(m.repo || m.onnx?.repo || m.ollama || "");
   notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
@@ -1413,11 +1660,12 @@ function updateModelNote() {
   $("cascade").innerHTML = (m.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
-  $("model-note").textContent = notes.join(" / ");
+  $("model-note").textContent = notes.filter(Boolean).join(" / ");
 }
 
 function updateButtons() {
-  $("run").hidden = state.task === "segment" && !state.video && !state.auto;
+  // クリックで点を置くタスク（tasks[].click）は、静止画ではクリックが実行の合図なので実行ボタンを出さない
+  $("run").hidden = !!curTask().click && !state.video && !state.auto;
   $("auto").checked = state.auto;
   $("run").textContent = state.video ? "今のフレームで1回実行" : "実行";
   $("video-controls").hidden = !state.video;
@@ -1526,40 +1774,24 @@ async function grabFrame(forServer) {
   return { image, key };
 }
 
-// ---------- 描画 ----------
-
-function loadImg(url) {
-  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
-}
-
-const COLORS = ["#2f6fdf", "#e0457b", "#16a34a", "#f59e0b", "#8b5cf6", "#0ea5e9", "#ef4444", "#14b8a6"];
-const colorOf = (label) => COLORS[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
-const idColor = (id) => `hsl(${(id * 137.508) % 360} 75% 50%)`;
+// ---------- 描画（結果の種類ごとの描き方は renderers.js） ----------
 
 function baseSource() {
   if (state.video) { const [w, h] = videoSize(DISPLAY_SIDE); return w ? { src: $("video"), w, h } : null; }
   return state.image ? { src: state.image.bitmap, w: state.image.width, h: state.image.height } : null;
 }
 
-// 結果の見せ方。種類ごとに選べる表示と、最初の既定（先頭）
-const VIEWS = {
-  boxes: [["overlay", "重ねる"], ["only", "結果だけ"], ["original", "元画像"]],
-  mask: [["overlay", "重ねる"], ["only", "マスクだけ（白黒）"], ["cutout", "切り抜き"], ["original", "元画像"]],
-  cutout: [["cutout", "切り抜き"], ["only", "マスクだけ（白黒）"], ["original", "元画像"]],
-  depth: [["only", "深度だけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
-  segmap: [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
-};
-const viewKind = (r) => (r.kind === "mask" && r.cutout ? "cutout" : r.kind);
-let shownKind = null;
+// 「表示」の選択肢は結果の種類ごと（KINDS[kind].views）。同じ種類の結果が続く間は選んだ見せ方を保つ
+let shownViews = "";
 function updateViewSelect() {
-  const r = state.result, kind = r && VIEWS[viewKind(r)] ? viewKind(r) : null;
-  $("view-toggle").hidden = !kind;
-  if (!kind || kind === shownKind) return;
-  shownKind = kind;
-  $("view").innerHTML = VIEWS[kind].map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+  const r = state.result, views = r ? KINDS[r.kind]?.views(r) ?? [] : [];
+  $("view-toggle").hidden = !views.length;
+  const key = views.map(([v]) => v).join();
+  if (key === shownViews) return;
+  shownViews = key;
+  $("view").innerHTML = views.map(([v, t]) => `<option value="${v}">${esc(t)}</option>`).join("");
 }
 
-let cutCanvas = null;
 function draw() {
   const cv = $("canvas");
   const ctx = cv.getContext("2d");
@@ -1568,51 +1800,11 @@ function draw() {
   if (cv.width !== b.w || cv.height !== b.h) { cv.width = b.w; cv.height = b.h; }
   const r = state.result;
   updateViewSelect();
-  const view = r ? $("view").value : "original";
-  const lw = Math.max(2, b.w / 400);
   ctx.globalAlpha = 1;
   ctx.drawImage(b.src, 0, 0, b.w, b.h);
-
-  if (r && view !== "original") {
-    if (view === "only" && ["boxes", "segmap", "mask"].includes(r.kind)) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, b.w, b.h); }
-    if (r.kind === "depth" || r.kind === "segmap") {
-      ctx.globalAlpha = view === "overlay" ? 0.55 : 1;
-      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
-      ctx.globalAlpha = 1;
-    } else if (r.kind === "mask" && view === "cutout") {
-      // 前景の度合いを不透明度にした層へ、今の画像を source-in で重ねて切り抜く（動画でも毎フレーム軽い）
-      if (!cutCanvas || cutCanvas.width !== b.w || cutCanvas.height !== b.h) cutCanvas = new OffscreenCanvas(b.w, b.h);
-      const x = cutCanvas.getContext("2d");
-      x.globalCompositeOperation = "copy";
-      x.drawImage(r.alpha, 0, 0, b.w, b.h);
-      x.globalCompositeOperation = "source-in";
-      x.drawImage(b.src, 0, 0, b.w, b.h);
-      drawChecker(ctx, b.w, b.h);
-      ctx.drawImage(cutCanvas, 0, 0);
-    } else if (r.kind === "mask") {
-      ctx.drawImage(view === "only" ? r.gray : r.tint, 0, 0, b.w, b.h);
-    } else if (r.kind === "boxes") {
-      const sx = b.w / r.w, sy = b.h / r.h;
-      ctx.font = `${Math.max(12, b.w / 60)}px system-ui, sans-serif`;
-      ctx.textBaseline = "top";
-      for (const it of r.items) {
-        const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
-        const col = it.id != null ? idColor(it.id) : colorOf(it.label);
-        if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
-          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
-          it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));
-          ctx.stroke();
-        }
-        ctx.strokeStyle = col; ctx.lineWidth = lw;
-        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}${it.state ? " " + it.state : ""}`;
-        const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
-        ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
-        ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
-        if (it.keypoints) drawPose(ctx, it.keypoints.map(([x, y, s]) => [x * sx, y * sy, s]), lw);
-      }
-    }
-  }
+  const view = $("view").value;
+  if (r && KINDS[r.kind] && view !== "original" && !$("view-toggle").hidden) KINDS[r.kind].draw(ctx, r, b, view);
+  const lw = Math.max(2, b.w / 400);
   for (const [x, y, l] of state.points) {
     ctx.beginPath(); ctx.arc(x, y, lw * 3, 0, Math.PI * 2);
     ctx.fillStyle = l ? "#16a34a" : "#ef4444"; ctx.fill();
@@ -1620,98 +1812,35 @@ function draw() {
   }
 }
 
-function drawPose(ctx, kps, lw) {
-  ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = lw;
-  for (const [a, b] of SKELETON) {
-    ctx.beginPath(); ctx.moveTo(kps[a][0], kps[a][1]); ctx.lineTo(kps[b][0], kps[b][1]); ctx.stroke();
-  }
-  ctx.fillStyle = "#e0457b";
-  for (const [x, y] of kps) { ctx.beginPath(); ctx.arc(x, y, lw * 1.6, 0, Math.PI * 2); ctx.fill(); }
-}
-
-// 結果の画像（マスク・深度・色分け）は届いた時に1回だけ表示用の層に変換しておく（描画は毎フレームなので）
-async function prepareLayer(r) {
-  const src = r.kind === "mask" ? r.mask : r.image;
-  if (!src || !["mask", "depth", "segmap"].includes(r.kind)) return;
-  const url = src instanceof Blob ? URL.createObjectURL(src) : src;
-  const img = await loadImg(url);
-  if (src instanceof Blob) URL.revokeObjectURL(url);
-  const w = img.naturalWidth, h = img.naturalHeight;
-  const layer = (fn) => {
-    const c = new OffscreenCanvas(w, h), x = c.getContext("2d");
-    x.drawImage(img, 0, 0);
-    if (!fn) return c;
-    const d = x.getImageData(0, 0, w, h);
-    for (let i = 0; i < d.data.length; i += 4) fn(d.data, i, d.data[i] / 255);
-    x.putImageData(d, 0, 0);
-    return c;
-  };
-  if (r.kind === "segmap") { r.layer = layer(); return; }
-  if (r.kind === "depth") { // jet。赤＝近い、青＝遠い
-    r.layer = layer((d, i, t) => {
-      d[i] = 255 * clamp01(1.5 - Math.abs(4 * t - 3)); d[i + 1] = 255 * clamp01(1.5 - Math.abs(4 * t - 2));
-      d[i + 2] = 255 * clamp01(1.5 - Math.abs(4 * t - 1)); d[i + 3] = 255;
-    });
-    return;
-  }
-  r.gray = layer((d, i) => { d[i + 1] = d[i + 2] = d[i]; d[i + 3] = 255; });                  // 白＝前景
-  r.alpha = layer((d, i) => { d[i + 3] = d[i]; });                                           // 前景の度合い＝不透明度
-  r.tint = layer((d, i, t) => { d[i] = 47; d[i + 1] = 111; d[i + 2] = 223; d[i + 3] = t > 0.5 ? 120 : 0; });
-}
-const clamp01 = (v) => Math.min(1, Math.max(0, v));
-
-function drawChecker(ctx, w, h) {
-  const s = Math.max(8, Math.round(w / 60));
-  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
-    ctx.fillStyle = ((x / s + y / s) & 1) ? "#d0d4da" : "#f2f4f7";
-    ctx.fillRect(x, y, s, s);
-  }
-}
-
+// 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
 function renderResult(m, r, live) {
-  const el = $("result");
-  const where = m.where === "browser" ? `ブラウザ（${r.device}, ${r.dtype}）` : `サーバー（${r.device}）`;
-  const net = r.roundtrip_ms ? ` / 通信込み ${fmt(r.roundtrip_ms)}` : "";
-  // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
-  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
-  let body = "";
-  if (r.kind === "boxes" && live?.ids) {
-    const reidNote = r.reid_ms != null ? ` ・ ReID ${fmt(r.reid_ms)}` : "";
-    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}${reidNote}）</div>`;
-  } else if (r.kind === "boxes") {
-    body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
-  } else if (r.kind === "labels") {
-    body = r.items.map((it) => `<div class="bar"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${(it.score * 100).toFixed(1)}%"></span></span><span class="num">${(it.score * 100).toFixed(1)}%</span></div>`).join("")
-      + (r.items[0]?.abs != null ? `<div class="dets">絶対スコア: ${r.items.map((it) => `${esc(it.label)} ${(it.abs * 100).toFixed(1)}%`).join("、")}</div>` : "");
-  } else if (r.kind === "text") {
-    body = `<pre>${esc(r.text)}</pre>`;
-  } else if (r.kind === "segmap") {
-    body = `<div class="dets">${r.count} 領域（${r.prompts} 点のプロンプトから重なりを除いたもの）</div>`;
-  } else if (r.kind === "depth" && r.note) {
-    body = `<div class="dets">${esc(r.note)}</div>`;
-  } else if (r.kind === "mask" && r.score != null) {
-    body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
+  const where = m.where === "browser" ? `ブラウザ ・ ${r.device}${r.dtype ? " ・ " + r.dtype : ""}` : `サーバー ・ ${r.device}`;
+  const stats = [
+    ["推論", fmt(r.infer_ms)],
+    r.roundtrip_ms ? ["通信込み", fmt(r.roundtrip_ms)] : null,
+    // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
+    live ? ["fps", live.fps.toFixed(1)] : null,
+    live ? ["推論だけなら", `${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps`] : null,
+    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms)] : null,
+  ].filter(Boolean).map(([k, v]) => `<span class="stat"><small>${k}</small><b>${v}</b></span>`).join("");
+  let bd = "";
+  if (r.breakdown) {
+    const parts = [["取り込み", r.breakdown.grab, "#94a3b8"], ["前処理", r.breakdown.pre, "#f59e0b"], ["モデル実行", r.breakdown.run, "#3b82f6"],
+      ["後処理", r.breakdown.post, "#22c55e"], ["切り出して分類", r.cascade_ms, "#ec4899"]].filter(([, v]) => v != null);
+    const total = parts.reduce((a, [, v]) => a + v, 0) || 1;
+    bd = `<div class="breakdown"><div class="bd-bar">${parts.map(([k, v, c]) => `<i style="width:${(100 * v / total).toFixed(1)}%;background:${c}" title="${k} ${fmt(v)}"></i>`).join("")}</div>`
+      + `<div class="bd-legend">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} ${fmt(v)}</span>`).join("")}</div></div>`;
   }
-  const bd = r.breakdown
-    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}${r.cascade_ms != null ? ` ・ 切り出して分類 ${fmt(r.cascade_ms)}` : ""}</div>`
-    : "";
-  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${bd}${body}`;
+  const body = KINDS[r.kind]?.panel(r, { live, points: state.points.length }) ?? "";
+  $("result").innerHTML = `<div class="result-head"><b>${esc(m.name)}</b><span class="badge ${m.where}">${esc(where)}</span></div>`
+    + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
 }
-
-function summarizeBoxes(items) {
-  const c = {};
-  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
-  return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
-}
-
-const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : ms >= 10 ? `${ms.toFixed(0)}ms` : `${ms.toFixed(1)}ms`);
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function addHistory(m, r, summaryOverride) {
   const tr = document.createElement("tr");
   const task = TASKS.find((t) => t.id === m.task).name;
   const where = m.where === "browser" ? `ブラウザ ${r.device}` : `サーバー ${r.device}`;
-  const summary = summaryOverride ?? (r.kind === "boxes" ? `${r.items.length}件` : r.kind === "labels" ? `${r.items[0]?.label ?? ""}` : r.kind === "text" ? r.text.slice(0, 24) + "…" : r.kind);
+  const summary = summaryOverride ?? KINDS[r.kind]?.summary(r) ?? r.kind;
   tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${task}</td><td>${esc(m.name)}</td><td>${where}</td><td>${r.w}×${r.h}</td><td class="num">${fmt(r.load_ms)}</td><td class="num">${fmt(r.infer_ms)}</td><td>${esc(summary)}</td>`;
   $("history").prepend(tr);
 }
@@ -1743,7 +1872,7 @@ async function runOnce(m, overrides = {}) {
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
   if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
-  await prepareLayer(r);
+  await KINDS[r.kind]?.prepare?.(r);
   state.result = r;
   return r;
 }
@@ -1897,7 +2026,7 @@ function nextVideoFrame(v) {
 function toggleLive() {
   if (state.live) { stopLive(); return; }
   if (!state.video || !currentModel()) return;
-  if (state.task === "segment" && !state.points.length && !state.auto) { setStatus("先に画面をクリックして点を置くか、「全体を自動分割」を選んでください", "warn"); return; }
+  if (curTask().click && !state.points.length && !state.auto) { setStatus("先に画面をクリックして点を置くか、「全体を自動分割」を選んでください", "warn"); return; }
   state.live = true;
   updateButtons();
   liveLoop();
@@ -1953,7 +2082,6 @@ async function init() {
     try { if (!(await navigator.gpu.requestAdapter())) $("env").textContent = "WebGPU アダプタなし（WASM で実行）"; } catch { /* noop */ }
   }
   $("server-box").hidden = !state.hasServer;
-  $("prompt").value = DEFAULTS.prompt;
   $("threshold").oninput = () => { $("th-out").textContent = $("threshold").value; };
   $("model").onchange = () => { stopLive(); clearResult(); setStatus(""); updateModelNote(); draw(); };
   $("run").onclick = run;
@@ -1991,7 +2119,7 @@ async function init() {
   };
   for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
   $("canvas").addEventListener("click", (ev) => {
-    if (state.task !== "segment" || state.auto || (!state.image && !state.video) || state.busy) return;
+    if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;
     const [x, y] = canvasPoint(ev);
     state.points.push([x, y, ev.shiftKey || $("negative").checked ? 0 : 1]);
     draw();

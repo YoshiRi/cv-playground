@@ -270,7 +270,7 @@ self.onmessage = async (ev) => {
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
     result.device = device;
-    result.dtype = e.adapter === "onnx" ? "onnxruntime-web" : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}` : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

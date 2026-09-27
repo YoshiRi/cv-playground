@@ -71,7 +71,8 @@ function runInBrowser(model, image, params) {
     pending.set(id, { resolve, reject });
     const lib = workerLib(model);
     const transfer = image instanceof ImageBitmap ? [image] : [];
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model, image, params }, transfer);
+    const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt }, image, params }, transfer);
   });
 }
 
@@ -179,6 +180,7 @@ function updateModelNote() {
   if (m.where === "browser" && m.mb >= 500) notes.push("初回のダウンロードが大きい。モバイル回線では注意");
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.avoid) notes.push(m.avoid);
+  $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
   if (m.note) notes.push(m.note);
   $("model-note").textContent = notes.join(" / ");
 }
@@ -251,7 +253,7 @@ async function startVideoCommon() {
   state.video = true;
   clearResult();
   updateButtons();
-  requestAnimationFrame(videoLoop);
+  videoLoop();
 }
 
 function stopVideo() {
@@ -271,11 +273,14 @@ function videoSize(side) {
 }
 const inferSize = () => (state.video ? videoSize(+$("infer-size").value) : [state.image.width, state.image.height]);
 
-// 動画は非表示の <video> を毎フレーム canvas に描き、最後の結果を重ねる
+// 動画は非表示の <video> のフレームを canvas に描き、最後の結果を重ねる。
+// 描くのは新しい動画フレームが来た時だけ（画面の更新ごとに描くと、120Hz のスマホでは 30fps のカメラでも毎秒120回描いて
+// 推論と GPU を取り合う）。requestVideoFrameCallback が無いブラウザは画面の更新ごと
 function videoLoop() {
   if (!state.video) return;
   draw();
-  requestAnimationFrame(videoLoop);
+  const v = $("video");
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(videoLoop); else requestAnimationFrame(videoLoop);
 }
 
 // 推論に渡す1枚。ブラウザ実行は ImageBitmap（速い）、サーバー実行は JPEG
@@ -456,7 +461,10 @@ function renderResult(m, r, live) {
   } else if (r.kind === "mask" && r.score != null) {
     body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
   }
-  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${body}`;
+  const bd = r.breakdown
+    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}</div>`
+    : "";
+  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${bd}${body}`;
 }
 
 function summarizeBoxes(items) {
@@ -465,7 +473,7 @@ function summarizeBoxes(items) {
   return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
 }
 
-const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`);
+const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : ms >= 10 ? `${ms.toFixed(0)}ms` : `${ms.toFixed(1)}ms`);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function addHistory(m, r, summaryOverride) {
@@ -495,11 +503,14 @@ function paramsFor(key, w, auto) {
 // 1回分。結果を state.result に入れ、描画用の層を用意する
 async function runOnce(m, overrides = {}) {
   const [w, h] = inferSize();
+  const tg = performance.now();
   const { image, key } = await grabFrame(m.where === "server");
+  const grabMs = performance.now() - tg;
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
+  if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
   await prepareLayer(r);
   state.result = r;
   return r;
@@ -565,6 +576,7 @@ async function liveLoop() {
       inferSum += r.infer_ms;
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
       renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
+      if ($("video").paused) draw();
     }
   } catch (e) {
     failed(m, e);
@@ -667,6 +679,7 @@ async function init() {
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
   $("view").onchange = draw;
+  $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("tracker").onchange = () => {
     $("track-hint").hidden = !$("tracker").value;
     if ($("tracker").value) { $("threshold").value = 0.25; $("th-out").textContent = "0.25"; }

@@ -22,6 +22,14 @@
         <select id="model"></select>
       </label>
       <div class="model-note muted" id="model-note"></div>
+      <label class="field row" id="ort-opt-row" hidden>実行設定
+        <select id="ort-opt">
+          <option value="">標準（fp32）</option>
+          <option value="fp16">fp16（モデルに fp16 版がある時）</option>
+          <option value="fp16-graph">fp16 + graph capture</option>
+          <option value="graph">fp32 + graph capture</option>
+        </select>
+      </label>
 
       <div id="params">
         <label class="field" data-param="labels">候補（カンマ区切り）

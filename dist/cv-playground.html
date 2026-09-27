@@ -145,6 +145,14 @@ th { color: var(--muted); font-weight: 500; }
         <select id="model"></select>
       </label>
       <div class="model-note muted" id="model-note"></div>
+      <label class="field row" id="ort-opt-row" hidden>実行設定
+        <select id="ort-opt">
+          <option value="">標準（fp32）</option>
+          <option value="fp16">fp16（モデルに fp16 版がある時）</option>
+          <option value="fp16-graph">fp16 + graph capture</option>
+          <option value="graph">fp32 + graph capture</option>
+        </select>
+      </label>
 
       <div id="params">
         <label class="field" data-param="labels">候補（カンマ区切り）
@@ -275,14 +283,37 @@ async function fetchModelFile(url, onProgress) {
   return buf;
 }
 
+// 実行設定（e.opt）: "fp16" は onnx.file_fp16 の版を使う。"graph" を含むと WebGPU の graph capture（2回目以降は
+// 記録した GPU コマンドをまとめて流すので、層ごとの発行の手間が減る）。graph capture は入出力を GPU 上に置く必要がある
 async function onnxLoad(ort, e, device, onProgress) {
   const base = `${HF}/${e.onnx.repo}/resolve/main/`;
-  const model = await fetchModelFile(base + e.onnx.file, onProgress);
+  const opt = device === "webgpu" ? e.opt || "" : "";
+  const file = opt.startsWith("fp16") && e.onnx.file_fp16 ? e.onnx.file_fp16 : e.onnx.file;
+  const model = await fetchModelFile(base + file, onProgress);
   const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
   if (e.onnx.data) {
     opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
   }
-  return ort.InferenceSession.create(model, opts);
+  const graph = opt.includes("graph");
+  if (graph) Object.assign(opts, { preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
+  const session = await ort.InferenceSession.create(model, opts);
+  return Object.assign(session, { cvpg: { graph, file, gpuInput: null } });
+}
+
+// graph capture の時は入力を毎回同じ GPU バッファに書き込み、出力は GPU から読み戻す
+async function runSession(ort, session, name, tensor) {
+  const g = session.cvpg;
+  if (!g?.graph) return session.run({ [name]: tensor });
+  const dev = ort.env.webgpu.device;
+  if (!g.gpuInput || g.gpuInput.size !== tensor.data.byteLength) {
+    g.gpuInput = dev.createBuffer({ size: tensor.data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    g.feed = ort.Tensor.fromGpuBuffer(g.gpuInput, { dataType: "float32", dims: tensor.dims });
+  }
+  dev.queue.writeBuffer(g.gpuInput, 0, tensor.data);
+  const out = await session.run({ [name]: g.feed });
+  const cpu = {};
+  for (const [k, t] of Object.entries(out)) cpu[k] = { data: await t.getData(true), dims: t.dims };
+  return cpu;
 }
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
@@ -318,7 +349,11 @@ function preprocess(ort, bitmap, pre) {
   const px = x.getImageData(0, 0, iw, ih).data, n = iw * ih;
   const out = new Float32Array(3 * n), s = pre.scale ?? 1 / 255;
   const mean = pre.mean || [0, 0, 0], std = pre.std || [1, 1, 1];
-  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) out[k * n + i] = (px[i * 4 + k] * s - mean[k]) / std[k];
+  // (画素 × scale − mean) / std = 画素 × a + b を、チャンネルごとに1回のループで
+  for (let k = 0; k < 3; k++) {
+    const a = s / std[k], b = -mean[k] / std[k], o = k * n;
+    for (let i = 0; i < n; i++) out[o + i] = px[i * 4 + k] * a + b;
+  }
   const dims = [1, 3, ih, iw];
   for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
   return { tensor: new ort.Tensor("float32", out, dims), meta: { ...meta, W, H } };
@@ -409,9 +444,15 @@ async function onnxEmbed(ort, session, e, bitmaps) {
 }
 
 async function onnxRun(ort, session, e, bitmap, params) {
+  const t0 = performance.now();
   const { tensor, meta } = preprocess(ort, bitmap, e.pre);
-  const out = await session.run({ [e.pre.input]: tensor });
-  return POST[e.post.type](out, meta, e.post, params);
+  const t1 = performance.now();
+  const out = await runSession(ort, session, e.pre.input, tensor);
+  const t2 = performance.now();
+  const res = await POST[e.post.type](out, meta, e.post, params);
+  // 内訳（端末ごとにどこが重いかを見る）: 前処理（縮小・正規化）/ ONNX の実行（GPU との転送を含む）/ 後処理
+  res.breakdown = { pre: t1 - t0, run: t2 - t1, post: performance.now() - t2 };
+  return res;
 }
 
 return { onnxLoad, onnxEmbed, onnxRun };
@@ -688,7 +729,7 @@ self.onmessage = async (ev) => {
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
     result.device = device;
-    result.dtype = e.adapter === "onnx" ? "onnxruntime-web" : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}` : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });
@@ -730,7 +771,7 @@ const TASKS = [
 ];
 
 // モデルの一覧は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
-const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
+const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
 
 const DEFAULTS = {
   threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3 },
@@ -1171,7 +1212,8 @@ function runInBrowser(model, image, params) {
     pending.set(id, { resolve, reject });
     const lib = workerLib(model);
     const transfer = image instanceof ImageBitmap ? [image] : [];
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model, image, params }, transfer);
+    const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt }, image, params }, transfer);
   });
 }
 
@@ -1279,6 +1321,7 @@ function updateModelNote() {
   if (m.where === "browser" && m.mb >= 500) notes.push("初回のダウンロードが大きい。モバイル回線では注意");
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.avoid) notes.push(m.avoid);
+  $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
   if (m.note) notes.push(m.note);
   $("model-note").textContent = notes.join(" / ");
 }
@@ -1351,7 +1394,7 @@ async function startVideoCommon() {
   state.video = true;
   clearResult();
   updateButtons();
-  requestAnimationFrame(videoLoop);
+  videoLoop();
 }
 
 function stopVideo() {
@@ -1371,11 +1414,14 @@ function videoSize(side) {
 }
 const inferSize = () => (state.video ? videoSize(+$("infer-size").value) : [state.image.width, state.image.height]);
 
-// 動画は非表示の <video> を毎フレーム canvas に描き、最後の結果を重ねる
+// 動画は非表示の <video> のフレームを canvas に描き、最後の結果を重ねる。
+// 描くのは新しい動画フレームが来た時だけ（画面の更新ごとに描くと、120Hz のスマホでは 30fps のカメラでも毎秒120回描いて
+// 推論と GPU を取り合う）。requestVideoFrameCallback が無いブラウザは画面の更新ごと
 function videoLoop() {
   if (!state.video) return;
   draw();
-  requestAnimationFrame(videoLoop);
+  const v = $("video");
+  if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(videoLoop); else requestAnimationFrame(videoLoop);
 }
 
 // 推論に渡す1枚。ブラウザ実行は ImageBitmap（速い）、サーバー実行は JPEG
@@ -1556,7 +1602,10 @@ function renderResult(m, r, live) {
   } else if (r.kind === "mask" && r.score != null) {
     body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
   }
-  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${body}`;
+  const bd = r.breakdown
+    ? `<div class="meta">内訳: フレーム取り込み ${fmt(r.breakdown.grab)} ・ 前処理 ${fmt(r.breakdown.pre)} ・ モデル実行 ${fmt(r.breakdown.run)} ・ 後処理 ${fmt(r.breakdown.post)}</div>`
+    : "";
+  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${bd}${body}`;
 }
 
 function summarizeBoxes(items) {
@@ -1565,7 +1614,7 @@ function summarizeBoxes(items) {
   return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
 }
 
-const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`);
+const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : ms >= 10 ? `${ms.toFixed(0)}ms` : `${ms.toFixed(1)}ms`);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
 function addHistory(m, r, summaryOverride) {
@@ -1595,11 +1644,14 @@ function paramsFor(key, w, auto) {
 // 1回分。結果を state.result に入れ、描画用の層を用意する
 async function runOnce(m, overrides = {}) {
   const [w, h] = inferSize();
+  const tg = performance.now();
   const { image, key } = await grabFrame(m.where === "server");
+  const grabMs = performance.now() - tg;
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
+  if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
   await prepareLayer(r);
   state.result = r;
   return r;
@@ -1665,6 +1717,7 @@ async function liveLoop() {
       inferSum += r.infer_ms;
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
       renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
+      if ($("video").paused) draw();
     }
   } catch (e) {
     failed(m, e);
@@ -1767,6 +1820,7 @@ async function init() {
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
   $("view").onchange = draw;
+  $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("tracker").onchange = () => {
     $("track-hint").hidden = !$("tracker").value;
     if ($("tracker").value) { $("threshold").value = 0.25; $("th-out").textContent = "0.25"; }

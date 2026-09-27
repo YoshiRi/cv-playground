@@ -32,14 +32,37 @@ async function fetchModelFile(url, onProgress) {
   return buf;
 }
 
+// 実行設定（e.opt）: "fp16" は onnx.file_fp16 の版を使う。"graph" を含むと WebGPU の graph capture（2回目以降は
+// 記録した GPU コマンドをまとめて流すので、層ごとの発行の手間が減る）。graph capture は入出力を GPU 上に置く必要がある
 export async function onnxLoad(ort, e, device, onProgress) {
   const base = `${HF}/${e.onnx.repo}/resolve/main/`;
-  const model = await fetchModelFile(base + e.onnx.file, onProgress);
+  const opt = device === "webgpu" ? e.opt || "" : "";
+  const file = opt.startsWith("fp16") && e.onnx.file_fp16 ? e.onnx.file_fp16 : e.onnx.file;
+  const model = await fetchModelFile(base + file, onProgress);
   const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
   if (e.onnx.data) {
     opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
   }
-  return ort.InferenceSession.create(model, opts);
+  const graph = opt.includes("graph");
+  if (graph) Object.assign(opts, { preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
+  const session = await ort.InferenceSession.create(model, opts);
+  return Object.assign(session, { cvpg: { graph, file, gpuInput: null } });
+}
+
+// graph capture の時は入力を毎回同じ GPU バッファに書き込み、出力は GPU から読み戻す
+async function runSession(ort, session, name, tensor) {
+  const g = session.cvpg;
+  if (!g?.graph) return session.run({ [name]: tensor });
+  const dev = ort.env.webgpu.device;
+  if (!g.gpuInput || g.gpuInput.size !== tensor.data.byteLength) {
+    g.gpuInput = dev.createBuffer({ size: tensor.data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+    g.feed = ort.Tensor.fromGpuBuffer(g.gpuInput, { dataType: "float32", dims: tensor.dims });
+  }
+  dev.queue.writeBuffer(g.gpuInput, 0, tensor.data);
+  const out = await session.run({ [name]: g.feed });
+  const cpu = {};
+  for (const [k, t] of Object.entries(out)) cpu[k] = { data: await t.getData(true), dims: t.dims };
+  return cpu;
 }
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
@@ -75,7 +98,11 @@ function preprocess(ort, bitmap, pre) {
   const px = x.getImageData(0, 0, iw, ih).data, n = iw * ih;
   const out = new Float32Array(3 * n), s = pre.scale ?? 1 / 255;
   const mean = pre.mean || [0, 0, 0], std = pre.std || [1, 1, 1];
-  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) out[k * n + i] = (px[i * 4 + k] * s - mean[k]) / std[k];
+  // (画素 × scale − mean) / std = 画素 × a + b を、チャンネルごとに1回のループで
+  for (let k = 0; k < 3; k++) {
+    const a = s / std[k], b = -mean[k] / std[k], o = k * n;
+    for (let i = 0; i < n; i++) out[o + i] = px[i * 4 + k] * a + b;
+  }
   const dims = [1, 3, ih, iw];
   for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
   return { tensor: new ort.Tensor("float32", out, dims), meta: { ...meta, W, H } };
@@ -166,7 +193,13 @@ export async function onnxEmbed(ort, session, e, bitmaps) {
 }
 
 export async function onnxRun(ort, session, e, bitmap, params) {
+  const t0 = performance.now();
   const { tensor, meta } = preprocess(ort, bitmap, e.pre);
-  const out = await session.run({ [e.pre.input]: tensor });
-  return POST[e.post.type](out, meta, e.post, params);
+  const t1 = performance.now();
+  const out = await runSession(ort, session, e.pre.input, tensor);
+  const t2 = performance.now();
+  const res = await POST[e.post.type](out, meta, e.post, params);
+  // 内訳（端末ごとにどこが重いかを見る）: 前処理（縮小・正規化）/ ONNX の実行（GPU との転送を含む）/ 後処理
+  res.breakdown = { pre: t1 - t0, run: t2 - t1, post: performance.now() - t2 };
+  return res;
 }

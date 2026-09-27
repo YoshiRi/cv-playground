@@ -53,6 +53,15 @@ def get_adapter(key):
 app = FastAPI()
 
 
+@app.middleware("http")
+async def no_stale_cache(request, call_next):
+    # 更新した web/ のファイル（特に Worker の JS）を古いキャッシュのまま使わないよう、毎回確かめさせる（変わっていなければ 304）
+    res = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        res.headers["Cache-Control"] = "no-cache"
+    return res
+
+
 @app.get("/api/models")
 def list_models():
     return [{"key": k, "task": e["task"], "name": e["name"]} for k, e in ENTRIES.items()]

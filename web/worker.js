@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { onnxLoad, onnxRun } from "./onnx_generic.js";
+import { onnxEmbed, onnxLoad, onnxRun } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -230,7 +230,25 @@ async function toInput(image, kind) {
 
 const loaded = new Map(); // entry.key -> Promise<state>
 
+// 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
+async function embed(id, e, crops) {
+  try {
+    await libReady;
+    if (!loaded.has(e.key)) {
+      const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
+      loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
+      try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
+    }
+    const t0 = performance.now();
+    const feats = await onnxEmbed(ort, (await loaded.get(e.key)).session, e, crops);
+    self.postMessage({ id, type: "result", result: { feats, ms: performance.now() - t0 } });
+  } catch (err) {
+    self.postMessage({ id, type: "error", message: String(err?.message || err) });
+  }
+}
+
 self.onmessage = async (ev) => {
+  if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;

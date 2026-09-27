@@ -148,6 +148,23 @@ const POST = {
   },
 };
 
+// 切り出した画像ごとの特徴（ReID など）。ONNX のバッチが固定（pre.batch）なら、足りない分は最後の1枚で埋めて切り捨てる
+export async function onnxEmbed(ort, session, e, bitmaps) {
+  const feats = [], bs = e.pre.batch || 1;
+  for (let i = 0; i < bitmaps.length; i += bs) {
+    const chunk = bitmaps.slice(i, i + bs);
+    const ts = chunk.map((b) => preprocess(ort, b, e.pre).tensor);
+    while (ts.length < bs) ts.push(ts[ts.length - 1]);
+    const n = ts[0].data.length, data = new Float32Array(n * bs);
+    ts.forEach((t, k) => data.set(t.data, k * n));
+    const out = await session.run({ [e.pre.input]: new ort.Tensor("float32", data, [bs, ...ts[0].dims.slice(1)]) });
+    const o = Object.values(out)[0], d = o.dims[1];
+    for (let k = 0; k < chunk.length; k++) feats.push(o.data.slice(k * d, (k + 1) * d));
+  }
+  bitmaps.forEach((b) => b.close?.());
+  return feats;
+}
+
 export async function onnxRun(ort, session, e, bitmap, params) {
   const { tensor, meta } = preprocess(ort, bitmap, e.pre);
   const out = await session.run({ [e.pre.input]: tensor });

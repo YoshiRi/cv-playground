@@ -56,6 +56,15 @@ function onWorkerMessage(ev) {
   d.type === "error" ? p.reject(new Error(d.message)) : p.resolve(d.result);
 }
 
+// 切り出した画像の特徴を onnxruntime-web の Worker で計算する（追跡の ReID 用）
+function embedInBrowser(model, crops) {
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model, crops }, crops);
+  });
+}
+
 function runInBrowser(model, image, params) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
@@ -275,6 +284,7 @@ async function grabFrame(forServer) {
   const [w, h] = inferSize();
   const c = new OffscreenCanvas(w, h);
   c.getContext("2d").drawImage($("video"), 0, 0, w, h);
+  state.lastFrame = c; // 推論に使ったフレーム（追跡の ReID で検出を切り出す）
   const key = `frame-${++state.frameNo}`;
   const image = forServer ? await c.convertToBlob({ type: "image/jpeg", quality: 0.85 }) : await createImageBitmap(c);
   return { image, key };
@@ -430,7 +440,8 @@ function renderResult(m, r, live) {
   const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
   let body = "";
   if (r.kind === "boxes" && live?.ids) {
-    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}）</div>`;
+    const reidNote = r.reid_ms != null ? ` ・ ReID ${fmt(r.reid_ms)}` : "";
+    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}${reidNote}）</div>`;
   } else if (r.kind === "boxes") {
     body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
   } else if (r.kind === "labels") {
@@ -530,7 +541,10 @@ async function liveLoop() {
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
   const th = parseFloat($("threshold").value);
-  const tracker = trackType ? new Tracker(trackType, { track_high_thresh: th, new_track_thresh: th }) : null;
+  const reid = trackType === "botsort-reid" ? MODELS.find((e) => e.task === "reid") : null;
+  const tracker = trackType
+    ? new Tracker(trackType.replace("-reid", ""), { track_high_thresh: th, new_track_thresh: th, with_reid: !!reid })
+    : null;
   const trackerName = $("tracker").selectedOptions[0]?.textContent;
   const ids = new Set();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
@@ -539,7 +553,13 @@ async function liveLoop() {
       if (frames) await nextVideoFrame($("video"));
       if (!state.live) break;
       const r = await runOnce(m, tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {});
-      if (tracker) { r.items = tracker.update(r.items); r.items.forEach((it) => ids.add(it.id)); state.result = r; }
+      if (tracker) {
+        const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
+        if (feats) r.reid_ms = feats.ms;
+        r.items = tracker.update(r.items, feats?.feats);
+        r.items.forEach((it) => ids.add(it.id));
+        state.result = r;
+      }
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
       inferSum += r.infer_ms;
@@ -552,6 +572,24 @@ async function liveLoop() {
   if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
   state.live = false;
   updateButtons();
+}
+
+// 追跡に使う検出（スコア > low）を、推論に使ったフレームから切り出して ReID の特徴にする。ほかは null
+async function reidFeatures(e, items, low) {
+  const c = state.lastFrame, idx = [], crops = [];
+  items.forEach((it, i) => {
+    if (it.score <= low) return;
+    const x1 = Math.max(0, Math.floor(it.box[0])), y1 = Math.max(0, Math.floor(it.box[1]));
+    const x2 = Math.min(c.width, Math.ceil(it.box[2])), y2 = Math.min(c.height, Math.ceil(it.box[3]));
+    if (x2 - x1 < 2 || y2 - y1 < 2) return;
+    idx.push(i);
+    crops.push(createImageBitmap(c, x1, y1, x2 - x1, y2 - y1));
+  });
+  const feats = new Array(items.length).fill(null);
+  if (!crops.length) return { feats, ms: 0 };
+  const res = await embedInBrowser({ ...e, where: "browser" }, await Promise.all(crops));
+  idx.forEach((i, k) => { feats[i] = res.feats[k]; });
+  return { feats, ms: res.ms };
 }
 
 // 次の新しいフレームが表示されるまで待つ。推論が動画より速いと同じフレームを何度も処理してしまい、

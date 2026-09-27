@@ -35,6 +35,7 @@
             <option value="">なし</option>
             <option value="bytetrack">ByteTrack</option>
             <option value="botsort">BoT-SORT（カメラ移動の補正・ReID なし）</option>
+            <option value="botsort-reid">BoT-SORT + ReID（OSNet x0.25、約1MB）</option>
           </select>
         </label>
         <p class="hint" data-param="track" id="track-hint" hidden>追跡は動画・カメラの「▶ 連続実行」で働く。Ultralytics と同じ設定（新しい ID は閾値以上、見失ってから 30 フレームで破棄、低スコアの検出は 0.1 まで救済に使う）</p>

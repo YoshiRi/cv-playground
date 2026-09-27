@@ -82,6 +82,12 @@
       "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": { "webgpu": "fp16", "wasm": "q8" }, "prompt": "Describe this image in detail." },
     { "key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373,
       "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": { "webgpu": "q4f16", "wasm": "q4" } },
+    { "key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1,
+      "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）",
+      "onnx": { "repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx" },
+      "pre": { "size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098,
+               "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16 },
+      "post": { "type": "embedding" } },
     { "key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm",
       "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意" }
   ]

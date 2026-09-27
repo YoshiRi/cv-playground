@@ -158,6 +158,7 @@ th { color: var(--muted); font-weight: 500; }
             <option value="">なし</option>
             <option value="bytetrack">ByteTrack</option>
             <option value="botsort">BoT-SORT（カメラ移動の補正・ReID なし）</option>
+            <option value="botsort-reid">BoT-SORT + ReID（OSNet x0.25、約1MB）</option>
           </select>
         </label>
         <p class="hint" data-param="track" id="track-hint" hidden>追跡は動画・カメラの「▶ 連続実行」で働く。Ultralytics と同じ設定（新しい ID は閾値以上、見失ってから 30 フレームで破棄、低スコアの検出は 0.1 まで救済に使う）</p>
@@ -240,7 +241,7 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
 
 return { COCO };
 })();
-const { onnxLoad, onnxRun } = await (async () => {
+const { onnxLoad, onnxEmbed, onnxRun } = await (async () => {
 // 汎用 ONNX adapter のブラウザ版（onnxruntime-web を直接使う）。サーバー版は adapters.py の OnnxAdapter。
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
@@ -390,13 +391,30 @@ const POST = {
   },
 };
 
+// 切り出した画像ごとの特徴（ReID など）。ONNX のバッチが固定（pre.batch）なら、足りない分は最後の1枚で埋めて切り捨てる
+async function onnxEmbed(ort, session, e, bitmaps) {
+  const feats = [], bs = e.pre.batch || 1;
+  for (let i = 0; i < bitmaps.length; i += bs) {
+    const chunk = bitmaps.slice(i, i + bs);
+    const ts = chunk.map((b) => preprocess(ort, b, e.pre).tensor);
+    while (ts.length < bs) ts.push(ts[ts.length - 1]);
+    const n = ts[0].data.length, data = new Float32Array(n * bs);
+    ts.forEach((t, k) => data.set(t.data, k * n));
+    const out = await session.run({ [e.pre.input]: new ort.Tensor("float32", data, [bs, ...ts[0].dims.slice(1)]) });
+    const o = Object.values(out)[0], d = o.dims[1];
+    for (let k = 0; k < chunk.length; k++) feats.push(o.data.slice(k * d, (k + 1) * d));
+  }
+  bitmaps.forEach((b) => b.close?.());
+  return feats;
+}
+
 async function onnxRun(ort, session, e, bitmap, params) {
   const { tensor, meta } = preprocess(ort, bitmap, e.pre);
   const out = await session.run({ [e.pre.input]: tensor });
   return POST[e.post.type](out, meta, e.post, params);
 }
 
-return { onnxLoad, onnxRun };
+return { onnxLoad, onnxEmbed, onnxRun };
 })();
 (async () => {
 // ブラウザ内推論。重い処理で画面が固まらないように Web Worker で動かす。
@@ -630,7 +648,25 @@ async function toInput(image, kind) {
 
 const loaded = new Map(); // entry.key -> Promise<state>
 
+// 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
+async function embed(id, e, crops) {
+  try {
+    await libReady;
+    if (!loaded.has(e.key)) {
+      const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
+      loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
+      try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
+    }
+    const t0 = performance.now();
+    const feats = await onnxEmbed(ort, (await loaded.get(e.key)).session, e, crops);
+    self.postMessage({ id, type: "result", result: { feats, ms: performance.now() - t0 } });
+  } catch (err) {
+    self.postMessage({ id, type: "error", message: String(err?.message || err) });
+  }
+}
+
 self.onmessage = async (ev) => {
+  if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;
@@ -694,7 +730,7 @@ const TASKS = [
 ];
 
 // モデルの一覧は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
-const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
+const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
 
 const DEFAULTS = {
   threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3 },
@@ -717,9 +753,11 @@ const { TRACKER_DEFAULTS, Tracker } = await (async () => {
 //   const tracked = t.update(items);      // items: [{label, score, box: [x1, y1, x2, y2], ...}]
 //                                         // → [{...検出の項目, id, box: カルマンフィルタで整えた枠}]
 //
+// BoT-SORT の ReID（見た目の特徴での対応付け）は with_reid: true と、update(items, feats) に検出ごとの特徴を渡すと有効。
+// 特徴の計算（人物の切り出しと ReID モデル）は呼び出し側で行う（ここでは受け取った特徴だけを使う）。
+//
 // Ultralytics との違い:
-// - BoT-SORT のカメラ移動の補正（GMC、既定は疎な光学フロー）と ReID（既定で無効）は無い。
-//   なので BoT-SORT はカルマンフィルタの状態が xywh になる点だけが ByteTrack と違う（固定カメラなら GMC の影響は小さい）
+// - BoT-SORT のカメラ移動の補正（GMC、既定は疎な光学フロー）は無い（固定カメラなら影響は小さい）
 // - 割り当ては lap.lapjv（extend_cost, cost_limit）と同じ問題を、拡張したコスト行列のハンガリアン法で解く
 
 const TRACKER_DEFAULTS = {
@@ -729,6 +767,10 @@ const TRACKER_DEFAULTS = {
   track_buffer: 30,        // 見失ってから ID を捨てるまでのフレーム数
   match_thresh: 0.8,       // 1段目の対応付けのコスト上限
   fuse_score: true,        // IoU に検出スコアを掛けて対応付ける
+  // 以下は BoT-SORT の ReID 用
+  with_reid: false,
+  proximity_thresh: 0.5,   // IoU がこれ未満の組には見た目の距離を使わない
+  appearance_thresh: 0.8,  // 見た目の距離（(1−cos)/2）が 1−これ を超える組は使わない（cos 類似度 0.6 未満）
 };
 
 const State = { New: 0, Tracked: 1, Lost: 2, Removed: 3 };
@@ -796,8 +838,19 @@ function kfUpdate(kind, mean, cov, z) {
 
 // ---------- 追跡対象 1つ ----------
 
+// 特徴は L2 正規化し、平滑化した特徴 = 0.9 × 前回 + 0.1 × 今回（Ultralytics の smooth_feature）
+function normalize(f) {
+  let n = 0;
+  for (const v of f) n += v * v;
+  n = Math.sqrt(n);
+  return n < 1e-12 ? null : Float32Array.from(f, (v) => v / n);
+}
+
 class STrack {
-  constructor(det, kind) {
+  constructor(det, kind, feat = null) {
+    this.currFeat = null;
+    this.smoothFeat = null;
+    if (feat) this.updateFeatures(feat);
     const [x1, y1, x2, y2] = det.box;
     this._tlwh = [x1, y1, x2 - x1, y2 - y1];
     this.kind = kind;
@@ -812,6 +865,14 @@ class STrack {
   }
 
   get endFrame() { return this.frameId; }
+
+  updateFeatures(feat) {
+    const f = normalize(feat);
+    if (!f) return;
+    this.currFeat = f;
+    if (!this.smoothFeat) { this.smoothFeat = f.slice(); return; }
+    this.smoothFeat = normalize(this.smoothFeat.map((v, i) => 0.9 * v + 0.1 * f[i]));
+  }
 
   get tlwh() {
     if (!this.mean) return this._tlwh.slice();
@@ -842,6 +903,7 @@ class STrack {
   }
 
   update(t, frameId) {
+    if (t.currFeat) this.updateFeatures(t.currFeat);
     this.frameId = frameId;
     ({ mean: this.mean, cov: this.cov } = kfUpdate(this.kind, this.mean, this.cov, this.measure(t.tlwh)));
     this.state = State.Tracked;
@@ -864,6 +926,14 @@ function iou(a, b) {
 
 const iouDistance = (as, bs) => as.map((a) => bs.map((b) => 1 - iou(a.xyxy, b.xyxy)));
 const fuseScore = (cost, dets) => cost.map((row) => row.map((c, j) => 1 - (1 - c) * dets[j].score));
+
+// 見た目の距離 = max(0, 1 − cos)。特徴の無い組は 2（Ultralytics の embedding_distance）
+const embeddingDistance = (tracks, dets) => tracks.map((t) => dets.map((d) => {
+  if (!t.smoothFeat || !d.currFeat) return 2;
+  let dot = 0;
+  for (let i = 0; i < d.currFeat.length; i++) dot += t.smoothFeat[i] * d.currFeat[i];
+  return Math.max(0, 1 - dot);
+}));
 
 // 正方行列の最小コスト割り当て（ハンガリアン法、O(n³)）。返り値は行 i に割り当てた列
 function hungarian(C) {
@@ -931,6 +1001,7 @@ class Tracker {
     this.type = type;
     this.kind = type === "botsort" ? "xywh" : "xyah";
     this.args = { ...TRACKER_DEFAULTS, ...args };
+    this.reid = type === "botsort" && this.args.with_reid; // Ultralytics でも ReID は BoT-SORT だけ
     this.reset();
   }
 
@@ -942,17 +1013,28 @@ class Tracker {
 
   nextId = () => ++this.count;
 
+  // 1段目と未確定の対象の対応付けに使う距離。ReID ありなら、近く（IoU ≥ proximity）て見た目も似ている組は見た目の距離も使う
   getDists(tracks, dets) {
-    const d = iouDistance(tracks, dets);
-    return this.args.fuse_score ? fuseScore(d, dets) : d;
+    const A = this.args, iouD = iouDistance(tracks, dets);
+    let d = A.fuse_score ? fuseScore(iouD, dets) : iouD;
+    if (this.reid) {
+      const emb = embeddingDistance(tracks, dets);
+      d = d.map((row, i) => row.map((c, j) => {
+        let e = emb[i][j] / 2;
+        if (e > 1 - A.appearance_thresh || iouD[i][j] > 1 - A.proximity_thresh) e = 1;
+        return Math.min(c, e);
+      }));
+    }
+    return d;
   }
 
-  update(items) {
+  // feats: items と同じ順の特徴（Float32Array など、無い検出は null）。ReID を使う時だけ渡す
+  update(items, feats = null) {
     const A = this.args, fid = ++this.frameId;
     const activated = [], refind = [], lostNow = [], removedNow = [];
-    const valid = items.filter((d) => d.box[2] > d.box[0] && d.box[3] > d.box[1]);
-    let detections = valid.filter((d) => d.score >= A.track_high_thresh).map((d) => new STrack(d, this.kind));
-    const second = valid.filter((d) => d.score > A.track_low_thresh && d.score < A.track_high_thresh).map((d) => new STrack(d, this.kind));
+    const valid = items.map((d, i) => [d, this.reid && feats ? feats[i] : null]).filter(([d]) => d.box[2] > d.box[0] && d.box[3] > d.box[1]);
+    let detections = valid.filter(([d]) => d.score >= A.track_high_thresh).map(([d, f]) => new STrack(d, this.kind, f));
+    const second = valid.filter(([d]) => d.score > A.track_low_thresh && d.score < A.track_high_thresh).map(([d, f]) => new STrack(d, this.kind, f));
 
     const unconfirmed = this.tracked.filter((t) => !t.isActivated);
     const trackedOk = this.tracked.filter((t) => t.isActivated);
@@ -1072,6 +1154,15 @@ function onWorkerMessage(ev) {
   if (!p) return;
   pending.delete(d.id);
   d.type === "error" ? p.reject(new Error(d.message)) : p.resolve(d.result);
+}
+
+// 切り出した画像の特徴を onnxruntime-web の Worker で計算する（追跡の ReID 用）
+function embedInBrowser(model, crops) {
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model, crops }, crops);
+  });
 }
 
 function runInBrowser(model, image, params) {
@@ -1293,6 +1384,7 @@ async function grabFrame(forServer) {
   const [w, h] = inferSize();
   const c = new OffscreenCanvas(w, h);
   c.getContext("2d").drawImage($("video"), 0, 0, w, h);
+  state.lastFrame = c; // 推論に使ったフレーム（追跡の ReID で検出を切り出す）
   const key = `frame-${++state.frameNo}`;
   const image = forServer ? await c.convertToBlob({ type: "image/jpeg", quality: 0.85 }) : await createImageBitmap(c);
   return { image, key };
@@ -1448,7 +1540,8 @@ function renderResult(m, r, live) {
   const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
   let body = "";
   if (r.kind === "boxes" && live?.ids) {
-    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}）</div>`;
+    const reidNote = r.reid_ms != null ? ` ・ ReID ${fmt(r.reid_ms)}` : "";
+    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}${reidNote}）</div>`;
   } else if (r.kind === "boxes") {
     body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
   } else if (r.kind === "labels") {
@@ -1548,7 +1641,10 @@ async function liveLoop() {
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
   const th = parseFloat($("threshold").value);
-  const tracker = trackType ? new Tracker(trackType, { track_high_thresh: th, new_track_thresh: th }) : null;
+  const reid = trackType === "botsort-reid" ? MODELS.find((e) => e.task === "reid") : null;
+  const tracker = trackType
+    ? new Tracker(trackType.replace("-reid", ""), { track_high_thresh: th, new_track_thresh: th, with_reid: !!reid })
+    : null;
   const trackerName = $("tracker").selectedOptions[0]?.textContent;
   const ids = new Set();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
@@ -1557,7 +1653,13 @@ async function liveLoop() {
       if (frames) await nextVideoFrame($("video"));
       if (!state.live) break;
       const r = await runOnce(m, tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {});
-      if (tracker) { r.items = tracker.update(r.items); r.items.forEach((it) => ids.add(it.id)); state.result = r; }
+      if (tracker) {
+        const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
+        if (feats) r.reid_ms = feats.ms;
+        r.items = tracker.update(r.items, feats?.feats);
+        r.items.forEach((it) => ids.add(it.id));
+        state.result = r;
+      }
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
       inferSum += r.infer_ms;
@@ -1570,6 +1672,24 @@ async function liveLoop() {
   if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
   state.live = false;
   updateButtons();
+}
+
+// 追跡に使う検出（スコア > low）を、推論に使ったフレームから切り出して ReID の特徴にする。ほかは null
+async function reidFeatures(e, items, low) {
+  const c = state.lastFrame, idx = [], crops = [];
+  items.forEach((it, i) => {
+    if (it.score <= low) return;
+    const x1 = Math.max(0, Math.floor(it.box[0])), y1 = Math.max(0, Math.floor(it.box[1]));
+    const x2 = Math.min(c.width, Math.ceil(it.box[2])), y2 = Math.min(c.height, Math.ceil(it.box[3]));
+    if (x2 - x1 < 2 || y2 - y1 < 2) return;
+    idx.push(i);
+    crops.push(createImageBitmap(c, x1, y1, x2 - x1, y2 - y1));
+  });
+  const feats = new Array(items.length).fill(null);
+  if (!crops.length) return { feats, ms: 0 };
+  const res = await embedInBrowser({ ...e, where: "browser" }, await Promise.all(crops));
+  idx.forEach((i, k) => { feats[i] = res.feats[k]; });
+  return { feats, ms: res.ms };
 }
 
 // 次の新しいフレームが表示されるまで待つ。推論が動画より速いと同じフレームを何度も処理してしまい、

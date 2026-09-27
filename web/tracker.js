@@ -5,9 +5,11 @@
 //   const tracked = t.update(items);      // items: [{label, score, box: [x1, y1, x2, y2], ...}]
 //                                         // → [{...検出の項目, id, box: カルマンフィルタで整えた枠}]
 //
+// BoT-SORT の ReID（見た目の特徴での対応付け）は with_reid: true と、update(items, feats) に検出ごとの特徴を渡すと有効。
+// 特徴の計算（人物の切り出しと ReID モデル）は呼び出し側で行う（ここでは受け取った特徴だけを使う）。
+//
 // Ultralytics との違い:
-// - BoT-SORT のカメラ移動の補正（GMC、既定は疎な光学フロー）と ReID（既定で無効）は無い。
-//   なので BoT-SORT はカルマンフィルタの状態が xywh になる点だけが ByteTrack と違う（固定カメラなら GMC の影響は小さい）
+// - BoT-SORT のカメラ移動の補正（GMC、既定は疎な光学フロー）は無い（固定カメラなら影響は小さい）
 // - 割り当ては lap.lapjv（extend_cost, cost_limit）と同じ問題を、拡張したコスト行列のハンガリアン法で解く
 
 export const TRACKER_DEFAULTS = {
@@ -17,6 +19,10 @@ export const TRACKER_DEFAULTS = {
   track_buffer: 30,        // 見失ってから ID を捨てるまでのフレーム数
   match_thresh: 0.8,       // 1段目の対応付けのコスト上限
   fuse_score: true,        // IoU に検出スコアを掛けて対応付ける
+  // 以下は BoT-SORT の ReID 用
+  with_reid: false,
+  proximity_thresh: 0.5,   // IoU がこれ未満の組には見た目の距離を使わない
+  appearance_thresh: 0.8,  // 見た目の距離（(1−cos)/2）が 1−これ を超える組は使わない（cos 類似度 0.6 未満）
 };
 
 const State = { New: 0, Tracked: 1, Lost: 2, Removed: 3 };
@@ -84,8 +90,19 @@ function kfUpdate(kind, mean, cov, z) {
 
 // ---------- 追跡対象 1つ ----------
 
+// 特徴は L2 正規化し、平滑化した特徴 = 0.9 × 前回 + 0.1 × 今回（Ultralytics の smooth_feature）
+function normalize(f) {
+  let n = 0;
+  for (const v of f) n += v * v;
+  n = Math.sqrt(n);
+  return n < 1e-12 ? null : Float32Array.from(f, (v) => v / n);
+}
+
 class STrack {
-  constructor(det, kind) {
+  constructor(det, kind, feat = null) {
+    this.currFeat = null;
+    this.smoothFeat = null;
+    if (feat) this.updateFeatures(feat);
     const [x1, y1, x2, y2] = det.box;
     this._tlwh = [x1, y1, x2 - x1, y2 - y1];
     this.kind = kind;
@@ -100,6 +117,14 @@ class STrack {
   }
 
   get endFrame() { return this.frameId; }
+
+  updateFeatures(feat) {
+    const f = normalize(feat);
+    if (!f) return;
+    this.currFeat = f;
+    if (!this.smoothFeat) { this.smoothFeat = f.slice(); return; }
+    this.smoothFeat = normalize(this.smoothFeat.map((v, i) => 0.9 * v + 0.1 * f[i]));
+  }
 
   get tlwh() {
     if (!this.mean) return this._tlwh.slice();
@@ -130,6 +155,7 @@ class STrack {
   }
 
   update(t, frameId) {
+    if (t.currFeat) this.updateFeatures(t.currFeat);
     this.frameId = frameId;
     ({ mean: this.mean, cov: this.cov } = kfUpdate(this.kind, this.mean, this.cov, this.measure(t.tlwh)));
     this.state = State.Tracked;
@@ -152,6 +178,14 @@ function iou(a, b) {
 
 const iouDistance = (as, bs) => as.map((a) => bs.map((b) => 1 - iou(a.xyxy, b.xyxy)));
 const fuseScore = (cost, dets) => cost.map((row) => row.map((c, j) => 1 - (1 - c) * dets[j].score));
+
+// 見た目の距離 = max(0, 1 − cos)。特徴の無い組は 2（Ultralytics の embedding_distance）
+const embeddingDistance = (tracks, dets) => tracks.map((t) => dets.map((d) => {
+  if (!t.smoothFeat || !d.currFeat) return 2;
+  let dot = 0;
+  for (let i = 0; i < d.currFeat.length; i++) dot += t.smoothFeat[i] * d.currFeat[i];
+  return Math.max(0, 1 - dot);
+}));
 
 // 正方行列の最小コスト割り当て（ハンガリアン法、O(n³)）。返り値は行 i に割り当てた列
 function hungarian(C) {
@@ -219,6 +253,7 @@ export class Tracker {
     this.type = type;
     this.kind = type === "botsort" ? "xywh" : "xyah";
     this.args = { ...TRACKER_DEFAULTS, ...args };
+    this.reid = type === "botsort" && this.args.with_reid; // Ultralytics でも ReID は BoT-SORT だけ
     this.reset();
   }
 
@@ -230,17 +265,28 @@ export class Tracker {
 
   nextId = () => ++this.count;
 
+  // 1段目と未確定の対象の対応付けに使う距離。ReID ありなら、近く（IoU ≥ proximity）て見た目も似ている組は見た目の距離も使う
   getDists(tracks, dets) {
-    const d = iouDistance(tracks, dets);
-    return this.args.fuse_score ? fuseScore(d, dets) : d;
+    const A = this.args, iouD = iouDistance(tracks, dets);
+    let d = A.fuse_score ? fuseScore(iouD, dets) : iouD;
+    if (this.reid) {
+      const emb = embeddingDistance(tracks, dets);
+      d = d.map((row, i) => row.map((c, j) => {
+        let e = emb[i][j] / 2;
+        if (e > 1 - A.appearance_thresh || iouD[i][j] > 1 - A.proximity_thresh) e = 1;
+        return Math.min(c, e);
+      }));
+    }
+    return d;
   }
 
-  update(items) {
+  // feats: items と同じ順の特徴（Float32Array など、無い検出は null）。ReID を使う時だけ渡す
+  update(items, feats = null) {
     const A = this.args, fid = ++this.frameId;
     const activated = [], refind = [], lostNow = [], removedNow = [];
-    const valid = items.filter((d) => d.box[2] > d.box[0] && d.box[3] > d.box[1]);
-    let detections = valid.filter((d) => d.score >= A.track_high_thresh).map((d) => new STrack(d, this.kind));
-    const second = valid.filter((d) => d.score > A.track_low_thresh && d.score < A.track_high_thresh).map((d) => new STrack(d, this.kind));
+    const valid = items.map((d, i) => [d, this.reid && feats ? feats[i] : null]).filter(([d]) => d.box[2] > d.box[0] && d.box[3] > d.box[1]);
+    let detections = valid.filter(([d]) => d.score >= A.track_high_thresh).map(([d, f]) => new STrack(d, this.kind, f));
+    const second = valid.filter(([d]) => d.score > A.track_low_thresh && d.score < A.track_high_thresh).map(([d, f]) => new STrack(d, this.kind, f));
 
     const unconfirmed = this.tracked.filter((t) => !t.isActivated);
     const trackedOk = this.tracked.filter((t) => t.isActivated);

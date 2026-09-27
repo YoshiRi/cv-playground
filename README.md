@@ -15,7 +15,7 @@ UI は日本語。
 
 ### ブラウザだけで使う（サーバーなし）
 
-`dist/cv-playground.html` をブラウザで開く（file:// でも、GitHub Pages などの静的ホスティングでも動く）。ブラウザ実行のモデルだけが選べる。
+**https://yoshiri.github.io/cv-playground/ で開ける**（GitHub Pages。スマホ可）。手元では `dist/cv-playground.html` をブラウザで開く（file:// でも、GitHub Pages などの静的ホスティングでも動く）。ブラウザ実行のモデルだけが選べる。
 WebGPU がある Chrome / Edge / Safari 推奨（無ければ WASM で遅く動く）。
 
 ### サーバーも使う

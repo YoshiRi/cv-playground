@@ -1,0 +1,283 @@
+"""サーバー側のモデル実装（adapter）。モデルの一覧は web/models.json（ブラウザ側と共通）。
+
+どの adapter も同じ形:
+    a = ADAPTERS[entry["adapter"]](entry)   # 軽い。まだ読み込まない
+    a.load()                                # 重みの取得と初期化
+    a.run(image: PIL.Image(RGB), params: dict) -> 結果 dict
+結果の形式（座標は入力画像のピクセル。ブラウザ側 web/worker.js と同じ）:
+    boxes  {items: [{label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度], ...]}]}
+    mask   {mask: PNG data URL（白=前景）, score?, cutout?}
+    depth  {image: PNG data URL（明るい=近い）, note?}
+    text   {text}
+
+新しいモデルを足す時:
+  - 素の ONNX なら models.json に adapter "onnx" で pre / post を書くだけ。足りない部品は
+    PRE の resize 方式か POST に関数を足す（web/onnx_generic.js にも同じものを足すとブラウザでも動く）
+  - ライブラリのプロセッサが要るモデルは、Adapter を継承したクラスを書いて ADAPTERS に登録する
+"""
+import base64
+import io
+import json
+import math
+import os
+from pathlib import Path
+
+import numpy as np
+import requests
+import torch
+from PIL import Image
+
+ROOT = Path(__file__).parent
+DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
+OLLAMA = os.environ.get("OLLAMA_HOST_URL", "http://127.0.0.1:11434")
+COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+        "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+        "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+        "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard",
+        "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple",
+        "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+        "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard",
+        "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
+        "teddy bear", "hair drier", "toothbrush"]
+
+
+def load_entries():
+    return json.loads((ROOT / "web" / "models.json").read_text())["models"]
+
+
+def png_data_url(arr: np.ndarray) -> str:
+    buf = io.BytesIO()
+    Image.fromarray(arr).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+class Adapter:
+    device = DEVICE  # 結果に書く実行デバイス
+
+    def __init__(self, entry):
+        self.e = entry
+
+    def load(self):
+        raise NotImplementedError
+
+    def run(self, im: Image.Image, p: dict) -> dict:
+        raise NotImplementedError
+
+
+# ---------- 汎用 ONNX: 前処理・後処理を models.json の pre / post で組み立てる ----------
+
+def preprocess(im: Image.Image, pre: dict):
+    """画像 → 入力テンソル。meta は入力座標 = 元座標 × (sx, sy) + (ox, oy) と、内容のある範囲 (cw, ch)"""
+    W, H = im.size
+    mode = pre.get("resize", "stretch")
+    if mode == "letterbox":
+        tw, th = pre["size"]
+        r = min(tw / W, th / H)
+        cw, ch = round(W * r), round(H * r)
+        ox, oy = (tw - cw) // 2, (th - ch) // 2
+        pad = pre.get("pad_value", 114)
+        canvas = Image.new("RGB", (tw, th), (pad, pad, pad))
+        canvas.paste(im.resize((cw, ch), Image.BILINEAR), (ox, oy))
+        img, meta = canvas, dict(sx=r, sy=r, ox=ox, oy=oy, iw=tw, ih=th, cw=cw, ch=ch)
+    elif mode == "stretch":
+        tw, th = pre["size"]
+        img, meta = im.resize((tw, th), Image.BILINEAR), dict(sx=tw / W, sy=th / H, ox=0, oy=0, iw=tw, ih=th, cw=tw, ch=th)
+    elif mode == "keep_aspect":
+        m, r = pre.get("multiple", 1), pre["short"] / min(W, H)
+        tw, th = max(m, round(W * r / m) * m), max(m, round(H * r / m) * m)
+        img, meta = im.resize((tw, th), Image.BILINEAR), dict(sx=tw / W, sy=th / H, ox=0, oy=0, iw=tw, ih=th, cw=tw, ch=th)
+    else:
+        raise ValueError(f"unknown resize {mode}")
+    x = np.asarray(img, dtype=np.float32) * pre.get("scale", 1 / 255)
+    if "mean" in pre:
+        x = (x - np.array(pre["mean"], np.float32)) / np.array(pre["std"], np.float32)
+    x = x.transpose(2, 0, 1)[None]
+    for ax in pre.get("add_dims", []):
+        x = np.expand_dims(x, ax)
+    meta.update(W=W, H=H)
+    return np.ascontiguousarray(x, dtype=np.float32), meta
+
+
+def to_orig(x, y, m):
+    return (x - m["ox"]) / m["sx"], (y - m["oy"]) / m["sy"]
+
+
+def crop_resize(a2d: np.ndarray, m) -> np.ndarray:
+    """入力解像度の2次元出力から内容のある範囲を切り出し、元画像の大きさへ（0..255 の uint8）"""
+    h, w = a2d.shape
+    fx, fy = w / m["iw"], h / m["ih"]
+    y0, x0 = round(m["oy"] * fy), round(m["ox"] * fx)
+    c = a2d[y0:y0 + round(m["ch"] * fy), x0:x0 + round(m["cw"] * fx)]
+    return np.asarray(Image.fromarray(c.astype(np.uint8)).resize((m["W"], m["H"]), Image.BILINEAR))
+
+
+def post_yolo_detect(out, m, post, p):
+    # YOLO26 は NMS 込みの出力: logits (1,300,80) はシグモイド前、pred_boxes (1,300,4) は入力に対する正規化 cx cy w h
+    prob = 1 / (1 + np.exp(-out["logits"][0]))
+    boxes, th, items = out["pred_boxes"][0], float(p.get("threshold", 0.4)), []
+    for i in np.where(prob.max(1) >= th)[0]:
+        c = int(prob[i].argmax())
+        cx, cy, w, h = boxes[i] * [m["iw"], m["ih"], m["iw"], m["ih"]]
+        x1, y1 = to_orig(cx - w / 2, cy - h / 2, m)
+        x2, y2 = to_orig(cx + w / 2, cy + h / 2, m)
+        items.append({"label": COCO[c], "score": float(prob[i, c]), "box": [float(x1), float(y1), float(x2), float(y2)]})
+    return {"kind": "boxes", "items": items}
+
+
+def post_yolo_pose(out, m, post, p):
+    # (1,300,57) = 正規化 x1 y1 x2 y2, score, class, 17 ×（x, y, 可視度）
+    th, items = float(p.get("threshold", 0.4)), []
+    for r in next(iter(out.values()))[0]:
+        if r[4] < th:
+            continue
+        x1, y1 = to_orig(r[0] * m["iw"], r[1] * m["ih"], m)
+        x2, y2 = to_orig(r[2] * m["iw"], r[3] * m["ih"], m)
+        kps = [[*map(float, to_orig(k[0] * m["iw"], k[1] * m["ih"], m)), float(k[2])] for k in r[6:].reshape(17, 3)]
+        items.append({"label": "person", "score": float(r[4]), "box": [float(x1), float(y1), float(x2), float(y2)], "keypoints": kps})
+    return {"kind": "boxes", "items": items}
+
+
+def post_alpha(out, m, post, p):
+    a = np.squeeze(out[post.get("output")] if post.get("output") else next(iter(out.values())))
+    if post.get("sigmoid"):
+        a = 1 / (1 + np.exp(-a))
+    return {"kind": "mask", "cutout": True, "mask": png_data_url(crop_resize(a * 255, m))}
+
+
+def post_depth(out, m, post, p):
+    d = np.squeeze(out[post.get("output", "predicted_depth")]).astype(np.float32)
+    if post.get("inverse"):  # 「大きいほど遠い」深度を、表示用に「大きいほど近い」へ
+        d = 1 / np.maximum(d, 1e-6)
+    d = (d - d.min()) / max(float(d.max() - d.min()), 1e-6)
+    res = {"kind": "depth", "image": png_data_url(crop_resize(d * 255, m))}
+    if post.get("intrinsics") in out:
+        fx = float(np.squeeze(out[post["intrinsics"]])[0, 0])
+        res["note"] = f"推定した水平画角 {math.degrees(2 * math.atan(m['cw'] / 2 / fx)):.0f}°（DA3 はカメラの内部パラメータも出す）"
+    return res
+
+
+POST = {"yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+
+
+class OnnxAdapter(Adapter):
+    def load(self):
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
+        o = self.e["onnx"]
+        # 外部データ（.onnx_data）は ONNX 本体と同じディレクトリに無いと onnxruntime が拒否する。
+        # HF のキャッシュは実体が別ディレクトリの blobs に分かれるので、実ファイルとして models/ に落とす
+        local = ROOT / "models" / o["repo"]
+        path = hf_hub_download(o["repo"], o["file"], local_dir=local)
+        if o.get("data"):
+            hf_hub_download(o["repo"], o["data"], local_dir=local)
+        # CoreML EP は既定の NeuralNetwork 形式だと YOLO26 の出力が壊れる（全スコアが負）。MLProgram なら CPU と一致し約2倍速い。
+        # BiRefNet と DA3 は MLProgram への変換に失敗するので models.json で providers: cpu にしている
+        if self.e.get("server", {}).get("providers") == "cpu":
+            providers, self.device = ["CPUExecutionProvider"], "cpu"
+        else:
+            providers, self.device = [("CoreMLExecutionProvider", {"ModelFormat": "MLProgram"}), "CPUExecutionProvider"], "coreml"
+        self.sess = ort.InferenceSession(path, providers=providers)
+        self.outputs = [o.name for o in self.sess.get_outputs()]
+
+    def run(self, im, p):
+        x, meta = preprocess(im, self.e["pre"])
+        out = dict(zip(self.outputs, self.sess.run(None, {self.e["pre"]["input"]: x})))
+        return POST[self.e["post"]["type"]](out, meta, self.e["post"], p)
+
+
+# ---------- ライブラリを使う専用の実装 ----------
+
+def boxes_from_pipeline(out):
+    return {"kind": "boxes", "items": [{"label": o["label"], "score": float(o["score"]),
+                                        "box": [o["box"]["xmin"], o["box"]["ymin"], o["box"]["xmax"], o["box"]["ymax"]]} for o in out]}
+
+
+class HfDetect(Adapter):
+    def load(self):
+        from transformers import pipeline
+        self.pipe = pipeline("object-detection", model=self.e["repo"], device=DEVICE)
+
+    def run(self, im, p):
+        return boxes_from_pipeline(self.pipe(im, threshold=float(p.get("threshold", 0.4))))
+
+
+class HfDepth(Adapter):
+    def load(self):
+        from transformers import pipeline
+        self.pipe = pipeline("depth-estimation", model=self.e["repo"], device=DEVICE)
+
+    def run(self, im, p):
+        d = self.pipe(im)["predicted_depth"].squeeze().float().cpu().numpy()
+        d = (d - d.min()) / max(float(d.max() - d.min()), 1e-6)
+        return {"kind": "depth", "image": png_data_url(np.asarray(Image.fromarray((d * 255).astype(np.uint8)).resize(im.size, Image.BILINEAR)))}
+
+
+class HfGdino(Adapter):
+    # transformers の zero-shot-object-detection パイプラインは Grounding DINO だとスコアが極端に低く、
+    # 猫の写真で cat を1つも返さなかった（5.17.0）。プロセッサに候補名のリストを直接渡すと正しく出る
+    def load(self):
+        from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
+        self.proc = AutoProcessor.from_pretrained(self.e["repo"])
+        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(self.e["repo"]).to(DEVICE).eval()
+
+    @torch.inference_mode()
+    def run(self, im, p):
+        labels = [s.strip() for s in p.get("labels", "person").split(",") if s.strip()]
+        inputs = self.proc(images=im, text=[labels], return_tensors="pt").to(DEVICE)
+        r = self.proc.post_process_grounded_object_detection(
+            self.model(**inputs), inputs.input_ids, threshold=float(p.get("threshold", 0.3)), text_threshold=0.25,
+            target_sizes=[im.size[::-1]])[0]
+        return {"kind": "boxes", "items": [{"label": l, "score": float(sc), "box": [float(v) for v in b]}
+                                           for l, sc, b in zip(r["text_labels"], r["scores"], r["boxes"])]}
+
+
+class HfSam2(Adapter):
+    def load(self):
+        from collections import OrderedDict
+        from transformers import Sam2Model, Sam2Processor
+        self.model = Sam2Model.from_pretrained(self.e["repo"]).to(DEVICE).eval()
+        self.proc = Sam2Processor.from_pretrained(self.e["repo"])
+        self.cache = OrderedDict()
+
+    @torch.inference_mode()
+    def run(self, im, p):
+        from fastapi import HTTPException
+        pts = p.get("points") or []
+        if not pts:
+            raise HTTPException(400, "画像をクリックして点を指定してください")
+        inputs = self.proc(images=im, input_points=[[[[x, y] for x, y, _ in pts]]],
+                           input_labels=[[[int(l) for *_, l in pts]]], return_tensors="pt").to(DEVICE)
+        key = p["_image_key"]
+        if key not in self.cache:  # 同じ画像への2回目以降のクリックでは画像エンコーダを省く
+            self.cache[key] = self.model.get_image_embeddings(inputs["pixel_values"])
+            while len(self.cache) > 4:
+                self.cache.popitem(last=False)
+        out = self.model(input_points=inputs["input_points"], input_labels=inputs["input_labels"],
+                         image_embeddings=self.cache[key], multimask_output=len(pts) == 1)
+        masks = self.proc.post_process_masks(out.pred_masks.cpu(), inputs["original_sizes"].cpu())[0][0]
+        scores = out.iou_scores[0, 0].float().cpu()
+        best = int(scores.argmax())
+        return {"kind": "mask", "mask": png_data_url((masks[best].numpy() > 0).astype(np.uint8) * 255), "score": float(scores[best])}
+
+
+class OllamaVlm(Adapter):
+    device = "ollama"
+
+    def load(self):
+        pass  # Ollama 側が読み込む
+
+    def run(self, im, p):
+        from fastapi import HTTPException
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=90)
+        r = requests.post(f"{OLLAMA}/api/chat", timeout=600, json={
+            "model": os.environ.get("CVPG_OLLAMA_MODEL", self.e["ollama"]), "stream": False, "think": False,
+            "messages": [{"role": "user", "content": p.get("prompt") or "この画像を日本語で詳しく説明してください。",
+                          "images": [base64.b64encode(buf.getvalue()).decode()]}]})
+        if r.status_code != 200:
+            raise HTTPException(502, f"Ollama: {r.text[:300]}")
+        return {"kind": "text", "text": r.json()["message"]["content"]}
+
+
+ADAPTERS = {"onnx": OnnxAdapter, "hf-detect": HfDetect, "hf-depth": HfDepth, "hf-gdino": HfGdino,
+            "hf-sam2": HfSam2, "ollama-vlm": OllamaVlm}

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CV Playground</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='none' stroke='%232f6fdf' stroke-width='2'/><circle cx='8' cy='8' r='2' fill='%232f6fdf'/></svg>">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>CV Playground</h1>
+    <div id="env" class="muted"></div>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="tasks" id="tasks" role="tablist"></div>
+      <p class="hint" id="task-hint"></p>
+
+      <label class="field">モデル
+        <select id="model"></select>
+      </label>
+      <div class="model-note muted" id="model-note"></div>
+
+      <div id="params">
+        <label class="field" data-param="labels">候補（カンマ区切り）
+          <input id="labels" type="text" autocomplete="off">
+        </label>
+        <label class="field" data-param="prompt">質問・指示
+          <textarea id="prompt" rows="2"></textarea>
+        </label>
+        <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
+          <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
+        </label>
+        <div class="field row" data-param="points">
+          <label class="check"><input type="checkbox" id="auto"> 全体を自動分割</label>
+          <label class="check"><input type="checkbox" id="negative"> 除く点として置く</label>
+          <button type="button" id="clear-points" class="ghost">点を消す</button>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="stage">
+      <div class="images">
+        <span class="muted">画像:</span>
+        <!-- サンプル画像は transformers.js のドキュメント用データセットから実行時に読む（同梱しない） -->
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg">街</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/football-match.jpg">サッカー</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/cats.jpg">猫</button>
+        <label class="ghost button">ファイル（画像・動画）<input type="file" id="file" accept="image/*,video/*" hidden></label>
+        <button type="button" class="ghost" id="camera-btn">カメラ（ライブ）</button>
+      </div>
+
+      <div class="canvas-wrap" id="canvas-wrap">
+        <!-- 動画は canvas に描いて結果を重ねる。iOS は display:none の video を再生しないので画面外に置く -->
+        <video id="video" class="offscreen" playsinline muted></video>
+        <canvas id="canvas"></canvas>
+      </div>
+      <div class="actions">
+        <div class="video-controls" id="video-controls" hidden>
+          <button type="button" id="live" class="live">▶ 連続実行</button>
+          <button type="button" class="ghost" id="pause">一時停止</button>
+          <button type="button" class="ghost" id="freeze">この画面を静止画に</button>
+          <label class="small muted">処理解像度
+            <select id="infer-size"><option value="640">640</option><option value="960">960</option><option value="1280">1280</option></select>
+          </label>
+        </div>
+
+        <button type="button" id="run" class="primary">実行</button>
+        <div id="status" class="status" aria-live="polite"></div>
+      </div>
+      <div class="view-toggle" id="view-toggle" hidden>
+        <label class="field row">表示 <select id="view"></select></label>
+      </div>
+      <div id="result" class="result"></div>
+    </section>
+  </main>
+
+  <section class="history">
+    <div class="history-head">
+      <h2>実行履歴</h2>
+      <div class="server-box" id="server-box">
+        <span id="server-status" class="muted"></span>
+        <button type="button" class="ghost" id="unload">サーバーのモデルを解放</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>時刻</th><th>タスク</th><th>モデル</th><th>実行場所</th><th>サイズ</th><th>読み込み</th><th>推論</th><th>結果</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+    <p class="muted small">読み込み＝初回のダウンロードとモデル初期化（2回目以降は 0）。推論＝画像1枚の処理時間（連続実行は平均）。動画・カメラは元の解像度で表示し、推論には「処理解像度」（長辺、既定 640px）に縮めたフレームを渡す。ブラウザ実行はこの端末の性能、サーバー実行はサーバーの性能と通信を含む。</p>
+  </section>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

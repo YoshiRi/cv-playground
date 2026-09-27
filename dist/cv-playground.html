@@ -1,0 +1,1320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CV Playground（サーバーなし版）</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='none' stroke='%232f6fdf' stroke-width='2'/><circle cx='8' cy='8' r='2' fill='%232f6fdf'/></svg>">
+  <style>
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1c2330;
+  --muted: #667085;
+  --line: #dde1e8;
+  --accent: #2f6fdf;
+  --accent-text: #ffffff;
+  --chip: #eef2f8;
+  --warn: #b54708;
+  --err: #c0362c;
+  --ok: #18794e;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111418;
+    --panel: #1a1f26;
+    --text: #e6e9ef;
+    --muted: #98a2b3;
+    --line: #2c333d;
+    --accent: #5b8def;
+    --accent-text: #0b1220;
+    --chip: #232a34;
+    --warn: #f79009;
+    --err: #f97066;
+    --ok: #47cd89;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111418; --panel: #1a1f26; --text: #e6e9ef; --muted: #98a2b3; --line: #2c333d;
+  --accent: #5b8def; --accent-text: #0b1220; --chip: #232a34; --warn: #f79009; --err: #f97066; --ok: #47cd89;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+}
+header { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; padding: 14px 16px 6px; }
+h1 { font-size: 20px; margin: 0; letter-spacing: .01em; }
+h2 { font-size: 16px; margin: 0; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+
+main { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 16px; padding: 8px 16px; }
+@media (max-width: 820px) { main { grid-template-columns: minmax(0, 1fr); } }
+
+.controls, .stage, .history { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+.controls { display: flex; flex-direction: column; gap: 10px; align-self: start; }
+
+.tasks { display: flex; flex-wrap: wrap; gap: 6px; }
+.tasks button {
+  border: 1px solid var(--line); background: var(--chip); color: var(--text);
+  border-radius: 999px; padding: 5px 11px; font-size: 13.5px; cursor: pointer;
+}
+.tasks button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.hint { margin: 0; font-size: 13px; color: var(--muted); }
+
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; }
+.field.row { flex-direction: row; align-items: center; gap: 10px; flex-wrap: wrap; }
+.field.row input[type="range"] { flex: 1; min-width: 120px; }
+select, input[type="text"], textarea {
+  width: 100%; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 7px 8px;
+}
+.model-note { font-size: 12.5px; min-height: 1em; }
+.check { display: inline-flex; align-items: center; gap: 6px; font-size: 13.5px; }
+
+.images { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13.5px; }
+button, .button { font: inherit; cursor: pointer; }
+.ghost {
+  border: 1px solid var(--line); background: transparent; color: var(--text);
+  border-radius: 6px; padding: 5px 10px; font-size: 13.5px; display: inline-block;
+}
+.ghost:hover { border-color: var(--accent); }
+.primary {
+  border: 0; background: var(--accent); color: var(--accent-text); font-weight: 600;
+  border-radius: 8px; padding: 10px; font-size: 15px;
+}
+.primary:disabled { opacity: .55; cursor: progress; }
+.status { font-size: 13px; min-height: 1.3em; white-space: pre-wrap; }
+.status.err { color: var(--err); }
+.status.warn { color: var(--warn); }
+
+.stage { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.canvas-wrap { position: relative; width: 100%; background: var(--chip); border-radius: 8px; overflow: hidden; }
+canvas { display: block; max-width: 100%; max-height: 70vh; width: auto; height: auto; margin: 0 auto; touch-action: manipulation; }
+.canvas-wrap.clickable canvas { cursor: crosshair; }
+.offscreen { position: absolute; left: -9999px; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
+.video-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.live {
+  border: 1px solid var(--accent); background: transparent; color: var(--accent); font-weight: 600;
+  border-radius: 8px; padding: 8px 12px; font-size: 14px;
+}
+.live.on { background: var(--err); border-color: var(--err); color: #fff; }
+.view-toggle { font-size: 13px; }
+.actions { display: flex; flex-direction: column; gap: 8px; }
+.actions .primary { align-self: stretch; }
+.view-toggle select { width: auto; }
+.video-controls select { width: auto; padding: 4px 6px; }
+
+.result { font-size: 14px; }
+.result .meta { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.result pre { white-space: pre-wrap; margin: 0; font: inherit; }
+.bar { display: grid; grid-template-columns: minmax(80px, 180px) 1fr 52px; gap: 8px; align-items: center; margin: 3px 0; font-size: 13.5px; }
+.bar .track { height: 8px; background: var(--chip); border-radius: 4px; overflow: hidden; }
+.bar .fill { height: 100%; background: var(--accent); }
+.bar .num { text-align: right; font-variant-numeric: tabular-nums; }
+.dets { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: var(--muted); }
+
+.history { margin: 0 16px 24px; display: flex; flex-direction: column; gap: 8px; }
+.history-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.server-box { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+th { color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>CV Playground</h1>
+    <div id="env" class="muted"></div>
+  </header>
+
+  <main>
+    <section class="controls">
+      <div class="tasks" id="tasks" role="tablist"></div>
+      <p class="hint" id="task-hint"></p>
+
+      <label class="field">モデル
+        <select id="model"></select>
+      </label>
+      <div class="model-note muted" id="model-note"></div>
+
+      <div id="params">
+        <label class="field" data-param="labels">候補（カンマ区切り）
+          <input id="labels" type="text" autocomplete="off">
+        </label>
+        <label class="field" data-param="prompt">質問・指示
+          <textarea id="prompt" rows="2"></textarea>
+        </label>
+        <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
+          <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
+        </label>
+        <div class="field row" data-param="points">
+          <label class="check"><input type="checkbox" id="auto"> 全体を自動分割</label>
+          <label class="check"><input type="checkbox" id="negative"> 除く点として置く</label>
+          <button type="button" id="clear-points" class="ghost">点を消す</button>
+        </div>
+      </div>
+
+    </section>
+
+    <section class="stage">
+      <div class="images">
+        <span class="muted">画像:</span>
+        <!-- サンプル画像は transformers.js のドキュメント用データセットから実行時に読む（同梱しない） -->
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg">街</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/football-match.jpg">サッカー</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/cats.jpg">猫</button>
+        <label class="ghost button">ファイル（画像・動画）<input type="file" id="file" accept="image/*,video/*" hidden></label>
+        <button type="button" class="ghost" id="camera-btn">カメラ（ライブ）</button>
+      </div>
+
+      <div class="canvas-wrap" id="canvas-wrap">
+        <!-- 動画は canvas に描いて結果を重ねる。iOS は display:none の video を再生しないので画面外に置く -->
+        <video id="video" class="offscreen" playsinline muted></video>
+        <canvas id="canvas"></canvas>
+      </div>
+      <div class="actions">
+        <div class="video-controls" id="video-controls" hidden>
+          <button type="button" id="live" class="live">▶ 連続実行</button>
+          <button type="button" class="ghost" id="pause">一時停止</button>
+          <button type="button" class="ghost" id="freeze">この画面を静止画に</button>
+          <label class="small muted">処理解像度
+            <select id="infer-size"><option value="640">640</option><option value="960">960</option><option value="1280">1280</option></select>
+          </label>
+        </div>
+
+        <button type="button" id="run" class="primary">実行</button>
+        <div id="status" class="status" aria-live="polite"></div>
+      </div>
+      <div class="view-toggle" id="view-toggle" hidden>
+        <label class="field row">表示 <select id="view"></select></label>
+      </div>
+      <div id="result" class="result"></div>
+    </section>
+  </main>
+
+  <section class="history">
+    <div class="history-head">
+      <h2>実行履歴</h2>
+      <div class="server-box" id="server-box">
+        <span id="server-status" class="muted"></span>
+        <button type="button" class="ghost" id="unload">サーバーのモデルを解放</button>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>時刻</th><th>タスク</th><th>モデル</th><th>実行場所</th><th>サイズ</th><th>読み込み</th><th>推論</th><th>結果</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+    <p class="muted small">読み込み＝初回のダウンロードとモデル初期化（2回目以降は 0）。推論＝画像1枚の処理時間（連続実行は平均）。動画・カメラは元の解像度で表示し、推論には「処理解像度」（長辺、既定 640px）に縮めたフレームを渡す。ブラウザ実行はこの端末の性能、サーバー実行はサーバーの性能と通信を含む。</p>
+  </section>
+
+  <script type="text/plain" id="worker-src">
+const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+  "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear",
+  "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+  "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+  "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+  "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+  "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
+  "teddy bear", "hair drier", "toothbrush"];
+
+// 汎用 ONNX adapter のブラウザ版（onnxruntime-web を直接使う）。サーバー版は adapters.py の OnnxAdapter。
+// 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
+// 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
+
+const HF = "https://huggingface.co";
+
+// Cache API に保存して2回目以降はダウンロードしない（file:// などで Cache API が使えない時は毎回取得）
+async function fetchModelFile(url, onProgress) {
+  let cache = null;
+  try {
+    cache = await caches.open("cvpg-onnx");
+    const hit = await cache.match(url);
+    if (hit) return new Uint8Array(await hit.arrayBuffer());
+  } catch { cache = null; }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  const total = +res.headers.get("content-length") || 0;
+  const reader = res.body.getReader(), chunks = [];
+  let got = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    got += value.length;
+    if (total) onProgress?.(url.split("/").pop(), (got / total) * 100);
+  }
+  const buf = new Uint8Array(got);
+  let o = 0;
+  for (const c of chunks) { buf.set(c, o); o += c.length; }
+  try { await cache?.put(url, new Response(buf)); } catch { /* 容量不足などは無視 */ }
+  return buf;
+}
+
+async function onnxLoad(ort, e, device, onProgress) {
+  const base = `${HF}/${e.onnx.repo}/resolve/main/`;
+  const model = await fetchModelFile(base + e.onnx.file, onProgress);
+  const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
+  if (e.onnx.data) {
+    opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
+  }
+  return ort.InferenceSession.create(model, opts);
+}
+
+// ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
+
+function preprocess(ort, bitmap, pre) {
+  const W = bitmap.width, H = bitmap.height;
+  let iw, ih, meta;
+  const c = new OffscreenCanvas(1, 1), x = c.getContext("2d", { willReadFrequently: true });
+  if (pre.resize === "letterbox") {
+    [iw, ih] = pre.size;
+    const r = Math.min(iw / W, ih / H), cw = Math.round(W * r), ch = Math.round(H * r);
+    const ox = Math.floor((iw - cw) / 2), oy = Math.floor((ih - ch) / 2);
+    c.width = iw; c.height = ih;
+    const g = pre.pad_value ?? 114;
+    x.fillStyle = `rgb(${g},${g},${g})`;
+    x.fillRect(0, 0, iw, ih);
+    x.drawImage(bitmap, ox, oy, cw, ch);
+    meta = { sx: r, sy: r, ox, oy, iw, ih, cw, ch };
+  } else if (pre.resize === "stretch") {
+    [iw, ih] = pre.size;
+    c.width = iw; c.height = ih;
+    x.drawImage(bitmap, 0, 0, iw, ih);
+    meta = { sx: iw / W, sy: ih / H, ox: 0, oy: 0, iw, ih, cw: iw, ch: ih };
+  } else if (pre.resize === "keep_aspect") {
+    const m = pre.multiple || 1, r = pre.short / Math.min(W, H);
+    iw = Math.max(m, Math.round((W * r) / m) * m); ih = Math.max(m, Math.round((H * r) / m) * m);
+    c.width = iw; c.height = ih;
+    x.drawImage(bitmap, 0, 0, iw, ih);
+    meta = { sx: iw / W, sy: ih / H, ox: 0, oy: 0, iw, ih, cw: iw, ch: ih };
+  } else {
+    throw new Error(`unknown resize ${pre.resize}`);
+  }
+  const px = x.getImageData(0, 0, iw, ih).data, n = iw * ih;
+  const out = new Float32Array(3 * n), s = pre.scale ?? 1 / 255;
+  const mean = pre.mean || [0, 0, 0], std = pre.std || [1, 1, 1];
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) out[k * n + i] = (px[i * 4 + k] * s - mean[k]) / std[k];
+  const dims = [1, 3, ih, iw];
+  for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
+  return { tensor: new ort.Tensor("float32", out, dims), meta: { ...meta, W, H } };
+}
+
+const toOrig = (x, y, m) => [(x - m.ox) / m.sx, (y - m.oy) / m.sy];
+const sigmoid = (v) => 1 / (1 + Math.exp(-v));
+
+// 入力解像度の2次元出力（0..1）から内容のある範囲を切り出し、元画像の大きさの PNG にする
+async function cropResizePng(vals, w, h, m) {
+  const c = new OffscreenCanvas(w, h), x = c.getContext("2d");
+  const img = x.createImageData(w, h);
+  for (let i = 0; i < w * h; i++) {
+    const v = Math.max(0, Math.min(255, vals[i] * 255));
+    img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v; img.data[i * 4 + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  const fx = w / m.iw, fy = h / m.ih;
+  const o = new OffscreenCanvas(m.W, m.H);
+  o.getContext("2d").drawImage(c, m.ox * fx, m.oy * fy, m.cw * fx, m.ch * fy, 0, 0, m.W, m.H);
+  return o.convertToBlob({ type: "image/png" });
+}
+
+// ---------- 後処理: 出力 → 結果（形式は adapters.py の冒頭を参照） ----------
+
+const POST = {
+  // YOLO26 は NMS 込みの出力: logits (1,300,80) はシグモイド前、pred_boxes (1,300,4) は入力に対する正規化 cx cy w h
+  yolo_detect(out, m, post, p) {
+    const L = out.logits.data, B = out.pred_boxes.data, [, Q, C] = out.logits.dims, th = p.threshold ?? 0.4, items = [];
+    for (let i = 0; i < Q; i++) {
+      let bi = 0;
+      for (let c = 1; c < C; c++) if (L[i * C + c] > L[i * C + bi]) bi = c;
+      const score = sigmoid(L[i * C + bi]);
+      if (score < th) continue;
+      const [cx, cy, w, h] = [B[i * 4] * m.iw, B[i * 4 + 1] * m.ih, B[i * 4 + 2] * m.iw, B[i * 4 + 3] * m.ih];
+      items.push({ label: COCO[bi], score, box: [...toOrig(cx - w / 2, cy - h / 2, m), ...toOrig(cx + w / 2, cy + h / 2, m)] });
+    }
+    return { kind: "boxes", items };
+  },
+  // (1,300,57) = 正規化 x1 y1 x2 y2, score, class, 17 ×（x, y, 可視度）
+  yolo_pose(out, m, post, p) {
+    const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.4, items = [];
+    for (let i = 0; i < Q; i++) {
+      const r = D.subarray(i * K, i * K + K);
+      if (r[4] < th) continue;
+      const kps = [];
+      for (let k = 0; k < 17; k++) kps.push([...toOrig(r[6 + k * 3] * m.iw, r[7 + k * 3] * m.ih, m), r[8 + k * 3]]);
+      items.push({ label: "person", score: r[4], box: [...toOrig(r[0] * m.iw, r[1] * m.ih, m), ...toOrig(r[2] * m.iw, r[3] * m.ih, m)], keypoints: kps });
+    }
+    return { kind: "boxes", items };
+  },
+  async alpha(out, m, post) {
+    const t = post.output ? out[post.output] : Object.values(out)[0];
+    const [h, w] = t.dims.slice(-2), v = Float32Array.from(t.data, (a) => (post.sigmoid ? sigmoid(a) : a));
+    return { kind: "mask", cutout: true, mask: await cropResizePng(v, w, h, m) };
+  },
+  async depth(out, m, post) {
+    const t = out[post.output || "predicted_depth"], [h, w] = t.dims.slice(-2);
+    let v = Float32Array.from(t.data);
+    if (post.inverse) v = v.map((d) => 1 / Math.max(d, 1e-6)); // 「大きいほど遠い」深度を、表示用に「大きいほど近い」へ
+    let lo = Infinity, hi = -Infinity;
+    for (const a of v) { if (a < lo) lo = a; if (a > hi) hi = a; }
+    v = v.map((a) => (a - lo) / Math.max(hi - lo, 1e-6));
+    const res = { kind: "depth", image: await cropResizePng(v, w, h, m) };
+    if (post.intrinsics && out[post.intrinsics]) {
+      const fx = out[post.intrinsics].data[0];
+      res.note = `推定した水平画角 ${((2 * Math.atan(m.cw / 2 / fx) * 180) / Math.PI).toFixed(0)}°（DA3 はカメラの内部パラメータも出す）`;
+    }
+    return res;
+  },
+};
+
+async function onnxRun(ort, session, e, bitmap, params) {
+  const { tensor, meta } = preprocess(ort, bitmap, e.pre);
+  const out = await session.run({ [e.pre.input]: tensor });
+  return POST[e.post.type](out, meta, e.post, params);
+}
+
+// ブラウザ内推論。重い処理で画面が固まらないように Web Worker で動かす。
+// メインスレッドとのやりとり:
+//   → {id, model: models.json の1件, image: Blob | ImageBitmap, params}  ← {id, type: "result", result} / {id, type: "error", message}
+//   ← {type: "progress", key, file, progress}（モデルのダウンロード状況）
+//
+// どのモデルも adapter = { load(entry, device, onProgress) -> state, run(state, image, params, entry) -> 結果 } で扱う。
+// 結果の形式はサーバー（adapters.py）と同じ。models.json の adapter 名でここの ADAPTERS を引く。
+//   onnx   … 汎用 ONNX（onnxruntime-web を直接使う。前処理・後処理は onnx_generic.js の部品を models.json で組み合わせる）
+//   tjs-*  … transformers.js のプロセッサ・パイプラインを使う専用の実装
+//
+// Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
+// 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
+// 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
+
+const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
+const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
+
+// トップレベル await で待つと、その間に届いたメッセージが onmessage 未設定で捨てられるので、ハンドラ内で待つ
+let ort, T;
+const libReady = self.name === "ort"
+  ? import(`${ORT_URL}ort.webgpu.min.mjs`).then((m) => { ort = m; ort.env.wasm.wasmPaths = ORT_URL; })
+  : import(`https://cdn.jsdelivr.net/npm/@huggingface/transformers@${TJS_VERSION}`).then((m) => { T = m; T.env.allowLocalModels = false; });
+
+let devicePromise;
+function getDevice() {
+  devicePromise ??= (async () => {
+    try {
+      if (navigator.gpu && (await navigator.gpu.requestAdapter())) return "webgpu";
+    } catch { /* WebGPU なし */ }
+    return "wasm";
+  })();
+  return devicePromise;
+}
+
+const sigmoid = (x) => 1 / (1 + Math.exp(-x));
+const boxOf = (b) => [b.xmin, b.ymin, b.xmax, b.ymax];
+const splitLabels = (s) => (s || "").split(",").map((x) => x.trim()).filter(Boolean);
+const toPng = (rawImage) => rawImage.toBlob("image/png"); // メインスレッドで objectURL にする
+
+// transformers.js の読み込み進捗。数十KBごとに呼ばれるので、1% 進んだ時だけ送る
+function tjsOpts(e, device, onProgress) {
+  const last = {};
+  return {
+    device, dtype: e.dtype[device],
+    progress_callback: (p) => {
+      if (p.status !== "progress" || Math.floor(p.progress) === last[p.file]) return;
+      last[p.file] = Math.floor(p.progress);
+      onProgress(p.file, p.progress);
+    },
+  };
+}
+
+// ---------- adapter ----------
+
+const ADAPTERS = {
+  onnx: {
+    image: "bitmap",
+    load: async (e, device, onProgress) => ({ session: await onnxLoad(ort, e, device, onProgress) }),
+    run: (st, img, p, e) => onnxRun(ort, st.session, e, img, p),
+  },
+
+  "tjs-detect": {
+    load: async (e, d, pr) => ({ pipe: await T.pipeline("object-detection", e.repo, tjsOpts(e, d, pr)) }),
+    async run(st, img, p) {
+      const out = await st.pipe(img, { threshold: p.threshold ?? 0.4 });
+      return { kind: "boxes", items: out.map((o) => ({ label: o.label, score: o.score, box: boxOf(o.box) })) };
+    },
+  },
+
+  "tjs-depth": {
+    load: async (e, d, pr) => ({ pipe: await T.pipeline("depth-estimation", e.repo, tjsOpts(e, d, pr)) }),
+    async run(st, img) {
+      const out = await st.pipe(img);
+      return { kind: "depth", image: await toPng(await out.depth.resize(img.width, img.height)) };
+    },
+  },
+
+  // pipeline は候補ごとに別バッチで渡して ONNX（バッチ 1 固定）が落ちるので、公式例どおり "a. b." の1文にする
+  "tjs-gdino": {
+    load: async (e, d, pr) => ({
+      model: await T.AutoModelForZeroShotObjectDetection.from_pretrained(e.repo, tjsOpts(e, d, pr)),
+      proc: await T.AutoProcessor.from_pretrained(e.repo),
+    }),
+    async run(st, img, p) {
+      const labels = splitLabels(p.labels).map((l) => l.toLowerCase());
+      const inputs = await st.proc(img, labels.map((l) => l + ".").join(" "));
+      const out = await st.model(inputs);
+      const th = p.threshold ?? 0.3;
+      const [r] = st.proc.post_process_grounded_object_detection(out, inputs.input_ids, {
+        box_threshold: th, text_threshold: Math.min(th, 0.25), target_sizes: [[img.height, img.width]],
+      });
+      return { kind: "boxes", items: r.boxes.map((b, i) => ({ label: r.labels[i] || "?", score: r.scores[i], box: b })) };
+    },
+  },
+
+  // pipeline は SigLIP2 の文字列処理で "Invalid array length" になる。SigLIP は学習時と同じ max_length 64 で埋める
+  "tjs-siglip": {
+    load: async (e, d, pr) => ({
+      model: await T.AutoModel.from_pretrained(e.repo, tjsOpts(e, d, pr)),
+      proc: await T.AutoProcessor.from_pretrained(e.repo),
+      tok: await T.AutoTokenizer.from_pretrained(e.repo),
+    }),
+    async run(st, img, p) {
+      const labels = splitLabels(p.labels);
+      const text = st.tok(labels.map((l) => `a photo of ${l}`.toLowerCase()), { padding: "max_length", truncation: true, max_length: 64 });
+      const out = await st.model({ ...text, ...(await st.proc(img)) });
+      // SigLIP は候補ごとの独立なシグモイドで学習されていて、絶対値は小さく出がち。棒は候補間の softmax、abs にシグモイド
+      const logits = Array.from(out.logits_per_image.data);
+      const mx = Math.max(...logits), ex = logits.map((v) => Math.exp(v - mx)), sum = ex.reduce((a, b) => a + b, 0);
+      return { kind: "labels", items: labels.map((l, i) => ({ label: l, score: ex[i] / sum, abs: sigmoid(logits[i]) })).sort((a, b) => b.score - a.score) };
+    },
+  },
+
+  "tjs-sam": {
+    load: async (e, d, pr) => ({
+      model: await T.AutoModel.from_pretrained(e.repo, tjsOpts(e, d, pr)),
+      proc: await T.AutoProcessor.from_pretrained(e.repo),
+      emb: new Map(),
+    }),
+    async run(st, img, p) {
+      if (p.auto) return autoSegment(st, img, p);
+      const pts = p.points || [];
+      if (!pts.length) throw new Error("画像をクリックして点を指定してください");
+      const inputs = await st.proc(img, { input_points: [[pts.map(([x, y]) => [x, y])]], input_labels: [[pts.map(([, , l]) => l)]] });
+      // 同じ画像への2回目以降のクリックでは画像エンコーダを省く
+      if (!st.emb.has(p._imageKey)) {
+        st.emb.clear();
+        st.emb.set(p._imageKey, await st.model.get_image_embeddings(inputs));
+      }
+      const out = await st.model({ ...inputs, ...st.emb.get(p._imageKey) });
+      const masks = await st.proc.post_process_masks(out.pred_masks, inputs.original_sizes, inputs.reshaped_input_sizes);
+      // iou_scores: (1, point_batch=1, n_masks)、masks[0]: (point_batch=1, n_masks, H, W) の bool
+      const scores = out.iou_scores.data;
+      let best = 0;
+      for (let i = 1; i < scores.length; i++) if (scores[i] > scores[best]) best = i;
+      const m0 = masks[0], h = m0.dims.at(-2), w = m0.dims.at(-1), src = m0.data, px = new Uint8ClampedArray(w * h);
+      for (let i = 0; i < w * h; i++) px[i] = src[best * w * h + i] ? 255 : 0;
+      return { kind: "mask", mask: await toPng(new T.RawImage(px, w, h, 1)), score: scores[best] };
+    },
+  },
+
+  "tjs-vlm": {
+    load: async (e, d, pr) => ({
+      model: await (T.AutoModelForImageTextToText ?? T.AutoModelForVision2Seq).from_pretrained(e.repo, tjsOpts(e, d, pr)),
+      proc: await T.AutoProcessor.from_pretrained(e.repo),
+    }),
+    async run(st, img, p) {
+      const messages = [{ role: "user", content: [{ type: "image" }, { type: "text", text: p.prompt || "Describe this image." }] }];
+      const text = st.proc.apply_chat_template(messages, { add_generation_prompt: true });
+      // VLM は解像度が大きいと遅いので長辺 768px に縮める
+      const s = Math.min(1, 768 / Math.max(img.width, img.height));
+      const small = s < 1 ? await img.resize(Math.round(img.width * s), Math.round(img.height * s)) : img;
+      const inputs = await st.proc(text, [small]);
+      // 貪欲法のままだと Qwen3-VL 2B が同じ文を繰り返したので repetition_penalty を掛けている
+      const out = await st.model.generate({ ...inputs, max_new_tokens: 256, do_sample: false, repetition_penalty: 1.15 });
+      const [decoded] = st.proc.batch_decode(out.slice(null, [inputs.input_ids.dims.at(-1), null]), { skip_special_tokens: true });
+      return { kind: "text", text: decoded.trim() };
+    },
+  },
+};
+
+// 画面全体の自動分割（SAM の automatic mask generation の簡易版）。
+// 格子状の点を1点ずつプロンプトにして（この ONNX は点のバッチ次元が 1 固定で、1回に1物体しか受け付けない）、
+// 良いマスクだけ残し、重なりを除いて色分けする。マスクは低解像度（256×256、入力 1024×1024 = 画像全体を縦横そのまま縮めたもの）のまま扱う
+async function autoSegment(st, img, p) {
+  const G = p.grid || 12, S = 256, N = S * S;
+  const emb = await st.model.get_image_embeddings(await st.proc(img));
+  const cands = [];
+  for (let gy = 0; gy < G; gy++) for (let gx = 0; gx < G; gx++) {
+    const out = await st.model({
+      ...emb,
+      input_points: new T.Tensor("float32", new Float32Array([((gx + 0.5) / G) * 1024, ((gy + 0.5) / G) * 1024]), [1, 1, 1, 2]),
+      input_labels: new T.Tensor("int64", new BigInt64Array([1n]), [1, 1, 1]),
+    });
+    if (out.object_score_logits.data[0] <= 0) continue;
+    const iou = out.iou_scores.data;
+    let bi = 0;
+    for (let k = 1; k < 3; k++) if (iou[k] > iou[bi]) bi = k;
+    if (iou[bi] < 0.75) continue;
+    const logits = out.pred_masks.data.subarray(bi * N, bi * N + N);
+    // 安定度: 閾値を ±1 動かしても面積がほぼ変わらないマスクだけ残す（SAM の既定 0.95 より緩め）
+    let hi = 0, lo = 0;
+    const m = new Uint8Array(N);
+    for (let i = 0; i < N; i++) { const v = logits[i]; if (v > 1) hi++; if (v > -1) lo++; if (v > 0) m[i] = 1; }
+    const area = m.reduce((a, b) => a + b, 0);
+    if (lo === 0 || hi / lo < 0.85 || area < N * 0.001 || area > N * 0.95) continue;
+    cands.push({ m, area, score: iou[bi] * (hi / lo) });
+  }
+  // 重なりの大きいマスクは、良い方だけ残す
+  cands.sort((a, b) => b.score - a.score);
+  const kept = [];
+  for (const c of cands) {
+    let dup = false;
+    for (const k of kept) {
+      let inter = 0;
+      for (let i = 0; i < N; i++) inter += c.m[i] & k.m[i];
+      if (inter / (c.area + k.area - inter) > 0.7) { dup = true; break; }
+    }
+    if (!dup) kept.push(c);
+  }
+  // 大きい順に塗り、小さい物体を上に重ねる
+  kept.sort((a, b) => b.area - a.area);
+  const rgba = new Uint8ClampedArray(N * 4);
+  kept.forEach((k, j) => {
+    const [r, g, b] = hsl((j * 137.508) % 360, 0.7, 0.55);
+    for (let i = 0; i < N; i++) if (k.m[i]) { rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = 255; }
+  });
+  return { kind: "segmap", image: await toPng(new T.RawImage(rgba, S, S, 4)), count: kept.length, prompts: G * G };
+}
+
+function hsl(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => { const k = (n + h / 30) % 12; return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+  return [f(0), f(8), f(4)];
+}
+
+// ---------- 画像の受け渡しと実行 ----------
+
+// 静止画は Blob、動画のフレームは ImageBitmap で届く（毎フレーム JPEG にすると遅いので）。
+// onnx adapter は ImageBitmap、transformers.js 系は RawImage で受け取る
+async function toInput(image, kind) {
+  if (kind === "bitmap") return image instanceof Blob ? createImageBitmap(image) : image;
+  if (image instanceof Blob) return T.RawImage.fromBlob(image);
+  const c = new OffscreenCanvas(image.width, image.height), x = c.getContext("2d");
+  x.drawImage(image, 0, 0);
+  image.close?.();
+  return new T.RawImage(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, 4).rgb();
+}
+
+const loaded = new Map(); // entry.key -> Promise<state>
+
+self.onmessage = async (ev) => {
+  const { id, model: e, image, params } = ev.data;
+  try {
+    await libReady;
+    const A = ADAPTERS[e.adapter];
+    if (!A) throw new Error(`ブラウザ側に adapter "${e.adapter}" が無い`);
+    const device = await getDevice();
+    let loadMs = 0;
+    if (!loaded.has(e.key)) {
+      const t0 = performance.now();
+      const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
+      loaded.set(e.key, A.load(e, device, onProgress));
+      try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
+      loadMs = performance.now() - t0;
+    }
+    const st = await loaded.get(e.key);
+    const img = await toInput(image, A.image);
+    const t1 = performance.now();
+    const result = await A.run(st, img, params, e);
+    result.infer_ms = performance.now() - t1;
+    result.load_ms = loadMs;
+    result.device = device;
+    result.dtype = e.adapter === "onnx" ? "onnxruntime-web" : e.dtype?.[device];
+    self.postMessage({ id, type: "result", result });
+  } catch (err) {
+    self.postMessage({ id, type: "error", message: String(err?.message || err) });
+  }
+};
+</script>
+<script>
+globalThis.CVPG_STANDALONE = true;
+globalThis.CVPG_WORKER_URL = URL.createObjectURL(new Blob([document.getElementById('worker-src').textContent], { type: 'text/javascript' }));
+</script>
+  <script type="module">
+const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+  "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear",
+  "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
+  "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+  "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza",
+  "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+  "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
+  "teddy bear", "hair drier", "toothbrush"];
+
+// タスクの一覧と既定値。モデルの一覧は models.json。
+
+const TASKS = [
+  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る", params: ["threshold"] },
+  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）", params: ["threshold"] },
+  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold"] },
+  { id: "segment", name: "クリックで切り出し", hint: "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", params: ["points"] },
+  { id: "depth", name: "深度推定", hint: "赤いほど近い（相対深度）", params: [] },
+  { id: "classify", name: "ゼロショット分類", hint: "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", params: ["labels"] },
+  { id: "matting", name: "背景除去", hint: "前景だけを残す", params: [] },
+  { id: "vlm", name: "画像の説明・質問", hint: "SmolVLM は英語のみ。日本語は Qwen", params: ["prompt"] },
+];
+
+// モデルの一覧は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
+const MODELS = [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 514, "lib": "3", "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "prompt": "Describe this image in detail."}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"}];
+
+const DEFAULTS = {
+  threshold: { detect: 0.4, pose: 0.4, zsdetect: 0.3 },
+  labels: { zsdetect: "person, bus, bag", classify: "bus, truck, tram, street, office, cat" },
+  prompt: "この画像を日本語で詳しく説明してください。",
+};
+
+// COCO 17 関節の骨格（YOLO の順番）
+const SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6], [5, 7], [6, 8],
+  [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]];
+
+
+
+const $ = (id) => document.getElementById(id);
+const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
+const DISPLAY_SIDE = 1920;  // 動画・カメラを画面に描く長辺（元の解像度のまま、大きすぎる時だけ縮める）
+// 動画・カメラで推論に渡すフレームの長辺は画面で選ぶ（#infer-size、既定 640）。
+// YOLO26 は 640、RF-DETR は約 576、DA-V2 は 518 に内部で縮めるので、大きくしても効くのは主に SAM（1024）と送信量
+// 1ファイル版（build.py）では、サーバーを使わず Worker を Blob URL から作る
+const STANDALONE = !!globalThis.CVPG_STANDALONE;
+const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
+
+const state = {
+  task: "detect",
+  image: null,       // 静止画 {blob, bitmap, width, height, key}
+  video: false,      // 動画ファイルかカメラを表示中
+  live: false,       // 連続実行中
+  points: [],        // [[x, y, label]] 表示中の画像・フレームの座標
+  result: null,      // 最後の結果（layer: 事前に描いた重ね画像）
+  busy: false,
+  serverModels: new Set(),
+  frameNo: 0,
+  auto: false,       // クリックで切り出しの「全体を自動分割」
+};
+
+// ---------- 推論の呼び出し ----------
+
+const workers = {}; // lib ("4" | "3") -> Worker
+let seq = 0;
+const pending = new Map();
+function startWorker(lib) {
+  // 1ファイル版の Worker は import 文を含まないので classic で作る（file:// で開くと module Worker は起動できない）
+  const w = new Worker(WORKER_URL, { type: STANDALONE ? "classic" : "module", name: lib });
+  w.onmessage = onWorkerMessage;
+  w.onerror = (e) => setStatus(`Worker の起動に失敗: ${e.message}`, "err");
+  workers[lib] = w;
+  return w;
+}
+// onnxruntime-web は一度 OrtRun が失敗すると、同じ Worker 内の以後の実行も同じエラーで失敗し続ける。
+// 失敗したら Worker を作り直す（読み込み済みのモデルは失われるが、ダウンロードはブラウザのキャッシュに残る）
+// onnx adapter は onnxruntime-web の Worker、それ以外は transformers.js の Worker（lib: "3" なら 3.8.1）
+const workerLib = (m) => (m.adapter === "onnx" ? "ort" : m.lib || "4");
+function restartWorker(lib) {
+  workers[lib]?.terminate();
+  delete workers[lib];
+}
+function onWorkerMessage(ev) {
+  const d = ev.data;
+  if (d.type === "progress") {
+    setStatus(`ダウンロード中 ${d.file?.split("/").pop() ?? ""} ${d.progress?.toFixed?.(0) ?? ""}%`);
+    return;
+  }
+  const p = pending.get(d.id);
+  if (!p) return;
+  pending.delete(d.id);
+  d.type === "error" ? p.reject(new Error(d.message)) : p.resolve(d.result);
+}
+
+function runInBrowser(model, image, params) {
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    const lib = workerLib(model);
+    const transfer = image instanceof ImageBitmap ? [image] : [];
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model, image, params }, transfer);
+  });
+}
+
+async function runOnServer(model, image, params) {
+  const fd = new FormData();
+  fd.append("model", model.key);
+  fd.append("params", JSON.stringify(params));
+  fd.append("image", image, "image.jpg");
+  const t0 = performance.now();
+  const r = await fetch("api/run", { method: "POST", body: fd });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+  body.roundtrip_ms = performance.now() - t0;
+  return body;
+}
+
+// ---------- 画面 ----------
+
+function setStatus(text, cls = "") {
+  const el = $("status");
+  el.textContent = text;
+  el.className = `status ${cls}`;
+}
+
+// models.json の1件は where に実行できる場所を並べる。画面の選択肢は「モデル × 実行場所」ごとに1つ（値は key@where）。
+// 1ファイル版ではサーバーの選択肢を出さない
+function variants(task) {
+  const out = [];
+  for (const where of ["browser", "server"]) {
+    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where))) {
+      if (where === "server" && STANDALONE) continue;
+      const avoid = where === "browser" ? e.avoid_browser : null;
+      out.push({ ...e, where, avoid, id: `${e.key}@${where}`, ready: where === "browser" || state.serverModels.has(e.key) });
+    }
+  }
+  return out;
+}
+
+function renderTasks() {
+  $("tasks").innerHTML = "";
+  for (const t of TASKS) {
+    if (!variants(t.id).some((v) => !v.avoid)) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = t.name;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(t.id === state.task));
+    b.onclick = () => selectTask(t.id);
+    $("tasks").append(b);
+  }
+}
+
+function selectTask(id) {
+  stopLive();
+  state.task = id;
+  state.auto = false;
+  state.result = null;
+  state.points = [];
+  const t = TASKS.find((x) => x.id === id);
+  renderTasks();
+  $("task-hint").textContent = t.hint;
+  for (const el of document.querySelectorAll("[data-param]")) el.hidden = !t.params.includes(el.dataset.param);
+  if (DEFAULTS.threshold[id]) { $("threshold").value = DEFAULTS.threshold[id]; $("th-out").textContent = DEFAULTS.threshold[id]; }
+  if (DEFAULTS.labels[id]) $("labels").value = DEFAULTS.labels[id];
+  $("canvas-wrap").classList.toggle("clickable", id === "segment");
+
+  const sel = $("model");
+  sel.innerHTML = "";
+  const vs = variants(id);
+  for (const where of ["browser", "server"]) {
+    const g = document.createElement("optgroup");
+    g.label = where === "browser" ? "ブラウザで実行（この端末）" : "サーバーで実行";
+    for (const v of vs.filter((x) => x.where === where)) {
+      const o = document.createElement("option");
+      o.value = v.id;
+      const size = v.mb >= 1000 ? (v.mb / 1000).toFixed(1) + "GB" : v.mb + "MB";
+      o.textContent = where === "browser" ? `${v.name}（約${size}）${v.avoid ? "（Mac の Chrome では不可）" : ""}` : v.name;
+      o.disabled = !v.ready;
+      g.append(o);
+    }
+    if (g.children.length) sel.append(g);
+  }
+  const first = vs.find((v) => !v.avoid && v.ready);
+  if (first) sel.value = first.id;
+  updateModelNote();
+  updateButtons();
+  setStatus("");
+  $("result").innerHTML = "";
+  draw();
+}
+
+function currentModel() {
+  return variants(state.task).find((v) => v.id === $("model").value);
+}
+
+const DEFAULT_PROMPTS = new Set([DEFAULTS.prompt, ...MODELS.filter((x) => x.prompt).map((x) => x.prompt)]);
+function updateModelNote() {
+  const m = currentModel();
+  if (!m) return;
+  if (DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || DEFAULTS.prompt;
+  const notes = [];
+  notes.push(m.repo || m.onnx?.repo || m.ollama || "");
+  notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
+  if (m.where === "browser" && m.mb >= 500) notes.push("初回のダウンロードが大きい。モバイル回線では注意");
+  if (m.where === "server") notes.push("画像をサーバーに送って処理する");
+  if (m.avoid) notes.push(m.avoid);
+  if (m.note) notes.push(m.note);
+  $("model-note").textContent = notes.join(" / ");
+}
+
+function updateButtons() {
+  $("run").hidden = state.task === "segment" && !state.video && !state.auto;
+  $("auto").checked = state.auto;
+  $("run").textContent = state.video ? "今のフレームで1回実行" : "実行";
+  $("video-controls").hidden = !state.video;
+  $("live").textContent = state.live ? "■ 連続実行を止める" : "▶ 連続実行";
+  $("live").classList.toggle("on", state.live);
+  $("pause").textContent = $("video").paused ? "再生" : "一時停止";
+  $("pause").hidden = isCamera();
+}
+
+// ---------- 画像・動画・カメラ ----------
+
+async function setImage(blobOrUrl) {
+  stopVideo();
+  const blob = typeof blobOrUrl === "string" ? await (await fetch(blobOrUrl)).blob() : blobOrUrl;
+  let bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
+  const s = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(bitmap.width * s);
+  c.height = Math.round(bitmap.height * s);
+  c.getContext("2d").drawImage(bitmap, 0, 0, c.width, c.height);
+  const out = await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92));
+  bitmap = await createImageBitmap(out);
+  state.image = { blob: out, bitmap, width: c.width, height: c.height, key: `${Date.now()}-${out.size}` };
+  clearResult();
+  draw();
+}
+
+function clearResult() {
+  state.points = [];
+  state.result = null;
+  $("result").innerHTML = "";
+}
+
+let stream = null;
+const isCamera = () => !!stream;
+
+async function startCamera() {
+  let s;
+  try {
+    s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 } }, audio: false });
+  } catch (e) {
+    setStatus(`カメラを使えない: ${e.message}`, "err");
+    return;
+  }
+  stopVideo();
+  stream = s;
+  $("video").srcObject = stream;
+  await startVideoCommon();
+}
+
+async function setVideoFile(file) {
+  stopVideo();
+  const v = $("video");
+  v.src = URL.createObjectURL(file);
+  v.loop = true;
+  await startVideoCommon();
+}
+
+async function startVideoCommon() {
+  const v = $("video");
+  v.muted = true;
+  await new Promise((r) => (v.readyState >= 1 ? r() : v.addEventListener("loadedmetadata", r, { once: true })));
+  await v.play().catch(() => {});
+  state.video = true;
+  clearResult();
+  updateButtons();
+  requestAnimationFrame(videoLoop);
+}
+
+function stopVideo() {
+  stopLive();
+  const v = $("video");
+  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  if (v.getAttribute("src")) { URL.revokeObjectURL(v.src); v.removeAttribute("src"); v.load(); }
+  v.srcObject = null;
+  state.video = false;
+  updateButtons();
+}
+
+function videoSize(side) {
+  const v = $("video");
+  const s = Math.min(1, side / Math.max(v.videoWidth, v.videoHeight));
+  return [Math.round(v.videoWidth * s), Math.round(v.videoHeight * s)];
+}
+const inferSize = () => (state.video ? videoSize(+$("infer-size").value) : [state.image.width, state.image.height]);
+
+// 動画は非表示の <video> を毎フレーム canvas に描き、最後の結果を重ねる
+function videoLoop() {
+  if (!state.video) return;
+  draw();
+  requestAnimationFrame(videoLoop);
+}
+
+// 推論に渡す1枚。ブラウザ実行は ImageBitmap（速い）、サーバー実行は JPEG
+async function grabFrame(forServer) {
+  if (!state.video) return { image: state.image.blob, key: state.image.key };
+  const [w, h] = inferSize();
+  const c = new OffscreenCanvas(w, h);
+  c.getContext("2d").drawImage($("video"), 0, 0, w, h);
+  const key = `frame-${++state.frameNo}`;
+  const image = forServer ? await c.convertToBlob({ type: "image/jpeg", quality: 0.85 }) : await createImageBitmap(c);
+  return { image, key };
+}
+
+// ---------- 描画 ----------
+
+function loadImg(url) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+}
+
+const COLORS = ["#2f6fdf", "#e0457b", "#16a34a", "#f59e0b", "#8b5cf6", "#0ea5e9", "#ef4444", "#14b8a6"];
+const colorOf = (label) => COLORS[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+
+function baseSource() {
+  if (state.video) { const [w, h] = videoSize(DISPLAY_SIDE); return w ? { src: $("video"), w, h } : null; }
+  return state.image ? { src: state.image.bitmap, w: state.image.width, h: state.image.height } : null;
+}
+
+// 結果の見せ方。種類ごとに選べる表示と、最初の既定（先頭）
+const VIEWS = {
+  boxes: [["overlay", "重ねる"], ["only", "結果だけ"], ["original", "元画像"]],
+  mask: [["overlay", "重ねる"], ["only", "マスクだけ（白黒）"], ["cutout", "切り抜き"], ["original", "元画像"]],
+  cutout: [["cutout", "切り抜き"], ["only", "マスクだけ（白黒）"], ["original", "元画像"]],
+  depth: [["only", "深度だけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+  segmap: [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+};
+const viewKind = (r) => (r.kind === "mask" && r.cutout ? "cutout" : r.kind);
+let shownKind = null;
+function updateViewSelect() {
+  const r = state.result, kind = r && VIEWS[viewKind(r)] ? viewKind(r) : null;
+  $("view-toggle").hidden = !kind;
+  if (!kind || kind === shownKind) return;
+  shownKind = kind;
+  $("view").innerHTML = VIEWS[kind].map(([v, t]) => `<option value="${v}">${t}</option>`).join("");
+}
+
+let cutCanvas = null;
+function draw() {
+  const cv = $("canvas");
+  const ctx = cv.getContext("2d");
+  const b = baseSource();
+  if (!b) return;
+  if (cv.width !== b.w || cv.height !== b.h) { cv.width = b.w; cv.height = b.h; }
+  const r = state.result;
+  updateViewSelect();
+  const view = r ? $("view").value : "original";
+  const lw = Math.max(2, b.w / 400);
+  ctx.globalAlpha = 1;
+  ctx.drawImage(b.src, 0, 0, b.w, b.h);
+
+  if (r && view !== "original") {
+    if (view === "only" && ["boxes", "segmap", "mask"].includes(r.kind)) { ctx.fillStyle = "#000"; ctx.fillRect(0, 0, b.w, b.h); }
+    if (r.kind === "depth" || r.kind === "segmap") {
+      ctx.globalAlpha = view === "overlay" ? 0.55 : 1;
+      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
+      ctx.globalAlpha = 1;
+    } else if (r.kind === "mask" && view === "cutout") {
+      // 前景の度合いを不透明度にした層へ、今の画像を source-in で重ねて切り抜く（動画でも毎フレーム軽い）
+      if (!cutCanvas || cutCanvas.width !== b.w || cutCanvas.height !== b.h) cutCanvas = new OffscreenCanvas(b.w, b.h);
+      const x = cutCanvas.getContext("2d");
+      x.globalCompositeOperation = "copy";
+      x.drawImage(r.alpha, 0, 0, b.w, b.h);
+      x.globalCompositeOperation = "source-in";
+      x.drawImage(b.src, 0, 0, b.w, b.h);
+      drawChecker(ctx, b.w, b.h);
+      ctx.drawImage(cutCanvas, 0, 0);
+    } else if (r.kind === "mask") {
+      ctx.drawImage(view === "only" ? r.gray : r.tint, 0, 0, b.w, b.h);
+    } else if (r.kind === "boxes") {
+      const sx = b.w / r.w, sy = b.h / r.h;
+      ctx.font = `${Math.max(12, b.w / 60)}px system-ui, sans-serif`;
+      ctx.textBaseline = "top";
+      for (const it of r.items) {
+        const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
+        const col = colorOf(it.label);
+        ctx.strokeStyle = col; ctx.lineWidth = lw;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        const text = `${it.label} ${(it.score * 100).toFixed(0)}`;
+        const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
+        ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
+        ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
+        if (it.keypoints) drawPose(ctx, it.keypoints.map(([x, y, s]) => [x * sx, y * sy, s]), lw);
+      }
+    }
+  }
+  for (const [x, y, l] of state.points) {
+    ctx.beginPath(); ctx.arc(x, y, lw * 3, 0, Math.PI * 2);
+    ctx.fillStyle = l ? "#16a34a" : "#ef4444"; ctx.fill();
+    ctx.strokeStyle = "#fff"; ctx.lineWidth = lw; ctx.stroke();
+  }
+}
+
+function drawPose(ctx, kps, lw) {
+  ctx.strokeStyle = "#f59e0b"; ctx.lineWidth = lw;
+  for (const [a, b] of SKELETON) {
+    ctx.beginPath(); ctx.moveTo(kps[a][0], kps[a][1]); ctx.lineTo(kps[b][0], kps[b][1]); ctx.stroke();
+  }
+  ctx.fillStyle = "#e0457b";
+  for (const [x, y] of kps) { ctx.beginPath(); ctx.arc(x, y, lw * 1.6, 0, Math.PI * 2); ctx.fill(); }
+}
+
+// 結果の画像（マスク・深度・色分け）は届いた時に1回だけ表示用の層に変換しておく（描画は毎フレームなので）
+async function prepareLayer(r) {
+  const src = r.kind === "mask" ? r.mask : r.image;
+  if (!src || !["mask", "depth", "segmap"].includes(r.kind)) return;
+  const url = src instanceof Blob ? URL.createObjectURL(src) : src;
+  const img = await loadImg(url);
+  if (src instanceof Blob) URL.revokeObjectURL(url);
+  const w = img.naturalWidth, h = img.naturalHeight;
+  const layer = (fn) => {
+    const c = new OffscreenCanvas(w, h), x = c.getContext("2d");
+    x.drawImage(img, 0, 0);
+    if (!fn) return c;
+    const d = x.getImageData(0, 0, w, h);
+    for (let i = 0; i < d.data.length; i += 4) fn(d.data, i, d.data[i] / 255);
+    x.putImageData(d, 0, 0);
+    return c;
+  };
+  if (r.kind === "segmap") { r.layer = layer(); return; }
+  if (r.kind === "depth") { // jet。赤＝近い、青＝遠い
+    r.layer = layer((d, i, t) => {
+      d[i] = 255 * clamp01(1.5 - Math.abs(4 * t - 3)); d[i + 1] = 255 * clamp01(1.5 - Math.abs(4 * t - 2));
+      d[i + 2] = 255 * clamp01(1.5 - Math.abs(4 * t - 1)); d[i + 3] = 255;
+    });
+    return;
+  }
+  r.gray = layer((d, i) => { d[i + 1] = d[i + 2] = d[i]; d[i + 3] = 255; });                  // 白＝前景
+  r.alpha = layer((d, i) => { d[i + 3] = d[i]; });                                           // 前景の度合い＝不透明度
+  r.tint = layer((d, i, t) => { d[i] = 47; d[i + 1] = 111; d[i + 2] = 223; d[i + 3] = t > 0.5 ? 120 : 0; });
+}
+const clamp01 = (v) => Math.min(1, Math.max(0, v));
+
+function drawChecker(ctx, w, h) {
+  const s = Math.max(8, Math.round(w / 60));
+  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
+    ctx.fillStyle = ((x / s + y / s) & 1) ? "#d0d4da" : "#f2f4f7";
+    ctx.fillRect(x, y, s, s);
+  }
+}
+
+function renderResult(m, r, live) {
+  const el = $("result");
+  const where = m.where === "browser" ? `ブラウザ（${r.device}, ${r.dtype}）` : `サーバー（${r.device}）`;
+  const net = r.roundtrip_ms ? ` / 通信込み ${fmt(r.roundtrip_ms)}` : "";
+  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム）` : "";
+  let body = "";
+  if (r.kind === "boxes") {
+    body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
+  } else if (r.kind === "labels") {
+    body = r.items.map((it) => `<div class="bar"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${(it.score * 100).toFixed(1)}%"></span></span><span class="num">${(it.score * 100).toFixed(1)}%</span></div>`).join("")
+      + (r.items[0]?.abs != null ? `<div class="dets">絶対スコア: ${r.items.map((it) => `${esc(it.label)} ${(it.abs * 100).toFixed(1)}%`).join("、")}</div>` : "");
+  } else if (r.kind === "text") {
+    body = `<pre>${esc(r.text)}</pre>`;
+  } else if (r.kind === "segmap") {
+    body = `<div class="dets">${r.count} 領域（${r.prompts} 点のプロンプトから重なりを除いたもの）</div>`;
+  } else if (r.kind === "depth" && r.note) {
+    body = `<div class="dets">${esc(r.note)}</div>`;
+  } else if (r.kind === "mask" && r.score != null) {
+    body = `<div class="dets">マスクの推定品質 ${(r.score * 100).toFixed(0)}%（点 ${state.points.length} 個）</div>`;
+  }
+  el.innerHTML = `<div class="meta">${esc(m.name)} ・ ${where} ・ 読み込み ${fmt(r.load_ms)} ・ 推論 ${fmt(r.infer_ms)}${net}${fps}</div>${body}`;
+}
+
+function summarizeBoxes(items) {
+  const c = {};
+  for (const it of items) c[it.label] = (c[it.label] || 0) + 1;
+  return Object.entries(c).map(([k, v]) => `${esc(k)} ×${v}`).join("、") || "なし";
+}
+
+const fmt = (ms) => (ms == null ? "-" : ms >= 10000 ? `${(ms / 1000).toFixed(0)}s` : ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms.toFixed(0)}ms`);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+function addHistory(m, r, summaryOverride) {
+  const tr = document.createElement("tr");
+  const task = TASKS.find((t) => t.id === m.task).name;
+  const where = m.where === "browser" ? `ブラウザ ${r.device}` : `サーバー ${r.device}`;
+  const summary = summaryOverride ?? (r.kind === "boxes" ? `${r.items.length}件` : r.kind === "labels" ? `${r.items[0]?.label ?? ""}` : r.kind === "text" ? r.text.slice(0, 24) + "…" : r.kind);
+  tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${task}</td><td>${esc(m.name)}</td><td>${where}</td><td>${r.w}×${r.h}</td><td class="num">${fmt(r.load_ms)}</td><td class="num">${fmt(r.infer_ms)}</td><td>${esc(summary)}</td>`;
+  $("history").prepend(tr);
+}
+
+// ---------- 実行 ----------
+
+// 点は表示中の canvas の座標で持ち、推論に渡すフレームの座標に直して送る
+function paramsFor(key, w, auto) {
+  const k = w / $("canvas").width;
+  return {
+    threshold: parseFloat($("threshold").value),
+    labels: $("labels").value,
+    prompt: $("prompt").value,
+    points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
+    auto,
+    _imageKey: key,
+  };
+}
+
+// 1回分。結果を state.result に入れ、描画用の層を用意する
+async function runOnce(m) {
+  const [w, h] = inferSize();
+  const { image, key } = await grabFrame(m.where === "server");
+  const params = paramsFor(key, w, state.auto);
+  if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
+  const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
+  r.w = w; r.h = h;
+  await prepareLayer(r);
+  state.result = r;
+  return r;
+}
+
+async function run() {
+  if (state.busy || state.live) return;
+  const m = currentModel();
+  if (!m) return;
+  if (!state.image && !state.video) { setStatus("先に画像を選んでください", "warn"); return; }
+  state.busy = true;
+  $("run").disabled = true;
+  setStatus(m.where === "browser" ? "ブラウザで実行中…（初回はモデルを取得）" : "サーバーで実行中…（初回はモデルを読み込み）");
+  try {
+    const r = await runOnce(m);
+    renderResult(m, r);
+    addHistory(m, r);
+    setStatus("");
+    draw();
+    if (m.where === "server") refreshServer();
+  } catch (e) {
+    failed(m, e);
+  } finally {
+    state.busy = false;
+    $("run").disabled = false;
+  }
+}
+
+function failed(m, e) {
+  setStatus(`失敗: ${e.message}`, "err");
+  if (m.where === "browser" && /OrtRun|storage buffers/.test(e.message)) restartWorker(workerLib(m));
+}
+
+// 動画・カメラで、前の推論が終わったら次のフレームを送る（処理が追いつかない間のフレームは飛ばす）。
+// fps は2フレーム目以降で測る（1フレーム目はモデルの読み込みを含むため）
+async function liveLoop() {
+  const m = currentModel();
+  let frames = 0, inferSum = 0, first = null, tStart = 0, fps = 0;
+  setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
+  try {
+    while (state.live && state.video) {
+      const r = await runOnce(m);
+      if (!first) { first = r; tStart = performance.now(); setStatus(""); }
+      frames++;
+      inferSum += r.infer_ms;
+      fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
+      renderResult(m, r, { fps, frames });
+    }
+  } catch (e) {
+    failed(m, e);
+  }
+  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps`);
+  state.live = false;
+  updateButtons();
+}
+
+function toggleLive() {
+  if (state.live) { stopLive(); return; }
+  if (!state.video || !currentModel()) return;
+  if (state.task === "segment" && !state.points.length && !state.auto) { setStatus("先に画面をクリックして点を置くか、「全体を自動分割」を選んでください", "warn"); return; }
+  state.live = true;
+  updateButtons();
+  liveLoop();
+}
+function stopLive() {
+  state.live = false;
+  updateButtons();
+}
+
+async function freezeFrame() {
+  const [w, h] = videoSize(DISPLAY_SIDE);
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage($("video"), 0, 0, w, h);
+  await setImage(await new Promise((r) => c.toBlob(r, "image/jpeg", 0.92)));
+}
+
+function canvasPoint(ev) {
+  const cv = $("canvas"), rect = cv.getBoundingClientRect();
+  return [(ev.clientX - rect.left) * (cv.width / rect.width), (ev.clientY - rect.top) * (cv.height / rect.height)];
+}
+
+// ---------- サーバー状態 ----------
+
+async function refreshServer() {
+  if (STANDALONE) return;
+  try {
+    const s = await (await fetch("api/status")).json();
+    const parts = [`サーバー ${s.device}`];
+    parts.push(s.loaded.length ? `読み込み中: ${s.loaded.join(", ")}` : "読み込み中のモデルなし");
+    if (s.mps_allocated_gb != null) parts.push(`MPS ${s.mps_allocated_gb}GB`);
+    if (s.ollama_loaded?.length) parts.push(`Ollama: ${s.ollama_loaded.join(", ")}`);
+    if (s.gpu_lock) parts.push("⚠ LLMベンチ実行中（GPUロックあり）");
+    $("server-status").textContent = parts.join(" ・ ");
+  } catch {
+    $("server-status").textContent = "サーバーに接続できない（ブラウザ実行のみ）";
+  }
+}
+
+async function init() {
+  $("env").textContent = (navigator.gpu ? "WebGPU あり" : "WebGPU なし（WASM で実行、遅い）") + (STANDALONE ? " ・ サーバーなし版" : "");
+  if (navigator.gpu) {
+    try { if (!(await navigator.gpu.requestAdapter())) $("env").textContent = "WebGPU アダプタなし（WASM で実行）"; } catch { /* noop */ }
+  }
+  if (STANDALONE) {
+    $("server-box").hidden = true;
+  } else {
+    try {
+      const list = await (await fetch("api/models")).json();
+      state.serverModels = new Set(list.map((m) => m.key));
+    } catch { /* サーバーなし */ }
+  }
+  $("prompt").value = DEFAULTS.prompt;
+  $("threshold").oninput = () => { $("th-out").textContent = $("threshold").value; };
+  $("model").onchange = () => { stopLive(); clearResult(); setStatus(""); updateModelNote(); draw(); };
+  $("run").onclick = run;
+  $("live").onclick = toggleLive;
+  $("pause").onclick = () => { const v = $("video"); v.paused ? v.play() : v.pause(); updateButtons(); };
+  $("freeze").onclick = freezeFrame;
+  $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
+  $("view").onchange = draw;
+  $("auto").onchange = () => {
+    state.auto = $("auto").checked;
+    state.points = [];
+    state.result = null;
+    updateButtons();
+    draw();
+    if (state.auto && !state.video) run();
+  };
+  $("unload").onclick = async () => { await fetch("api/unload", { method: "POST" }); refreshServer(); };
+  $("camera-btn").onclick = startCamera;
+  $("file").onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    f.type.startsWith("video/") ? setVideoFile(f) : setImage(f);
+    e.target.value = "";
+  };
+  for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
+  $("canvas").addEventListener("click", (ev) => {
+    if (state.task !== "segment" || state.auto || (!state.image && !state.video) || state.busy) return;
+    const [x, y] = canvasPoint(ev);
+    state.points.push([x, y, ev.shiftKey || $("negative").checked ? 0 : 1]);
+    draw();
+    if (!state.live) run();
+  });
+  selectTask("detect");
+  await setImage(document.querySelector("[data-sample]").dataset.sample);
+  refreshServer();
+  if (!STANDALONE) setInterval(refreshServer, 15000);
+}
+
+init();
+</script>
+</body>
+</html>

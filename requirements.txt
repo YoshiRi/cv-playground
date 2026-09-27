@@ -1,0 +1,13 @@
+# サーバー（server.py）用。ブラウザだけで使う場合（dist/cv-playground.html）は不要
+torch>=2.14
+torchvision
+transformers>=5.17
+timm
+accelerate
+onnxruntime>=1.30
+huggingface_hub>=1.33
+fastapi>=0.141
+uvicorn[standard]>=0.54
+python-multipart
+pillow
+requests

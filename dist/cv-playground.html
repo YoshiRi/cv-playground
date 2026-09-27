@@ -219,6 +219,8 @@ th { color: var(--muted); font-weight: 500; }
   </section>
 
   <script type="text/plain" id="worker-src">
+(async () => {
+const { COCO } = await (async () => {
 const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
   "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear",
   "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
@@ -228,6 +230,9 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
   "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
   "teddy bear", "hair drier", "toothbrush"];
 
+return { COCO };
+})();
+const { onnxLoad, onnxRun } = await (async () => {
 // 汎用 ONNX adapter のブラウザ版（onnxruntime-web を直接使う）。サーバー版は adapters.py の OnnxAdapter。
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
@@ -383,6 +388,9 @@ async function onnxRun(ort, session, e, bitmap, params) {
   return POST[e.post.type](out, meta, e.post, params);
 }
 
+return { onnxLoad, onnxRun };
+})();
+(async () => {
 // ブラウザ内推論。重い処理で画面が固まらないように Web Worker で動かす。
 // メインスレッドとのやりとり:
 //   → {id, model: models.json の1件, image: Blob | ImageBitmap, params}  ← {id, type: "result", result} / {id, type: "error", message}
@@ -642,12 +650,16 @@ self.onmessage = async (ev) => {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });
   }
 };
+
+})();
+})();
 </script>
 <script>
 globalThis.CVPG_STANDALONE = true;
 globalThis.CVPG_WORKER_URL = URL.createObjectURL(new Blob([document.getElementById('worker-src').textContent], { type: 'text/javascript' }));
 </script>
   <script type="module">
+const { COCO } = await (async () => {
 const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
   "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear",
   "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball",
@@ -657,6 +669,9 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
   "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors",
   "teddy bear", "hair drier", "toothbrush"];
 
+return { COCO };
+})();
+const { TASKS, MODELS, DEFAULTS, SKELETON } = await (async () => {
 // タスクの一覧と既定値。モデルの一覧は models.json。
 
 const TASKS = [
@@ -684,6 +699,9 @@ const SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6,
   [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]];
 
 
+return { TASKS, MODELS, DEFAULTS, SKELETON };
+})();
+(async () => {
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -1315,6 +1333,8 @@ async function init() {
 }
 
 init();
+
+})();
 </script>
 </body>
 </html>

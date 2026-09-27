@@ -15,20 +15,26 @@ WEB = Path(__file__).parent / "web"
 OUT = Path(__file__).parent / "dist" / "cv-playground.html"
 
 
-def strip_module(src: str) -> str:
-    """ローカルの import / re-export の行を消し、export を外す（全部を1つのスクリプトにつなげるため）"""
+def module(name, src=None):
+    """ES モジュール1つを、スコープを閉じた即時関数に包む（同じ名前の内部関数がファイル間でぶつからないように）。
+    export した名前だけを外に出し、ローカルの import / re-export の行は消す（依存先は先に並べておく）"""
+    src = src if src is not None else (WEB / name).read_text()
     src = re.sub(r'^(import|export) \{[^}]*\} from "\./[\w.]+\.js";\n', "", src, flags=re.M)
-    return re.sub(r"^export ", "", src, flags=re.M)
+    names = re.findall(r"^export (?:async function|function|const|let|class) (\w+)", src, flags=re.M)
+    body = re.sub(r"^export ", "", src, flags=re.M)
+    if not names:  # 何も export しない（app.js、worker.js）はそのまま閉じる
+        return f"(async () => {{\n{body}\n}})();\n"
+    return f"const {{ {', '.join(names)} }} = await (async () => {{\n{body}\nreturn {{ {', '.join(names)} }};\n}})();\n"
 
 
 def main() -> None:
-    read = lambda name: strip_module((WEB / name).read_text())
     models = json.loads((WEB / "models.json").read_text())["models"]
-    catalog = re.sub(r"^const MODELS = .*$", lambda _: "const MODELS = " + json.dumps(models, ensure_ascii=False) + ";",
-                     read("catalog.js"), count=1, flags=re.M)
+    catalog = re.sub(r"^export const MODELS = .*$", lambda _: "export const MODELS = " + json.dumps(models, ensure_ascii=False) + ";",
+                     (WEB / "catalog.js").read_text(), count=1, flags=re.M)
     assert "import.meta" not in catalog
-    worker = read("coco.js") + "\n" + read("onnx_generic.js") + "\n" + read("worker.js")
-    app = read("coco.js") + "\n" + catalog + "\n" + read("app.js")
+    # Worker は classic で起動するので、トップレベル await を避けて全体を1つの async 関数に入れる
+    worker = "(async () => {\n" + module("coco.js") + module("onnx_generic.js") + module("worker.js") + "})();\n"
+    app = module("coco.js") + module("catalog.js", catalog) + module("app.js")
     html = (WEB / "index.html").read_text()
     css = (WEB / "style.css").read_text()
 

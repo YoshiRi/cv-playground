@@ -1,9 +1,9 @@
 // タスクの一覧と既定値。モデルの一覧は models.json。
 
 export const TASKS = [
-  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る", params: ["threshold"] },
-  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）", params: ["threshold"] },
-  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold"] },
+  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
+  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
+  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold", "track"] },
   { id: "segment", name: "クリックで切り出し", hint: "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", params: ["points"] },
   { id: "depth", name: "深度推定", hint: "赤いほど近い（相対深度）", params: [] },
   { id: "classify", name: "ゼロショット分類", hint: "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", params: ["labels"] },

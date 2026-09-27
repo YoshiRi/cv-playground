@@ -153,6 +153,14 @@ th { color: var(--muted); font-weight: 500; }
         <label class="field" data-param="prompt">質問・指示
           <textarea id="prompt" rows="2"></textarea>
         </label>
+        <label class="field row" data-param="track">追跡
+          <select id="tracker">
+            <option value="">なし</option>
+            <option value="bytetrack">ByteTrack</option>
+            <option value="botsort">BoT-SORT（カメラ移動の補正・ReID なし）</option>
+          </select>
+        </label>
+        <p class="hint" data-param="track" id="track-hint" hidden>追跡は動画・カメラの「▶ 連続実行」で働く。Ultralytics と同じ設定（新しい ID は閾値以上、見失ってから 30 フレームで破棄、低スコアの検出は 0.1 まで救済に使う）</p>
         <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
           <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
         </label>
@@ -675,9 +683,9 @@ const { TASKS, MODELS, DEFAULTS, SKELETON } = await (async () => {
 // タスクの一覧と既定値。モデルの一覧は models.json。
 
 const TASKS = [
-  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る", params: ["threshold"] },
-  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）", params: ["threshold"] },
-  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold"] },
+  { id: "detect", name: "物体検出", hint: "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
+  { id: "pose", name: "人物の姿勢", hint: "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", params: ["threshold", "track"] },
+  { id: "zsdetect", name: "テキスト指定検出", hint: "英語の名詞をカンマ区切り（例: cat, remote control）", params: ["labels", "threshold", "track"] },
   { id: "segment", name: "クリックで切り出し", hint: "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）", params: ["points"] },
   { id: "depth", name: "深度推定", hint: "赤いほど近い（相対深度）", params: [] },
   { id: "classify", name: "ゼロショット分類", hint: "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", params: ["labels"] },
@@ -700,6 +708,314 @@ const SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6,
 
 
 return { TASKS, MODELS, DEFAULTS, SKELETON };
+})();
+const { TRACKER_DEFAULTS, Tracker } = await (async () => {
+// 複数物体追跡（ByteTrack / BoT-SORT）。Ultralytics の実装（ultralytics/trackers、2026-09 の main）を JS に移したもの。
+// 検出結果（boxes）をフレームごとに渡すと、ID 付きの結果を返す。ブラウザ実行・サーバー実行のどちらの検出にも使える。
+//
+//   const t = new Tracker("bytetrack");   // または "botsort"
+//   const tracked = t.update(items);      // items: [{label, score, box: [x1, y1, x2, y2], ...}]
+//                                         // → [{...検出の項目, id, box: カルマンフィルタで整えた枠}]
+//
+// Ultralytics との違い:
+// - BoT-SORT のカメラ移動の補正（GMC、既定は疎な光学フロー）と ReID（既定で無効）は無い。
+//   なので BoT-SORT はカルマンフィルタの状態が xywh になる点だけが ByteTrack と違う（固定カメラなら GMC の影響は小さい）
+// - 割り当ては lap.lapjv（extend_cost, cost_limit）と同じ問題を、拡張したコスト行列のハンガリアン法で解く
+
+const TRACKER_DEFAULTS = {
+  track_high_thresh: 0.25, // 1段目の対応付けに使う検出の下限
+  track_low_thresh: 0.1,   // 2段目（低スコアの検出で見失いを救う）の下限
+  new_track_thresh: 0.25,  // 新しい ID を作る検出の下限
+  track_buffer: 30,        // 見失ってから ID を捨てるまでのフレーム数
+  match_thresh: 0.8,       // 1段目の対応付けのコスト上限
+  fuse_score: true,        // IoU に検出スコアを掛けて対応付ける
+};
+
+const State = { New: 0, Tracked: 1, Lost: 2, Removed: 3 };
+
+// ---------- カルマンフィルタ（等速モデル、状態 8 次元） ----------
+
+const W_POS = 1 / 20, W_VEL = 1 / 160;
+
+// kind "xyah": 中心 x, y, 縦横比, 高さ（ByteTrack）/ "xywh": 中心 x, y, 幅, 高さ（BoT-SORT）
+function kfStd(kind, m, which) {
+  if (kind === "xyah") {
+    const h = m[3];
+    if (which === "init") return [2 * W_POS * h, 2 * W_POS * h, 1e-2, 2 * W_POS * h, 10 * W_VEL * h, 10 * W_VEL * h, 1e-5, 10 * W_VEL * h];
+    if (which === "motion") return [W_POS * h, W_POS * h, 1e-2, W_POS * h, W_VEL * h, W_VEL * h, 1e-5, W_VEL * h];
+    return [W_POS * h, W_POS * h, 1e-1, W_POS * h]; // 観測ノイズ
+  }
+  const w = m[2], h = m[3];
+  if (which === "init") return [2 * W_POS * w, 2 * W_POS * h, 2 * W_POS * w, 2 * W_POS * h, 10 * W_VEL * w, 10 * W_VEL * h, 10 * W_VEL * w, 10 * W_VEL * h];
+  if (which === "motion") return [W_POS * w, W_POS * h, W_POS * w, W_POS * h, W_VEL * w, W_VEL * h, W_VEL * w, W_VEL * h];
+  return [W_POS * w, W_POS * h, W_POS * w, W_POS * h];
+}
+
+const zeros = (r, c) => Array.from({ length: r }, () => new Array(c).fill(0));
+const diag = (v) => { const m = zeros(v.length, v.length); v.forEach((x, i) => { m[i][i] = x * x; }); return m; };
+
+function kfInitiate(kind, z) {
+  return { mean: [...z, 0, 0, 0, 0], cov: diag(kfStd(kind, z, "init")) };
+}
+
+// x' = F x（位置 += 速度）、P' = F P Fᵀ + Q
+function kfPredict(kind, mean, cov) {
+  const Q = kfStd(kind, mean, "motion");
+  const m = mean.map((v, i) => (i < 4 ? v + mean[i + 4] : v));
+  const FP = cov.map((row, i) => (i < 4 ? row.map((v, j) => v + cov[i + 4][j]) : row.slice()));
+  const P = FP.map((row) => row.map((v, j) => (j < 4 ? v + row[j + 4] : v)));
+  for (let i = 0; i < 8; i++) P[i][i] += Q[i] * Q[i];
+  return { mean: m, cov: P };
+}
+
+function inv4(a) {
+  const n = 4, m = a.map((row, i) => [...row, ...[0, 0, 0, 0].map((_, j) => (i === j ? 1 : 0))]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+    [m[c], m[p]] = [m[p], m[c]];
+    const d = m[c][c];
+    for (let j = 0; j < 2 * n; j++) m[c][j] /= d;
+    for (let r = 0; r < n; r++) if (r !== c) { const f = m[r][c]; for (let j = 0; j < 2 * n; j++) m[r][j] -= f * m[c][j]; }
+  }
+  return m.map((row) => row.slice(n));
+}
+
+// S = H P Hᵀ + R、K = P Hᵀ S⁻¹、x' = x + K (z − H x)、P' = P − K S Kᵀ
+function kfUpdate(kind, mean, cov, z) {
+  const R = kfStd(kind, mean, "obs");
+  const S = [0, 1, 2, 3].map((i) => [0, 1, 2, 3].map((j) => cov[i][j] + (i === j ? R[i] * R[i] : 0)));
+  const Si = inv4(S);
+  const K = cov.map((row) => [0, 1, 2, 3].map((j) => row[0] * Si[0][j] + row[1] * Si[1][j] + row[2] * Si[2][j] + row[3] * Si[3][j]));
+  const y = z.map((v, i) => v - mean[i]);
+  const m = mean.map((v, i) => v + K[i][0] * y[0] + K[i][1] * y[1] + K[i][2] * y[2] + K[i][3] * y[3]);
+  const KS = K.map((row) => [0, 1, 2, 3].map((j) => row[0] * S[0][j] + row[1] * S[1][j] + row[2] * S[2][j] + row[3] * S[3][j]));
+  const P = cov.map((row, i) => row.map((v, j) => v - (KS[i][0] * K[j][0] + KS[i][1] * K[j][1] + KS[i][2] * K[j][2] + KS[i][3] * K[j][3])));
+  return { mean: m, cov: P };
+}
+
+// ---------- 追跡対象 1つ ----------
+
+class STrack {
+  constructor(det, kind) {
+    const [x1, y1, x2, y2] = det.box;
+    this._tlwh = [x1, y1, x2 - x1, y2 - y1];
+    this.kind = kind;
+    this.det = det;
+    this.score = det.score;
+    this.mean = null;
+    this.state = State.New;
+    this.isActivated = false;
+    this.trackId = 0;
+    this.frameId = 0;
+    this.startFrame = 0;
+  }
+
+  get endFrame() { return this.frameId; }
+
+  get tlwh() {
+    if (!this.mean) return this._tlwh.slice();
+    const [x, y, a, h] = this.mean;
+    const w = this.kind === "xyah" ? a * h : a;
+    return [x - w / 2, y - h / 2, w, h];
+  }
+
+  get xyxy() { const [x, y, w, h] = this.tlwh; return [x, y, x + w, y + h]; }
+
+  measure(tlwh) {
+    const [x, y, w, h] = tlwh;
+    return this.kind === "xyah" ? [x + w / 2, y + h / 2, w / h, h] : [x + w / 2, y + h / 2, w, h];
+  }
+
+  predict() {
+    const m = this.mean.slice();
+    if (this.state !== State.Tracked) { m[7] = 0; if (this.kind === "xywh") m[6] = 0; } // 見失い中は大きさの変化を止める
+    ({ mean: this.mean, cov: this.cov } = kfPredict(this.kind, m, this.cov));
+  }
+
+  activate(frameId, nextId) {
+    this.trackId = nextId();
+    ({ mean: this.mean, cov: this.cov } = kfInitiate(this.kind, this.measure(this._tlwh)));
+    this.state = State.Tracked;
+    if (frameId === 1) this.isActivated = true; // 2フレーム目以降の新しい対象は、次のフレームで対応が付いてから確定
+    this.frameId = this.startFrame = frameId;
+  }
+
+  update(t, frameId) {
+    this.frameId = frameId;
+    ({ mean: this.mean, cov: this.cov } = kfUpdate(this.kind, this.mean, this.cov, this.measure(t.tlwh)));
+    this.state = State.Tracked;
+    this.isActivated = true;
+    this.score = t.score;
+    this.det = t.det;
+  }
+
+  reActivate(t, frameId) { this.update(t, frameId); }
+}
+
+// ---------- 対応付け ----------
+
+function iou(a, b) {
+  const w = Math.min(a[2], b[2]) - Math.max(a[0], b[0]), h = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+  if (w <= 0 || h <= 0) return 0;
+  const inter = w * h;
+  return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter);
+}
+
+const iouDistance = (as, bs) => as.map((a) => bs.map((b) => 1 - iou(a.xyxy, b.xyxy)));
+const fuseScore = (cost, dets) => cost.map((row) => row.map((c, j) => 1 - (1 - c) * dets[j].score));
+
+// 正方行列の最小コスト割り当て（ハンガリアン法、O(n³)）。返り値は行 i に割り当てた列
+function hungarian(C) {
+  const n = C.length, INF = 1e18, u = new Array(n + 1).fill(0), v = new Array(n + 1).fill(0), p = new Array(n + 1).fill(0), way = new Array(n + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    p[0] = i;
+    let j0 = 0;
+    const minv = new Array(n + 1).fill(INF), used = new Array(n + 1).fill(false);
+    do {
+      used[j0] = true;
+      const i0 = p[j0];
+      let delta = INF, j1 = 0;
+      for (let j = 1; j <= n; j++) {
+        if (used[j]) continue;
+        const cur = C[i0 - 1][j - 1] - u[i0] - v[j];
+        if (cur < minv[j]) { minv[j] = cur; way[j] = j0; }
+        if (minv[j] < delta) { delta = minv[j]; j1 = j; }
+      }
+      for (let j = 0; j <= n; j++) { if (used[j]) { u[p[j]] += delta; v[j] -= delta; } else minv[j] -= delta; }
+      j0 = j1;
+    } while (p[j0] !== 0);
+    do { const j1 = way[j0]; p[j0] = p[j1]; j0 = j1; } while (j0);
+  }
+  const rowToCol = new Array(n);
+  for (let j = 1; j <= n; j++) if (p[j]) rowToCol[p[j] - 1] = j - 1;
+  return rowToCol;
+}
+
+// lap.lapjv(cost, extend_cost=True, cost_limit=thresh) と同じ: 行と列それぞれに「対応なし」の選択肢（コスト thresh/2）を足した
+// (n+m) 次の正方行列で最小化する。thresh を超えるコストの組は選ばれない
+// cost は n×m（n=0 の時は列数が分からないので m も渡す）
+function linearAssignment(cost, thresh, m) {
+  const n = cost.length;
+  if (!n || !m) return { matches: [], uA: [...Array(n).keys()], uB: [...Array(m).keys()] };
+  const N = n + m, BIG = 1e9, half = thresh / 2;
+  const C = Array.from({ length: N }, (_, i) => Array.from({ length: N }, (_, j) => {
+    if (i < n && j < m) return cost[i][j] > thresh ? BIG : cost[i][j];
+    if (i < n) return j - m === i ? half : BIG;   // 行 i を対応なしにする
+    if (j < m) return i - n === j ? half : BIG;   // 列 j を対応なしにする
+    return 0;
+  }));
+  const r2c = hungarian(C), matches = [], matchedB = new Set();
+  for (let i = 0; i < n; i++) if (r2c[i] < m && cost[i][r2c[i]] <= thresh) { matches.push([i, r2c[i]]); matchedB.add(r2c[i]); }
+  const matchedA = new Set(matches.map(([i]) => i));
+  return { matches, uA: [...Array(n).keys()].filter((i) => !matchedA.has(i)), uB: [...Array(m).keys()].filter((j) => !matchedB.has(j)) };
+}
+
+const joint = (a, b) => { const ids = new Set(a.map((t) => t.trackId)); return [...a, ...b.filter((t) => !ids.has(t.trackId))]; };
+const sub = (a, b) => { const ids = new Set(b.map((t) => t.trackId)); return a.filter((t) => !ids.has(t.trackId)); };
+
+// 追跡中と見失い中で枠がほぼ同じ（IoU 距離 < 0.15）なら、長く続いている方だけ残す
+function removeDuplicates(a, b) {
+  const dupA = new Set(), dupB = new Set();
+  iouDistance(a, b).forEach((row, p) => row.forEach((c, q) => {
+    if (c >= 0.15) return;
+    if (a[p].frameId - a[p].startFrame > b[q].frameId - b[q].startFrame) dupB.add(q); else dupA.add(p);
+  }));
+  return [a.filter((_, i) => !dupA.has(i)), b.filter((_, i) => !dupB.has(i))];
+}
+
+// ---------- 追跡器 ----------
+
+class Tracker {
+  constructor(type = "bytetrack", args = {}) {
+    this.type = type;
+    this.kind = type === "botsort" ? "xywh" : "xyah";
+    this.args = { ...TRACKER_DEFAULTS, ...args };
+    this.reset();
+  }
+
+  reset() {
+    this.tracked = []; this.lost = []; this.removed = [];
+    this.frameId = 0; this.count = 0;
+    this.trails = new Map(); // ID → 中心の履歴（描画用）
+  }
+
+  nextId = () => ++this.count;
+
+  getDists(tracks, dets) {
+    const d = iouDistance(tracks, dets);
+    return this.args.fuse_score ? fuseScore(d, dets) : d;
+  }
+
+  update(items) {
+    const A = this.args, fid = ++this.frameId;
+    const activated = [], refind = [], lostNow = [], removedNow = [];
+    const valid = items.filter((d) => d.box[2] > d.box[0] && d.box[3] > d.box[1]);
+    let detections = valid.filter((d) => d.score >= A.track_high_thresh).map((d) => new STrack(d, this.kind));
+    const second = valid.filter((d) => d.score > A.track_low_thresh && d.score < A.track_high_thresh).map((d) => new STrack(d, this.kind));
+
+    const unconfirmed = this.tracked.filter((t) => !t.isActivated);
+    const trackedOk = this.tracked.filter((t) => t.isActivated);
+    const pool = joint(trackedOk, this.lost);
+    pool.forEach((t) => t.predict());
+
+    const apply = (t, d) => {
+      if (t.state === State.Tracked) { t.update(d, fid); activated.push(t); } else { t.reActivate(d, fid); refind.push(t); }
+    };
+    // 1段目: 高スコアの検出と、追跡中・見失い中の対象
+    let r = linearAssignment(this.getDists(pool, detections), A.match_thresh, detections.length);
+    r.matches.forEach(([i, j]) => apply(pool[i], detections[j]));
+    // 2段目: 1段目で残った追跡中の対象と、低スコアの検出（隠れかけの物体を救う）
+    const rTracked = r.uA.map((i) => pool[i]).filter((t) => t.state === State.Tracked);
+    let uTrack = [...rTracked.keys()];
+    if (rTracked.length && second.length) {
+      const r2 = linearAssignment(iouDistance(rTracked, second), 0.5, second.length);
+      r2.matches.forEach(([i, j]) => apply(rTracked[i], second[j]));
+      uTrack = r2.uA;
+    }
+    for (const i of uTrack) { const t = rTracked[i]; if (t.state !== State.Lost) { t.state = State.Lost; lostNow.push(t); } }
+    // 前のフレームで生まれたばかりの（未確定の）対象
+    detections = r.uB.map((j) => detections[j]);
+    let uDet = [...detections.keys()];
+    if (unconfirmed.length) {
+      const r3 = linearAssignment(this.getDists(unconfirmed, detections), 0.7, detections.length);
+      r3.matches.forEach(([i, j]) => { unconfirmed[i].update(detections[j], fid); activated.push(unconfirmed[i]); });
+      r3.uA.forEach((i) => { unconfirmed[i].state = State.Removed; removedNow.push(unconfirmed[i]); });
+      uDet = r3.uB;
+    }
+    // 残った高スコアの検出から新しい対象を作る
+    for (const j of uDet) {
+      const t = detections[j];
+      if (t.score < A.new_track_thresh) continue;
+      t.activate(fid, this.nextId);
+      activated.push(t);
+    }
+    // 長く見失った対象を捨てる
+    for (const t of this.lost) if (fid - t.endFrame > A.track_buffer) { t.state = State.Removed; removedNow.push(t); }
+
+    this.tracked = joint(joint(this.tracked.filter((t) => t.state === State.Tracked), activated), refind);
+    // Ultralytics（元の ByteTrack も）と同じ順序: 見失い一覧から引くのは前のフレームまでに捨てた対象で、
+    // このフレームで捨てた対象は次のフレームで引かれる
+    this.lost = sub(sub(this.lost, this.tracked).concat(lostNow), this.removed);
+    [this.tracked, this.lost] = removeDuplicates(this.tracked, this.lost);
+    this.removed = this.removed.concat(removedNow).slice(-1000);
+
+    const out = [];
+    for (const t of this.tracked) {
+      if (!t.isActivated) continue;
+      const box = t.xyxy;
+      const trail = this.trails.get(t.trackId) || [];
+      trail.push([(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]);
+      if (trail.length > 40) trail.shift();
+      this.trails.set(t.trackId, trail);
+      out.push({ ...t.det, id: t.trackId, score: t.score, box, trail: trail.slice() });
+    }
+    for (const t of removedNow) this.trails.delete(t.trackId);
+    return out;
+  }
+}
+
+return { TRACKER_DEFAULTS, Tracker };
 })();
 (async () => {
 
@@ -827,6 +1143,7 @@ function selectTask(id) {
   renderTasks();
   $("task-hint").textContent = t.hint;
   for (const el of document.querySelectorAll("[data-param]")) el.hidden = !t.params.includes(el.dataset.param);
+  $("track-hint").hidden = !t.params.includes("track") || !$("tracker").value;
   if (DEFAULTS.threshold[id]) { $("threshold").value = DEFAULTS.threshold[id]; $("th-out").textContent = DEFAULTS.threshold[id]; }
   if (DEFAULTS.labels[id]) $("labels").value = DEFAULTS.labels[id];
   $("canvas-wrap").classList.toggle("clickable", id === "segment");
@@ -989,6 +1306,7 @@ function loadImg(url) {
 
 const COLORS = ["#2f6fdf", "#e0457b", "#16a34a", "#f59e0b", "#8b5cf6", "#0ea5e9", "#ef4444", "#14b8a6"];
 const colorOf = (label) => COLORS[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+const idColor = (id) => `hsl(${(id * 137.508) % 360} 75% 50%)`;
 
 function baseSource() {
   if (state.video) { const [w, h] = videoSize(DISPLAY_SIDE); return w ? { src: $("video"), w, h } : null; }
@@ -1051,10 +1369,15 @@ function draw() {
       ctx.textBaseline = "top";
       for (const it of r.items) {
         const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
-        const col = colorOf(it.label);
+        const col = it.id != null ? idColor(it.id) : colorOf(it.label);
+        if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
+          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
+          it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));
+          ctx.stroke();
+        }
         ctx.strokeStyle = col; ctx.lineWidth = lw;
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        const text = `${it.label} ${(it.score * 100).toFixed(0)}`;
+        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}`;
         const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
         ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
         ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
@@ -1121,9 +1444,12 @@ function renderResult(m, r, live) {
   const el = $("result");
   const where = m.where === "browser" ? `ブラウザ（${r.device}, ${r.dtype}）` : `サーバー（${r.device}）`;
   const net = r.roundtrip_ms ? ` / 通信込み ${fmt(r.roundtrip_ms)}` : "";
-  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム）` : "";
+  // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
+  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
   let body = "";
-  if (r.kind === "boxes") {
+  if (r.kind === "boxes" && live?.ids) {
+    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}）</div>`;
+  } else if (r.kind === "boxes") {
     body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
   } else if (r.kind === "labels") {
     body = r.items.map((it) => `<div class="bar"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${(it.score * 100).toFixed(1)}%"></span></span><span class="num">${(it.score * 100).toFixed(1)}%</span></div>`).join("")
@@ -1174,10 +1500,10 @@ function paramsFor(key, w, auto) {
 }
 
 // 1回分。結果を state.result に入れ、描画用の層を用意する
-async function runOnce(m) {
+async function runOnce(m, overrides = {}) {
   const [w, h] = inferSize();
   const { image, key } = await grabFrame(m.where === "server");
-  const params = paramsFor(key, w, state.auto);
+  const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
@@ -1219,22 +1545,41 @@ function failed(m, e) {
 async function liveLoop() {
   const m = currentModel();
   let frames = 0, inferSum = 0, first = null, tStart = 0, fps = 0;
+  // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
+  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
+  const th = parseFloat($("threshold").value);
+  const tracker = trackType ? new Tracker(trackType, { track_high_thresh: th, new_track_thresh: th }) : null;
+  const trackerName = $("tracker").selectedOptions[0]?.textContent;
+  const ids = new Set();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   try {
     while (state.live && state.video) {
-      const r = await runOnce(m);
+      if (frames) await nextVideoFrame($("video"));
+      if (!state.live) break;
+      const r = await runOnce(m, tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {});
+      if (tracker) { r.items = tracker.update(r.items); r.items.forEach((it) => ids.add(it.id)); state.result = r; }
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
       inferSum += r.infer_ms;
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
-      renderResult(m, r, { fps, frames });
+      renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
     }
   } catch (e) {
     failed(m, e);
   }
-  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps`);
+  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
   state.live = false;
   updateButtons();
+}
+
+// 次の新しいフレームが表示されるまで待つ。推論が動画より速いと同じフレームを何度も処理してしまい、
+// 追跡では「止まっている」と誤って速度を推定するため（一時停止中は 0.5 秒ごとに同じフレームで進める）
+function nextVideoFrame(v) {
+  if (!v.requestVideoFrameCallback) return new Promise((r) => setTimeout(r, 1000 / 30));
+  return new Promise((res) => {
+    const id = v.requestVideoFrameCallback(() => res());
+    setTimeout(() => { v.cancelVideoFrameCallback?.(id); res(); }, 500);
+  });
 }
 
 function toggleLive() {
@@ -1302,6 +1647,10 @@ async function init() {
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
   $("view").onchange = draw;
+  $("tracker").onchange = () => {
+    $("track-hint").hidden = !$("tracker").value;
+    if ($("tracker").value) { $("threshold").value = 0.25; $("th-out").textContent = "0.25"; }
+  };
   $("auto").onchange = () => {
     state.auto = $("auto").checked;
     state.points = [];

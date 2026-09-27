@@ -6,6 +6,7 @@
 
 - タスク: 物体検出 / 人物の姿勢 / テキスト指定検出 / クリックで切り出し（SAM 系、全体の自動分割つき）/ 深度推定 / ゼロショット分類 / 背景除去 / 画像の説明・質問（VLM）
 - 入力: 画像ファイル、動画ファイル、カメラのライブ映像。動画・カメラは連続実行して結果を重ね、fps を表示する
+- 追跡: 検出・姿勢・テキスト指定検出の連続実行に ByteTrack / BoT-SORT をかけ、ID と軌跡を表示する（ブラウザ・サーバーどちらの検出にも使える）
 - 表示: 結果を重ねる / 結果だけ / 切り抜き / 元画像
 - サーバー不要の1ファイル版（`dist/cv-playground.html`、約70KB）もある。モデルは各ブラウザが Hugging Face から直接取得する
 
@@ -72,6 +73,14 @@ uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requi
    - `where` に `browser` と `server` を両方書けば、同じ手順でブラウザとサーバーを比べられる
    - 部品が足りなければ `adapters.py` と `web/onnx_generic.js` の `POST`（または前処理）に同じものを足す
 2. **ライブラリのプロセッサが要るモデル**（SAM、Grounding DINO、VLM など）: ブラウザは `web/worker.js` の `ADAPTERS`、サーバーは `adapters.py` の `ADAPTERS` に load / run を書き、models.json から adapter 名で指す。
+
+## 追跡（ByteTrack / BoT-SORT）
+
+`web/tracker.js` は Ultralytics の `ultralytics/trackers`（カルマンフィルタ、2段階の対応付け、未確定の対象、見失いと破棄、重複の除去）を JS に移したもの。設定も Ultralytics の既定（`track_high_thresh` 0.25、`track_low_thresh` 0.1、`new_track_thresh` 0.25、`track_buffer` 30、`match_thresh` 0.8、`fuse_score`）と同じで、閾値スライダーが high / new の値になる。
+
+- **同じ検出列を与えると Ultralytics 8.4.163 と一致する**: 647 フレームの動画（YOLO26n の検出）で、ByteTrack・BoT-SORT とも全フレームで ID が一致し、枠の差は最大 0.005px（丸め誤差）。確認手順は `tools/`
+- BoT-SORT のカメラ移動の補正（GMC）と ReID は無い（Ultralytics でも ReID は既定で無効）。そのため BoT-SORT はカルマンフィルタの状態が xywh になる点だけが ByteTrack と違う。カメラが動く映像では Ultralytics の BoT-SORT と結果が変わる
+- 連続実行は新しいフレームが表示された時だけ処理する。推論が動画より速いと同じフレームを何度も追跡器に渡してしまい、速度の推定が狂って ID が切り替わりやすくなるため（12fps の動画で ID の数が 9 → 5）。表示の fps は動画・カメラのフレームレートが上限になり、推論だけの上限も並べて出す
 
 ## 実測の例（M4 Mac mini 32GB の Chrome）
 

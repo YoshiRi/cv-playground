@@ -1,4 +1,5 @@
 import { DEFAULTS, MODELS, SKELETON, TASKS } from "./catalog.js";
+import { Tracker } from "./tracker.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -124,6 +125,7 @@ function selectTask(id) {
   renderTasks();
   $("task-hint").textContent = t.hint;
   for (const el of document.querySelectorAll("[data-param]")) el.hidden = !t.params.includes(el.dataset.param);
+  $("track-hint").hidden = !t.params.includes("track") || !$("tracker").value;
   if (DEFAULTS.threshold[id]) { $("threshold").value = DEFAULTS.threshold[id]; $("th-out").textContent = DEFAULTS.threshold[id]; }
   if (DEFAULTS.labels[id]) $("labels").value = DEFAULTS.labels[id];
   $("canvas-wrap").classList.toggle("clickable", id === "segment");
@@ -286,6 +288,7 @@ function loadImg(url) {
 
 const COLORS = ["#2f6fdf", "#e0457b", "#16a34a", "#f59e0b", "#8b5cf6", "#0ea5e9", "#ef4444", "#14b8a6"];
 const colorOf = (label) => COLORS[[...label].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+const idColor = (id) => `hsl(${(id * 137.508) % 360} 75% 50%)`;
 
 function baseSource() {
   if (state.video) { const [w, h] = videoSize(DISPLAY_SIDE); return w ? { src: $("video"), w, h } : null; }
@@ -348,10 +351,15 @@ function draw() {
       ctx.textBaseline = "top";
       for (const it of r.items) {
         const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
-        const col = colorOf(it.label);
+        const col = it.id != null ? idColor(it.id) : colorOf(it.label);
+        if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
+          ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
+          it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));
+          ctx.stroke();
+        }
         ctx.strokeStyle = col; ctx.lineWidth = lw;
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
-        const text = `${it.label} ${(it.score * 100).toFixed(0)}`;
+        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${(it.score * 100).toFixed(0)}`;
         const tw = ctx.measureText(text).width + 8, th = parseInt(ctx.font) + 6;
         ctx.fillStyle = col; ctx.fillRect(x1, Math.max(0, y1 - th), tw, th);
         ctx.fillStyle = "#fff"; ctx.fillText(text, x1 + 4, Math.max(0, y1 - th) + 3);
@@ -418,9 +426,12 @@ function renderResult(m, r, live) {
   const el = $("result");
   const where = m.where === "browser" ? `ブラウザ（${r.device}, ${r.dtype}）` : `サーバー（${r.device}）`;
   const net = r.roundtrip_ms ? ` / 通信込み ${fmt(r.roundtrip_ms)}` : "";
-  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム）` : "";
+  // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
+  const fps = live ? ` ・ <b>${live.fps.toFixed(1)} fps</b>（${live.frames} フレーム、推論だけなら約 ${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps）` : "";
   let body = "";
-  if (r.kind === "boxes") {
+  if (r.kind === "boxes" && live?.ids) {
+    body = `<div class="dets">追跡中 ${r.items.length} 件: ${summarizeBoxes(r.items)} ・ これまでの ID ${live.ids} 個（${esc(live.trackerName)}）</div>`;
+  } else if (r.kind === "boxes") {
     body = `<div class="dets">${r.items.length} 件: ${summarizeBoxes(r.items)}</div>`;
   } else if (r.kind === "labels") {
     body = r.items.map((it) => `<div class="bar"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${(it.score * 100).toFixed(1)}%"></span></span><span class="num">${(it.score * 100).toFixed(1)}%</span></div>`).join("")
@@ -471,10 +482,10 @@ function paramsFor(key, w, auto) {
 }
 
 // 1回分。結果を state.result に入れ、描画用の層を用意する
-async function runOnce(m) {
+async function runOnce(m, overrides = {}) {
   const [w, h] = inferSize();
   const { image, key } = await grabFrame(m.where === "server");
-  const params = paramsFor(key, w, state.auto);
+  const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
@@ -516,22 +527,41 @@ function failed(m, e) {
 async function liveLoop() {
   const m = currentModel();
   let frames = 0, inferSum = 0, first = null, tStart = 0, fps = 0;
+  // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
+  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
+  const th = parseFloat($("threshold").value);
+  const tracker = trackType ? new Tracker(trackType, { track_high_thresh: th, new_track_thresh: th }) : null;
+  const trackerName = $("tracker").selectedOptions[0]?.textContent;
+  const ids = new Set();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   try {
     while (state.live && state.video) {
-      const r = await runOnce(m);
+      if (frames) await nextVideoFrame($("video"));
+      if (!state.live) break;
+      const r = await runOnce(m, tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {});
+      if (tracker) { r.items = tracker.update(r.items); r.items.forEach((it) => ids.add(it.id)); state.result = r; }
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
       inferSum += r.infer_ms;
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
-      renderResult(m, r, { fps, frames });
+      renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
     }
   } catch (e) {
     failed(m, e);
   }
-  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps`);
+  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
   state.live = false;
   updateButtons();
+}
+
+// 次の新しいフレームが表示されるまで待つ。推論が動画より速いと同じフレームを何度も処理してしまい、
+// 追跡では「止まっている」と誤って速度を推定するため（一時停止中は 0.5 秒ごとに同じフレームで進める）
+function nextVideoFrame(v) {
+  if (!v.requestVideoFrameCallback) return new Promise((r) => setTimeout(r, 1000 / 30));
+  return new Promise((res) => {
+    const id = v.requestVideoFrameCallback(() => res());
+    setTimeout(() => { v.cancelVideoFrameCallback?.(id); res(); }, 500);
+  });
 }
 
 function toggleLive() {
@@ -599,6 +629,10 @@ async function init() {
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
   $("view").onchange = draw;
+  $("tracker").onchange = () => {
+    $("track-hint").hidden = !$("tracker").value;
+    if ($("tracker").value) { $("threshold").value = 0.25; $("th-out").textContent = "0.25"; }
+  };
   $("auto").onchange = () => {
     state.auto = $("auto").checked;
     state.points = [];

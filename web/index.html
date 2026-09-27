@@ -30,6 +30,14 @@
         <label class="field" data-param="prompt">質問・指示
           <textarea id="prompt" rows="2"></textarea>
         </label>
+        <label class="field row" data-param="track">追跡
+          <select id="tracker">
+            <option value="">なし</option>
+            <option value="bytetrack">ByteTrack</option>
+            <option value="botsort">BoT-SORT（カメラ移動の補正・ReID なし）</option>
+          </select>
+        </label>
+        <p class="hint" data-param="track" id="track-hint" hidden>追跡は動画・カメラの「▶ 連続実行」で働く。Ultralytics と同じ設定（新しい ID は閾値以上、見失ってから 30 フレームで破棄、低スコアの検出は 0.1 まで救済に使う）</p>
         <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
           <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
         </label>

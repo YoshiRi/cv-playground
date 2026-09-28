@@ -31,7 +31,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 ## スマホで速くするには
 
 - 連続実行の結果欄に「内訳: フレーム取り込み / 前処理 / モデル実行 / 後処理」を出している（汎用 ONNX のモデル）。まずこれでどこが重いかを見る
-- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。2026-09-28 より前は graph capture が実際には効いていなかった（下の「モデル実行の内訳」）。効き方の測り直しはそちら
+- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。2026-09-28 より前は graph capture が実際には効いていなかった（下の「モデル実行の内訳」）。効き方の測り直しはそちら。M4 と Galaxy Z Fold6 の両方で速くなったので、2026-09-29 から既定を「fp16 + graph capture」にした（fp16 版が無いモデルは fp32、graph capture を作れないモデルは無しで動く。記録の実行場所には実際に使った方を出す）
 - 実行設定の「CPU（WASM）」: 小さいモデルは WebGPU より速いことがある（以下は 2026-09-28 に入力の形を固定する前の値。今は DEIMv2 Atto 320 が WebGPU で 11ms、graph capture で 7ms）。M4 Mac の Chrome では WebGPU のモデル実行が大きさによらず約 24ms で頭打ちになり（GPU に命令を出して結果を読み戻す固定の手間）、WASM（4スレッド）は DEIMv2 Atto 192 で 8ms、Atto 320 で 16ms、Femto 416 で 20ms、Pico 640 で 45ms（WebGPU 38ms）。YOLO26n-pose は WebGPU 24〜30ms、WASM 50ms
 - WASM の複数スレッドは crossOriginIsolated の時だけ使える。server.py は COOP/COEP ヘッダを付けるので使えるが、GitHub Pages ではヘッダを付けられないので1スレッドになる
 - 動画・カメラの描画は新しいフレームが来た時だけにしている（画面の更新ごとに描くと、120Hz のスマホでは毎秒120回描いて推論と GPU を取り合う）

@@ -60,30 +60,39 @@ export async function onnxLoad(ort, e, device, onProgress) {
   }
   // 詳細計測（?profile=1 の時だけ）: onnxruntime の profiler で、ノードごとの時間と WebGPU の命令ごとの GPU 時間を記録する
   if (e.profile) opts.enableProfiling = true;
-  let session = await ort.InferenceSession.create(model, opts);
-  // 入力の大きさが決まっているモデルは、ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定して作り直す。
+  const create = (o) => ort.InferenceSession.create(model, o);
+  // 入力の大きさが決まっているモデルは、ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定する。
   // 形の計算が CPU に回らずに済み、GPU の命令も形に合わせて作られる（DEIMv2 Atto は M4 で 18 → 11ms）。名前はモデルごとに違うので、
-  // 一度作ったセッションの inputMetadata から読む
-  const fixed = fixedDims(e), shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;
-  const fdo = {};
-  if (fixed && shape?.length === fixed.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = fixed[i]; });
-  if (Object.keys(fdo).length) opts.freeDimensionOverrides = fdo;
+  // 一度作ったセッションの inputMetadata から読む（固定するものが無ければそのセッションをそのまま使う）
+  const fixed = fixedDims(e);
+  let session = null;
+  if (fixed) {
+    session = await create(opts);
+    const shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape, fdo = {};
+    if (shape?.length === fixed.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = fixed[i]; });
+    if (Object.keys(fdo).length) { opts.freeDimensionOverrides = fdo; await session.release(); session = null; }
+  }
   // graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
-  // （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしにする
-  const graph = opt.includes("graph");
-  let graphFallback = false;
-  if (graph || opts.freeDimensionOverrides) {
-    await session.release();
+  // （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしにする。作れないと分かったモデルは覚えておき、
+  // 同じ Worker で読み直す時は試さない
+  const graph = opt.includes("graph") && !noGraph.has(e.key);
+  let graphFallback = opt.includes("graph") && noGraph.has(e.key);
+  if (graph) {
+    await session?.release();
     try {
-      session = await ort.InferenceSession.create(model, graph ? { ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true } : opts);
+      session = await create({ ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
     } catch (err) {
-      if (!graph || !/graph capture/i.test(String(err?.message || err))) throw err;
-      session = await ort.InferenceSession.create(model, opts);
+      if (!/graph capture/i.test(String(err?.message || err))) throw err;
+      noGraph.add(e.key);
+      session = null;
       graphFallback = true;
     }
   }
-  return Object.assign(session, { cvpg: { graph: graph && !graphFallback, graphFallback, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
+  session ??= await create(opts);
+  const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
+  return Object.assign(session, { cvpg: { graph: graph && !graphFallback, graphFallback, fp16, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
 }
+const noGraph = new Set(); // graph capture を作れなかったモデル（entry.key）
 
 // 入力の形が1通りに決まるモデルの入力の次元（前処理と同じ並び）。入力サイズ可変・バッチ・フレーム列のモデルは決まらないので null
 function fixedDims(e) {

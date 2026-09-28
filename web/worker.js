@@ -297,6 +297,13 @@ async function embed(id, e, crops) {
   }
 }
 
+// 記録の「実行場所」に出す、実際に使った設定（選んだ設定ではなく。fp16 版が無ければ fp32、graph capture を作れなければ無し）
+function ortRuntime(e, session, device) {
+  if (e.opt === "wasm" || device !== "webgpu") return `onnxruntime-web wasm ${ort.env.wasm.numThreads}スレッド`;
+  const g = session?.cvpg || {};
+  return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
+}
+
 // 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
 async function profile(id, e, last) {
   try {
@@ -335,7 +342,7 @@ self.onmessage = async (ev) => {
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
-    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}${st.session?.cvpg?.graphFallback ? "（このモデルは graph capture 不可）" : ""}` : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

@@ -32,7 +32,8 @@
    "defaults": {
     "threshold": 0.4
    },
-   "category": "detect"
+   "category": "detect",
+   "result": "boxes"
   },
   {
    "id": "pose",
@@ -45,7 +46,8 @@
    "defaults": {
     "threshold": 0.4
    },
-   "category": "detect"
+   "category": "detect",
+   "result": "boxes"
   },
   {
    "id": "wholebody",
@@ -59,7 +61,8 @@
    "defaults": {
     "threshold": 0.35
    },
-   "category": "detect"
+   "category": "detect",
+   "result": "boxes"
   },
   {
    "id": "zsdetect",
@@ -74,7 +77,8 @@
     "threshold": 0.3,
     "labels": "person, bus, bag"
    },
-   "category": "detect"
+   "category": "detect",
+   "result": "boxes"
   },
   {
    "id": "segment",
@@ -137,6 +141,19 @@
     "prompt": "この画像を日本語で詳しく説明してください。"
    },
    "category": "vl"
+  }
+ ],
+ "apps": [
+  {
+   "id": "count",
+   "name": "数える",
+   "accepts": [
+    "boxes"
+   ],
+   "params": [
+    "classes"
+   ],
+   "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）"
   }
  ],
  "models": [

@@ -72,6 +72,12 @@
         </label>
         <p class="hint" data-param="track" id="track-hint" hidden>追跡は動画・カメラの「▶ 連続実行」で働く。Ultralytics と同じ設定（新しい ID は閾値以上、見失ってから 30 フレームで破棄、低スコアの検出は 0.1 まで救済に使う）</p>
         <div class="field" data-param="cascade" id="cascade"></div>
+        <div class="field" id="apps-row" hidden>応用（結果を集計して重ねる）
+          <div id="apps"></div>
+          <label class="field" data-app-param="classes" hidden>数えるクラス（カンマ区切り。空なら全部）
+            <input id="classes" type="text" autocomplete="off" placeholder="person, car">
+          </label>
+        </div>
         <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
           <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">
         </label>

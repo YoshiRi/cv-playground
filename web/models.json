@@ -153,7 +153,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26n-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "cda08d9440217e243e075ee839f40383c59b3f973e493f9f6c7452922a69436e",
+     "onnx/model_fp16.onnx": "3d4ed4f51a2a9ed64b9a8703c84441e5151ac8dd8b3a48eeecd3e4362bda8e77"
+    }
    },
    "pre": {
     "size": [
@@ -217,7 +221,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26s-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "c72bc5ad4e7f7c87666a051d0f01fc02d084688c1ca78e825031827a0590efb1",
+     "onnx/model_fp16.onnx": "cd0f78d2b82d86782e785cb6dba60e5d5efe7bcfad3950dbb2f0c8ba209ff57d"
+    }
    },
    "pre": {
     "size": [
@@ -248,7 +256,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26m-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "7cd89faaa164887c3c33ee0fe5d63723bf262f75dd90088c4cb3be5a310aabff",
+     "onnx/model_fp16.onnx": "d3ca56f73c3b0d0816adeb772f899894bf360cb9ced3a131f3da60972cd10242"
+    }
    },
    "pre": {
     "size": [
@@ -279,7 +291,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26x-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "73970a0227222a6e454b7b12f8453bd228183ebc688a62699e7ba57b3e105c42",
+     "onnx/model_fp16.onnx": "d49d4160bbe376db0a33903030210cf53e8e0410491f50fb0a7dbb713779ec53"
+    }
    },
    "pre": {
     "size": [
@@ -353,7 +369,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26n-pose-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "6ca5dc9681e0305708085715427f50779c761d5abfddaa0c38ac7c2d89b56085",
+     "onnx/model_fp16.onnx": "6063e023c0c5c16e918b276eb4be6e4556c41723e92e1016c8da789ebe3930d7"
+    }
    },
    "pre": {
     "size": [
@@ -415,7 +435,11 @@
    "onnx": {
     "repo": "onnx-community/yolo26x-pose-ONNX",
     "file": "onnx/model.onnx",
-    "file_fp16": "onnx/model_fp16.onnx"
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "5bff1f4d49f638ab830559fcefe0560e4e9f0e82d861ef2d929114ef48d5c37c",
+     "onnx/model_fp16.onnx": "41e0d8fe8eedb9d6caa10314eeeb542e7143da3ec478a1b01ced8bdd13b17c8d"
+    }
    },
    "pre": {
     "size": [
@@ -626,7 +650,11 @@
    "onnx": {
     "repo": "onnx-community/depth-anything-v3-small",
     "file": "onnx/model.onnx",
-    "data": "onnx/model.onnx_data"
+    "data": "onnx/model.onnx_data",
+    "sha256": {
+     "onnx/model.onnx": "396008798244a074297fd88e450433b1357fc687f534939375c804ded86e7b2a",
+     "onnx/model.onnx_data": "802bb24741e67f5bb2b369fc64d40afe11439cc895d676d658d65cfb75c9860f"
+    }
    },
    "pre": {
     "resize": "keep_aspect",
@@ -700,7 +728,10 @@
    "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない",
    "onnx": {
     "repo": "onnx-community/BiRefNet_lite-ONNX",
-    "file": "onnx/model.onnx"
+    "file": "onnx/model.onnx",
+    "sha256": {
+     "onnx/model.onnx": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"
+    }
    },
    "pre": {
     "size": [
@@ -1271,7 +1302,10 @@
    "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）",
    "onnx": {
     "repo": "anriha/osnet_x0_25_msmt17",
-    "file": "osnet_x0_25_msmt17.onnx"
+    "file": "osnet_x0_25_msmt17.onnx",
+    "sha256": {
+     "osnet_x0_25_msmt17.onnx": "e78604f4ccda49b8f41cd0f8f7303800ce75d2361895ebb0729513c1bf53d277"
+    }
    },
    "pre": {
     "size": [

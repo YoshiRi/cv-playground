@@ -167,6 +167,20 @@
     </div>
   </section>
 
+  <section class="bench local">
+    <h2>手元の ONNX を使う</h2>
+    <p class="muted small">公開されているモデルのファイルを既に持っている時に、ダウンロードせずに使う。選んだファイルの SHA-256 を下のモデルのファイルと照らし、<b>完全に一致した時だけ</b>そのモデルのファイルとしてブラウザのキャッシュに入れる（ファイルは端末の外に送らない）。一致しないファイル（自前で学習・変換したもの）は今のところ使えない。</p>
+    <details class="advanced">
+      <summary>照合できるファイル</summary>
+      <ul class="small" id="local-known"></ul>
+    </details>
+    <div class="row-actions">
+      <span class="muted small" id="local-status"></span>
+      <label class="button ghost">ファイルを選ぶ<input type="file" id="local-onnx" multiple hidden></label>
+    </div>
+    <ul class="small" id="local-result"></ul>
+  </section>
+
   <section class="about">
     <h2>データと通信について</h2>
     <ul>

@@ -39,6 +39,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `data` | 外部データ（`.onnx_data`）がある時のファイル名 |
 | `file_fp16` | fp16 版（画面の「実行設定」で fp16 を選んだ時に使う） |
 | `path` + `url` | `web/` に同梱したファイル（`path` は `web/` からの相対）。読めない時（file:// など）は `url` から取る |
+| `sha256` | ファイルごとの SHA-256（`{"onnx/model.onnx": "…"}`）。`python3 tools/update_hashes.py` が Hugging Face から取って書き込む（手で書かない）。画面の「手元の ONNX を使う」で、利用者が持っているファイルと照らすのに使う |
 | `server_file` | `models/` に置いた、サーバーだけが配るファイル（ライセンス上リポジトリに入れないもの）。サーバーが無い時は画面に出ない |
 
 ### `pre`（前処理）
@@ -136,5 +137,6 @@ ADAPTERS["hf-xxx"] = HfXxx
 
 1. `scripts/serve.sh` でサーバー版を開き、ブラウザ実行・サーバー実行（`where` に書いた分）で結果が出ること
 2. 汎用 ONNX で両方に書いたなら、同じ画像でブラウザとサーバーの結果がほぼ同じこと（縮小の補間の違いで境界の検出は少し変わる）
-3. `python3 build.py` で1ファイル版を作り直してコミットする（作り忘れは GitHub Actions が落とす）
-4. サーバーだけのモデル（`where: ["server"]` や `server_file`）が、静的版（サーバーなし）の画面に出ないこと
+3. Hugging Face のファイル（`repo` + `file`）を足した・変えたなら `python3 tools/update_hashes.py` で `sha256` を更新する
+4. `python3 build.py` で1ファイル版を作り直してコミットする（作り忘れは GitHub Actions が落とす）
+5. サーバーだけのモデル（`where: ["server"]` や `server_file`）が、静的版（サーバーなし）の画面に出ないこと

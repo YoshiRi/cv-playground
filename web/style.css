@@ -173,4 +173,7 @@ td small { color: var(--muted); margin-left: 2px; }
 .bench-models fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0; display: flex; flex-direction: column; gap: 3px; }
 .bench-models legend { font-size: 12.5px; color: var(--muted); padding: 0 4px; }
 .bench-models .check { font-size: 13px; }
+.local ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 3px; }
+#local-result { list-style: none; padding-left: 0; }
+.local code { font-size: 12px; overflow-wrap: anywhere; }
 .bench .primary { padding: 8px 18px; }

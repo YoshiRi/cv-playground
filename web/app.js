@@ -162,6 +162,65 @@ async function clearDownloads() {
   showStorage();
 }
 
+// ---------- 手元の ONNX を使う ----------
+// 選んだファイルの SHA-256 が models.json の onnx.sha256（tools/update_hashes.py が Hugging Face から取る）と
+// 一致したら、onnx_generic.js がダウンロードの時に使うキャッシュ（cvpg-onnx）に同じ URL で入れる。
+// 以後はダウンロード済みと同じ扱いになる。一致しないファイルは使わない（前処理・後処理が合う保証が無いため）
+const HF = "https://huggingface.co";
+const hfUrl = (e, f) => `${HF}/${e.onnx.repo}/resolve/main/${f}`;
+const hashedModels = () => MODELS.filter((e) => e.adapter === "onnx" && e.onnx?.sha256 && e.where.includes("browser"));
+
+function renderLocalKnown() {
+  $("local-known").innerHTML = hashedModels().map((e) =>
+    `<li>${esc(e.name)}: ${Object.keys(e.onnx.sha256).map((f) => `<code>${esc(e.onnx.repo)}/${esc(f)}</code>`).join("、")}</li>`).join("");
+}
+
+async function sha256Hex(buf) {
+  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", buf));
+  return Array.from(d, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function importLocalOnnx(files) {
+  const out = [], status = $("local-status");
+  let cache;
+  try { cache = await caches.open("cvpg-onnx"); } catch { cache = null; }
+  if (!cache || !crypto.subtle) {
+    status.textContent = "この開き方（file:// など）ではブラウザのキャッシュが使えないので取り込めない。GitHub Pages かサーバー版で開く";
+    return;
+  }
+  const index = new Map();
+  for (const e of hashedModels()) for (const [f, h] of Object.entries(e.onnx.sha256)) {
+    if (!index.has(h)) index.set(h, []);
+    index.get(h).push({ e, f });
+  }
+  const touched = new Set();
+  for (const [i, file] of [...files].entries()) {
+    status.textContent = `照合中 ${i + 1}/${files.length}: ${file.name}`;
+    let buf;
+    try { buf = await file.arrayBuffer(); } catch (err) { out.push(`✗ ${esc(file.name)}: 読めない（${esc(err.message)}）`); continue; }
+    const hex = await sha256Hex(buf), hits = index.get(hex);
+    if (!hits) { out.push(`✗ ${esc(file.name)}: 一致するモデルが無い（SHA-256 <code>${hex.slice(0, 16)}…</code>）`); continue; }
+    for (const { e, f } of hits) {
+      try { await cache.put(hfUrl(e, f), new Response(buf)); } catch (err) { out.push(`✗ ${esc(file.name)}: 保存できない（${esc(err.message)}）`); continue; }
+      touched.add(e);
+      out.push(`✓ ${esc(file.name)} → ${esc(e.name)} の <code>${esc(f)}</code>`);
+    }
+  }
+  // そのモデルの既定のファイル（と外部データ）がそろえばダウンロード済みにする。fp16 版だけなら実行設定で fp16 を選んだ時に使う
+  for (const e of touched) {
+    const need = [e.onnx.file, e.onnx.data].filter(Boolean);
+    const have = await Promise.all(need.map(async (f) => !!(await cache.match(hfUrl(e, f)))));
+    const missing = need.filter((_, k) => !have[k]);
+    if (!missing.length) { markDownloaded(e.key); out.push(`　${esc(e.name)}: ダウンロードせずに使える`); }
+    else if (e.onnx.file_fp16 && (await cache.match(hfUrl(e, e.onnx.file_fp16))) && !e.onnx.data) out.push(`　${esc(e.name)}: fp16 版だけ（「実行設定」で fp16 を選ぶとダウンロードせずに使える）`);
+    else out.push(`　${esc(e.name)}: まだ足りない（${missing.map((f) => `<code>${esc(f)}</code>`).join("、")}）`);
+  }
+  $("local-result").innerHTML = out.map((l) => `<li>${l}</li>`).join("");
+  status.textContent = `${files.length} ファイルを照合した`;
+  updateModelNote();
+  showStorage();
+}
+
 // タブは分類（models.json の categories）ごとにまとめ、選んだ分類のタブだけを出す
 function renderTasks() {
   const avail = TASKS.filter((t) => variants(t.id).some((v) => !v.avoid));
@@ -884,6 +943,8 @@ async function init() {
   };
   $("bench-start").onclick = runBench;
   $("bench-models").addEventListener("change", updateBenchCount);
+  $("local-onnx").onchange = (ev) => { const fs = [...ev.target.files]; ev.target.value = ""; if (fs.length) importLocalOnnx(fs); };
+  renderLocalKnown();
   state.runs = loadRuns();
   renderHistory();
   renderBench();

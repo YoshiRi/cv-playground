@@ -1,107 +1,112 @@
 # CV Playground
 
-画像認識（CV）のモデルを、ブラウザから手軽に試して比べるためのページ。
-同じ画面で **「ブラウザ内で実行（その端末の WebGPU / WASM）」** と **「サーバーで実行」** を選べ、推論時間・fps・処理の内訳を見ながら、スマホや PC で実際にどこまで動くかを確かめられる。
+**English** | [日本語](README.ja.md)
 
-**https://yoshiri.github.io/cv-playground/** で開ける（サーバーなし、ブラウザ実行のみ。スマホ可）。
+A web page for trying out and comparing computer vision models right in the browser.
+On the same screen you can choose **"run in the browser" (WebGPU / WASM on your device)** or **"run on the server"**, and see inference time, fps, and a per-stage breakdown. That makes it easy to check how far a model actually goes on a phone or a laptop.
 
-![画面](docs/images/hero.jpg)
+Open it at **https://yoshiri.github.io/cv-playground/** (no server; browser-only models; works on phones).
 
-## デモ
+> The UI text is currently in Japanese (an English UI is on the [TODO list](docs/TODO.md)). The developer docs under `docs/` are also in Japanese.
+
+![Screenshot](docs/images/hero.jpg)
+
+## Demo
 
 | | | |
 | --- | --- | --- |
-| ![姿勢と追跡](docs/images/pose-track.jpg)<br>**人物の姿勢 + 追跡**（YOLO26n-pose + ByteTrack。ID と軌跡） | ![物体検出](docs/images/detect.jpg)<br>**物体検出**（YOLO26n） | ![手・目](docs/images/wholebody.jpg)<br>**手・目**（PINTO の DEIMv2 + 目の開閉 OCEC） |
-| ![セマンティック](docs/images/semantic.jpg)<br>**セマンティック・セグメンテーション**（EoMT DINOv3、ADE20K） | ![パノプティック](docs/images/panoptic.jpg)<br>**パノプティック・セグメンテーション**（EoMT DINOv3、COCO。椅子や机を1つずつ） | ![プロンプト](docs/images/segment.jpg)<br>**プロンプト・セグメンテーション**（SAM 2.1、クリックした人） |
-| ![全体の自動分割](docs/images/segment-auto.jpg)<br>**全体の自動分割**（EdgeTAM、144 点から） | ![深度推定](docs/images/depth.jpg)<br>**深度推定**（Depth Anything 3、画角も推定） | ![テキスト物体検知](docs/images/zsdetect.jpg)<br>**テキスト物体検知**（Grounding DINO、「orange, lemon」） |
-| ![ゼロショット分類](docs/images/classify.jpg)<br>**ゼロショット分類**（SigLIP2） | ![背景除去](docs/images/matting.jpg)<br>**背景除去**（BiRefNet lite） | |
+| ![Pose and tracking](docs/images/pose-track.jpg)<br>**Human pose + tracking** (YOLO26n-pose + ByteTrack, with IDs and trails) | ![Object detection](docs/images/detect.jpg)<br>**Object detection** (YOLO26n) | ![Hands and eyes](docs/images/wholebody.jpg)<br>**Hands and eyes** (PINTO's DEIMv2 + OCEC eye open/closed) |
+| ![Semantic](docs/images/semantic.jpg)<br>**Semantic segmentation** (EoMT DINOv3, ADE20K) | ![Panoptic](docs/images/panoptic.jpg)<br>**Panoptic segmentation** (EoMT DINOv3, COCO; each chair and desk separately) | ![Prompt](docs/images/segment.jpg)<br>**Promptable segmentation** (SAM 2.1, clicked person) |
+| ![Automatic mask generation](docs/images/segment-auto.jpg)<br>**Segment everything** (EdgeTAM, from a 144-point grid) | ![Depth estimation](docs/images/depth.jpg)<br>**Depth estimation** (Depth Anything 3, also estimates the field of view) | ![Text-prompted detection](docs/images/zsdetect.jpg)<br>**Text-prompted object detection** (Grounding DINO, "orange, lemon") |
+| ![Zero-shot classification](docs/images/classify.jpg)<br>**Zero-shot classification** (SigLIP2) | ![Background removal](docs/images/matting.jpg)<br>**Background removal** (BiRefNet lite) | |
 
-デモの映像は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0）の1フレーム。
+The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos) (CC BY 4.0).
 
-## できること
+## Features
 
-- **タスク**（4つの分類にまとめて表示）
-  - 検出・追跡: 物体検出 / 人物の姿勢 / 手・目（PINTO の超軽量モデル）/ テキスト物体検知
-  - セグメンテーション: プロンプト（SAM、クリックと全体の自動分割）/ セマンティック / パノプティック / 背景除去
-  - 深度・3D: 深度推定
-  - 画像と言語: ゼロショット分類 / 画像の説明・質問（VLM）
-- **入力**: 画像、動画ファイル、カメラのライブ映像。動画・カメラは連続実行して結果を重ね、fps と処理の内訳（取り込み・前処理・モデル実行・後処理）を出す
-- **追跡**: ByteTrack / BoT-SORT / BoT-SORT + ReID（Ultralytics の実装を移植し、同じ検出列で結果が一致することを確認）
-- **実行設定**: fp16、WebGPU の graph capture、CPU（WASM）、入力サイズ可変のモデルは入力の長辺（320〜960）
-- **比べる**: 同じモデルをブラウザとサーバーで（汎用 ONNX は前処理・後処理を共通の部品で組むので同じ手順）。実行履歴に時間が残る
-- **速度を測る（ベンチマーク）**: 決まったサンプル画像でウォームアップ 3 回のあと 5 / 20 / 50 回推論し、中央値・p90・fps を記録。端末ごとに同じ条件で比べられる
-- **書き出す**: 表示中の画像（説明の帯つき。スマホは共有シートから写真に保存）、結果データ（JSON）、実行の記録（CSV / JSON / Markdown の表。端末・ブラウザ・GPU の情報つきで、別の端末の CSV をそのまま連結して比べられる）
+- **Tasks** (grouped into four categories)
+  - Detection & tracking: object detection / human pose / hands & eyes (PINTO's ultra-light models) / text-prompted object detection
+  - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
+  - Depth & 3D: depth estimation
+  - Vision & language: zero-shot classification / image captioning and VQA (VLM)
+- **Input**: images, video files, and live camera. Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
+- **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
+- **Runtime options**: fp16, WebGPU graph capture, CPU (WASM), and a selectable input long side (320–960) for models with dynamic input
+- **Compare**: the same model in the browser and on the server (generic ONNX models build pre/post-processing from shared blocks, so both sides follow the same steps). Timings are kept in the run history
+- **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 measured runs, recording median, p90, and fps. Compare devices under identical conditions
+- **Export**: the displayed image (with an optional caption strip; on phones, the share sheet lets you save to Photos), result data (JSON), and run records (CSV / JSON / Markdown table). Records include device, browser, and GPU info, so CSVs from different devices can be concatenated and compared as is
 
-## データ・通信・ライセンスについて
+## Data, network usage, and licenses
 
-- **ブラウザで実行するモデルは、初回にその端末へダウンロードする**（数MB〜約1.4GB。モデル名の横に大きさを表示）。**モバイル回線では通信量に注意**。100MB を超えるモデルは初回に確認してから取得し、2回目以降はブラウザのキャッシュから読む。ページ下の「ダウンロード済みのモデルを消す」で消せる
-- **画像・動画・カメラの映像は、ブラウザで実行する限り端末の外に送らない**（通信はモデルとライブラリの取得だけ）。「サーバーで実行」を選んだ時だけ、その画像をサーバーに送る
-- **モデルごとにライセンスが違う**（商用利用できないものもある。例: YOLO26 は AGPL-3.0、Depth Anything V2 Large と SegFormer は非商用）。画面のモデルの説明にライセンスを表示している
-- 対応ブラウザ: WebGPU のある Chrome / Edge / Safari（iOS 26 以降）を推奨。WebGPU が無いと WASM で動くが遅い
+- **Models that run in the browser are downloaded to your device on first use** (from a few MB up to about 1.4 GB; the size is shown next to each model name). **Watch your data usage on mobile networks.** Models over 100 MB ask for confirmation before downloading, and later runs load from the browser cache. "ダウンロード済みのモデルを消す" (clear downloaded models) at the bottom of the page removes them
+- **Images, videos, and camera frames never leave your device as long as you run in the browser** (the only network traffic is fetching models and libraries). Only when you choose "run on the server" is the image sent to the server
+- **Each model has its own license**, and some do not allow commercial use (e.g., YOLO26 is AGPL-3.0; Depth Anything V2 Large and SegFormer are non-commercial). The license is shown in each model's description on screen
+- Supported browsers: Chrome / Edge / Safari (iOS 26 or later) with WebGPU are recommended. Without WebGPU it falls back to WASM, which is slower
 
-## 使い方
+## Usage
 
-### 配り方は3通り（どれも `web/` の同じコード）
+### Three ways to serve it (all from the same code in `web/`)
 
-| 配り方 | 中身 | 違い |
+| Form | What it is | Differences |
 | --- | --- | --- |
-| サーバー版 | `server.py` が `web/` と API を配る | サーバー（Mac など）で動くモデルも選べる。COOP/COEP ヘッダで WASM が複数スレッド |
-| 静的版 | GitHub Pages などが `web/` をそのまま配る | API に届かないのでブラウザ実行のモデルだけ。WASM の複数スレッドは同梱の coi-serviceworker で有効にする |
-| 1ファイル版 | `python3 build.py` で作る `dist/cv-playground.html` | ファイルを開くだけで動く（file:// 可）。ブラウザ実行のみ、WASM は1スレッド |
+| Server | `server.py` serves `web/` plus the API | Server-side models (on a Mac, etc.) are also available. COOP/COEP headers enable multi-threaded WASM |
+| Static | GitHub Pages or any static host serves `web/` as is | The API is unreachable, so only browser models. Multi-threaded WASM is enabled by the bundled coi-serviceworker |
+| Single file | `dist/cv-playground.html`, built by `python3 build.py` | Just open the file (works from `file://`). Browser models only; single-threaded WASM |
 
-サーバーの有無はページが実行時に判定する（`api/models` に届くか）。
+The page detects at runtime whether a server is present (whether `api/models` responds).
 
-### サーバー版を動かす
+### Running the server
 
 ```sh
 uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt
-cp .env.example .env            # 環境ごとの設定（任意。.env は git に入れない）
-scripts/serve.sh                # http://127.0.0.1:8010（--bg で裏で起動）
+cp .env.example .env            # per-environment settings (optional; .env is not committed)
+scripts/serve.sh                # http://127.0.0.1:8010 (--bg to run in the background)
 ```
 
-- サーバー側のモデルは初回に Hugging Face から取得する（合計で数GB）。最大3つをメモリに置き、超えたら古い順に外す
-- 別の端末（スマホなど）から開く時は **https が必要**（WebGPU とカメラのため）。例えば Tailscale なら `tailscale serve --bg --https=8443 http://127.0.0.1:8010`
-- Apple Silicon では MPS / CoreML を使う。ほかは CPU（CUDA は未対応・未検証）
-- 入力サイズ可変の YOLO26 を使う時は `tools/export_yolo26_dynamic.py` で書き出す（重みが AGPL なのでリポジトリには入れず、サーバーだけが配る）
+- Server-side models are downloaded from Hugging Face on first use (several GB in total). Up to 3 are kept in memory; beyond that the least recently used is unloaded
+- To open it from another device (e.g., a phone), **HTTPS is required** (for WebGPU and the camera). With Tailscale, for example: `tailscale serve --bg --https=8443 http://127.0.0.1:8010`
+- On Apple Silicon it uses MPS / CoreML; elsewhere, CPU (CUDA is not supported or tested)
+- To use YOLO26 with dynamic input size, export it with `tools/export_yolo26_dynamic.py` (the weights are AGPL, so they are not in the repo and only the server serves them)
 
-環境変数（`.env`）
+Environment variables (`.env`)
 
-| 変数 | 意味 | 既定 |
+| Variable | Meaning | Default |
 | --- | --- | --- |
-| `CVPG_PORT` | 待ち受けポート | 8010 |
-| `CVPG_MAX_LOADED` | 同時に読み込んでおくサーバーのモデル数 | 3 |
-| `CVPG_OLLAMA_MODEL` | 「Ollama の VLM」で使うモデル | `qwen3-vl:8b` |
-| `OLLAMA_HOST_URL` | Ollama の URL | `http://127.0.0.1:11434` |
-| `CVPG_GPU_LOCK` | このファイルがあれば「GPU を別の処理が使用中」と画面に出す（任意） | なし |
+| `CVPG_PORT` | Port to listen on | 8010 |
+| `CVPG_MAX_LOADED` | Number of server models kept loaded at once | 3 |
+| `CVPG_OLLAMA_MODEL` | Model used by the "Ollama VLM" entry | `qwen3-vl:8b` |
+| `OLLAMA_HOST_URL` | Ollama URL | `http://127.0.0.1:11434` |
+| `CVPG_GPU_LOCK` | If this file exists, the page shows "GPU is in use by another process" (optional) | none |
 
-## フォークして広げる
+## Forking and extending
 
-| やりたいこと | ドキュメント |
+| What you want to do | Docs (Japanese) |
 | --- | --- |
-| モデルを足す（ブラウザ・サーバー） | [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md) |
-| タブ・設定欄・結果の見せ方を足す | [docs/ADDING_UI.md](docs/ADDING_UI.md) |
-| 仕組み・実測・分かったこと | [docs/NOTES.md](docs/NOTES.md) |
-| 今後の課題 | [docs/TODO.md](docs/TODO.md) |
+| Add a model (browser / server) | [docs/ADDING_MODELS.md](docs/ADDING_MODELS.md) |
+| Add tabs, settings fields, or result views | [docs/ADDING_UI.md](docs/ADDING_UI.md) |
+| How it works, measurements, findings | [docs/NOTES.md](docs/NOTES.md) |
+| Future work | [docs/TODO.md](docs/TODO.md) |
 
-多くの場合、`web/models.json` に1件書くだけで済む（素の ONNX なら前処理・後処理も JSON で組める）。
+In most cases, adding one entry to `web/models.json` is enough (for plain ONNX models, even pre/post-processing is composed in JSON).
 
-## 構成
+## Layout
 
-| ファイル | 役割 |
+| File | Role |
 | --- | --- |
-| `web/models.json` | **タブ（tasks）とモデル（models）の定義。ブラウザとサーバーで共通** |
-| `web/app.js` | 画面、動画・カメラの連続実行、追跡・cascade のつなぎ、実行履歴 |
-| `web/renderers.js` | 結果の種類ごとの見せ方（枠・マスク・深度・色分け・分類・文章） |
-| `web/worker.js` | ブラウザ側の adapter（Web Worker。onnxruntime-web 用と transformers.js 用で Worker を分ける） |
-| `web/onnx_generic.js` | ブラウザ側の汎用 ONNX（前処理・後処理の部品） |
-| `web/tracker.js` | ByteTrack / BoT-SORT（+ ReID） |
-| `adapters.py` | サーバー側の adapter（汎用 ONNX の部品は onnx_generic.js と同じ） |
-| `server.py` | FastAPI。`web/` と `/api/run`・`/api/status`・`/api/unload`、`/local-models/` |
-| `build.py` | 1ファイル版を作る（作り忘れは `.github/workflows/check-dist.yml` が検出） |
-| `web/pinto/` | 同梱した PINTO_model_zoo のモデル（MIT） |
-| `tools/` | 追跡の Ultralytics との比較、YOLO26 の書き出し |
+| `web/models.json` | **Definitions of tabs (tasks) and models, shared by browser and server** |
+| `web/app.js` | UI, continuous video/camera runs, wiring for tracking and cascades, run history, benchmark |
+| `web/renderers.js` | How each result kind is shown (boxes, masks, depth, segment maps, labels, text) |
+| `web/export.js` | Image saving, result data, run-record export (CSV / JSON / Markdown), device info, statistics |
+| `web/worker.js` | Browser-side adapters (Web Workers; separate workers for onnxruntime-web and transformers.js) |
+| `web/onnx_generic.js` | Browser-side generic ONNX (pre/post-processing blocks) |
+| `web/tracker.js` | ByteTrack / BoT-SORT (+ ReID) |
+| `adapters.py` | Server-side adapters (the generic ONNX blocks mirror onnx_generic.js) |
+| `server.py` | FastAPI. Serves `web/`, `/api/run`, `/api/status`, `/api/unload`, and `/local-models/` |
+| `build.py` | Builds the single-file version (a stale build is caught by `.github/workflows/check-dist.yml`) |
+| `web/pinto/` | Bundled models from PINTO_model_zoo (MIT) |
+| `tools/` | Tracker comparison against Ultralytics, YOLO26 export |
 
-## ライセンス
+## License
 
-コードは MIT License（LICENSE）。**モデルの重みは原則として同梱せず、実行時に各配布元から取得する。各モデルのライセンスはそれぞれの配布元を確認すること**（例: YOLO26 は Ultralytics の AGPL-3.0）。
-例外として `web/pinto/` に PINTO_model_zoo のモデル（MIT）を出典つきで同梱している。サンプル画像は Hugging Face の [Xenova/transformers.js-docs](https://huggingface.co/datasets/Xenova/transformers.js-docs) から実行時に読み込む。README のデモ画像は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0）のフレームに結果を重ねたもの。
+The code is under the MIT License (LICENSE). **Model weights are generally not bundled; they are fetched from each distributor at runtime. Check each model's license with its distributor** (e.g., YOLO26 is AGPL-3.0 from Ultralytics).
+The exception is `web/pinto/`, which bundles models from PINTO_model_zoo (MIT) with attribution. Sample images are loaded at runtime from [Xenova/transformers.js-docs](https://huggingface.co/datasets/Xenova/transformers.js-docs) on Hugging Face. The README demo images are frames from [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos) (CC BY 4.0) with results overlaid.

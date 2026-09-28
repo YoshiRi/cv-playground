@@ -1,16 +1,17 @@
-// 後処理（応用のタブ）: モデルの結果を受け取り、フレームをまたいだ状態を持って集計し、画面に重ねる。
-// models.json の tasks[].recipe.post に名前を並べると、そのタブで追跡・cascade のあとに順に呼ばれる。
-// モデルの結果の見せ方（renderers.js の KINDS）とは別に、集計の状態と表示だけを持つ
+// 応用: モデルの結果を受け取り、フレームをまたいだ状態を持って集計し、画面に重ねる（例: 物体を数える）。
+// models.json の apps に {id, name, accepts: [結果の種類], params, hint} を書くと、その種類の結果を返すタブ（tasks[].result）の
+// 「応用」欄にチェックが出て、選ぶと追跡・cascade のあとに順に呼ばれる。モデルの後処理（onnx_generic.js・adapters.py、
+// models.json の post）とは別物で、モデルの結果の見せ方（renderers.js の KINDS）とも別に、集計の状態と表示だけを持つ
 import { esc, labelColor } from "./renderers.js";
 
-// POST[名前] = {
-//   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（設定欄の値）
+// APPS[id] = {
+//   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（応用欄の値）
 //   update(st, r, ctx)      → 1フレームごと。r.items を絞り込んでよい（絞った結果が枠の表示にも反映される）。ctx = { tracked }
 //   draw(ctx2d, st, r, base) → canvas に重ねる（元画像と結果の枠は描画済み）
 //   panel(st)               → 結果欄に足す HTML
 //   summary(st)             → 実行履歴の「結果」欄に足す文字
 // }
-export const POST = {
+export const APPS = {
   // 物体カウント: 対象クラスごとに「今の数」と、追跡があれば「通算の数（見えた ID の数）」を出す
   count: {
     create: (opts) => ({
@@ -58,7 +59,7 @@ export const POST = {
       if (!rows.length) return `<div class="sub muted">対象が見つからない${st.classes.length ? `（${esc(st.classes.join(", "))}）` : ""}</div>`;
       const chips = rows.map(({ label, now, total }) =>
         `<span class="chip"><i style="background:${labelColor(label)}"></i>${esc(label)} <b>${now}</b>${total != null ? ` <small>通算 ${total}</small>` : ""}</span>`).join("");
-      const note = st.tracked ? `今の数は直近 ${HIST} フレームの中央値。通算は見えた追跡 ID の数` : "追跡なし（今の数だけ。動画・カメラで追跡を選ぶと通算も出る）";
+      const note = st.tracked ? `今の数は直近 ${HIST} フレームの中央値。通算は見えた追跡 ID の数（ID が切り替わると多めに出る）` : "追跡なし（今の数だけ。動画・カメラで追跡を選ぶと通算も出る）";
       return `<div class="sub">カウント</div><div class="chips">${chips}</div><div class="sub muted">${note}</div>`;
     },
     summary: (st) => countRows(st).map(({ label, now, total }) => `${label} ${total ?? now}`).join("・"),

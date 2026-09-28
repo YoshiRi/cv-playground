@@ -2,7 +2,7 @@ import { CATALOG, MODELS, TASKS } from "./catalog.js";
 import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { collectEnv, composeImage, download, resultData, safeName, shareOrDownload, stamp, stats, toCSV, toJSON, toMarkdown } from "./export.js";
 import { Tracker } from "./tracker.js";
-import { POST } from "./post.js";
+import { APPS } from "./apps.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -40,7 +40,7 @@ const state = {
   bench: false,      // ベンチマーク中
   category: null,    // 選んでいるタブの分類（models.json の categories）
   auto: false,       // クリックで切り出しの「全体を自動分割」
-  post: [],          // 応用のタブの後処理 [{id, st}]（post.js）。連続実行の開始時と静止画の1回ごとに作り直す
+  apps: [],          // 選んだ応用 [{id, st}]（apps.js）。連続実行の開始時と静止画の1回ごとに作り直す
 };
 
 // ---------- 推論の呼び出し ----------
@@ -130,12 +130,10 @@ function setStatus(text, cls = "") {
 // onnx.server_file のモデルは server.py だけが配るので、サーバーが無い時は出さない
 // models.json の1件は where に実行できる場所を並べる。画面の選択肢は「モデル × 実行場所」ごとに1つ（値は key@where）。
 // 1ファイル版ではサーバーの選択肢を出さない
-// 応用のタブ（tasks[].recipe）は、recipe.base のタブのモデルをそのまま使う
-const baseTask = (task) => TASKS.find((t) => t.id === task)?.recipe?.base ?? task;
 function variants(task) {
   const out = [];
   for (const where of ["browser", "server"]) {
-    for (const e of MODELS.filter((x) => x.task === baseTask(task) && x.where.includes(where) && (state.hasServer || !x.onnx?.server_file))) {
+    for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where) && (state.hasServer || !x.onnx?.server_file))) {
       if (where === "server" && !state.hasServer) continue;
       const avoid = where === "browser" ? e.avoid_browser : null;
       out.push({ ...e, where, avoid, id: `${e.key}@${where}`, ready: where === "browser" || state.serverModels.has(e.key) });
@@ -278,7 +276,7 @@ function selectTask(id) {
   state.auto = false;
   state.result = null;
   state.points = [];
-  state.post = [];
+  state.apps = [];
   const t = TASKS.find((x) => x.id === id);
   renderTasks();
   $("task-hint").textContent = t.hint;
@@ -287,8 +285,7 @@ function selectTask(id) {
   const def = t.defaults || {};
   if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
   if (def.labels) $("labels").value = def.labels;
-  if (def.classes != null) $("classes").value = def.classes;
-  if (def.tracker != null) { $("tracker").value = def.tracker; $("track-hint").hidden = !def.tracker; }
+  renderApps(t);
   $("canvas-wrap").classList.toggle("clickable", !!t.click);
 
   const sel = $("model");
@@ -501,7 +498,7 @@ function draw() {
     ctx.fillStyle = l ? "#16a34a" : "#ef4444"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = lw; ctx.stroke();
   }
-  if (r) for (const p of state.post) POST[p.id].draw?.(ctx, p.st, r, b);
+  if (r) for (const a of state.apps) APPS[a.id].draw?.(ctx, a.st, r, b);
 }
 
 // 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
@@ -524,7 +521,7 @@ function renderResult(m, r, live) {
       + `<div class="bd-legend">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} ${fmt(v)}</span>`).join("")}</div></div>`;
   }
   const body = (KINDS[r.kind]?.panel(r, { live, points: state.points.length }) ?? "")
-    + state.post.map((p) => POST[p.id].panel?.(p.st) ?? "").join("");
+    + state.apps.map((a) => APPS[a.id].panel?.(a.st) ?? "").join("");
   $("result").innerHTML = `<div class="result-head"><b>${esc(m.name)}</b><span class="badge ${m.where}">${esc(where)}</span></div>`
     + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
 }
@@ -596,7 +593,7 @@ const BENCH_WARMUP = 3;
 // 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
 // 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
 function benchCandidates() {
-  return TASKS.filter((t) => !t.click && !t.recipe).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+  return TASKS.filter((t) => !t.click).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
 }
 
 function renderBench() {
@@ -747,10 +744,10 @@ async function run() {
   try {
     const r = await runOnce(m);
     await applyCascade(m, r, null);
-    state.post = createPost();
-    applyPost(r, { tracked: false });
+    state.apps = createApps();
+    applyApps(r, { tracked: false });
     renderResult(m, r);
-    addRun(makeRecord(m, r, "single", { task: curTask().name, ...postSummary() }));
+    addRun(makeRecord(m, r, "single", appsSummary(KINDS[r.kind]?.summary(r))));
     setStatus("");
     draw();
     if (m.where === "server") refreshServer();
@@ -783,7 +780,7 @@ async function liveLoop() {
   const trackerName = $("tracker").selectedOptions[0]?.textContent;
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
-  state.post = createPost();
+  state.apps = createApps();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   const overrides = tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {};
   // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
@@ -796,7 +793,7 @@ async function liveLoop() {
     }
     state.result = r;
     await applyCascade(m, r, tracker ? seqStore : null);
-    applyPost(r, { tracked: !!tracker });
+    applyApps(r, { tracked: !!tracker });
     if (!first) { first = r; tStart = performance.now(); setStatus(""); }
     frames++;
     if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
@@ -830,27 +827,46 @@ async function liveLoop() {
   if (first) {
     const st = stats(times);
     addRun(makeRecord(m, state.result || first, "live", {
-      task: curTask().name, load_ms: first.load_ms, infer_ms: st?.mean ?? first.infer_ms, frames, fps: +fps.toFixed(2),
+      load_ms: first.load_ms, infer_ms: st?.mean ?? first.infer_ms, frames, fps: +fps.toFixed(2),
       infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_p95_ms: st?.p95, infer_min_ms: st?.min, infer_max_ms: st?.max, warmup: 1,
-      summary: [tracker ? `${trackerName.split("（")[0]} ID ${ids.size}個` : "", postSummary().summary].filter(Boolean).join(" ・ "),
+      ...appsSummary(tracker ? `${trackerName.split("（")[0]} ID ${ids.size}個` : ""),
     }));
   }
   state.live = false;
   updateButtons();
 }
 
-// 応用のタブの後処理（post.js）。タブの recipe.post に並べた順に、追跡・cascade のあとで呼ぶ
-function createPost() {
+// 応用（apps.js）: models.json の apps のうち、タブの結果の種類（tasks[].result）を受け付けるものを「応用」欄にチェックで出す。
+// 選んだものを追跡・cascade のあとに順に呼ぶ。URL の ?apps=count で最初から選んでおける
+// 選んだ応用はタブを切り替えても覚えておく（別のタブで同じ種類の結果なら、そのまま効く）
+const chosenApps = new Set((new URLSearchParams(location.search).get("apps") || "").split(",").filter(Boolean));
+function renderApps(t) {
+  const list = (CATALOG.apps || []).filter((a) => t.result && a.accepts.includes(t.result) && APPS[a.id]);
+  $("apps-row").hidden = !list.length;
+  $("apps").innerHTML = list.map((a) =>
+    `<label class="check" title="${esc(a.hint || "")}"><input type="checkbox" data-app="${a.id}"${chosenApps.has(a.id) ? " checked" : ""}> ${esc(a.name)}</label>`).join("");
+  showAppParams();
+}
+function onAppsChange(ev) {
+  const c = ev.target.closest("[data-app]");
+  if (c) c.checked ? chosenApps.add(c.dataset.app) : chosenApps.delete(c.dataset.app);
+  showAppParams();
+}
+// 選んだ応用が使う設定欄だけを出す（data-app-param）
+function showAppParams() {
+  const used = new Set(checkedApps().flatMap((a) => a.params || []));
+  for (const el of document.querySelectorAll("[data-app-param]")) el.hidden = !used.has(el.dataset.appParam);
+}
+const checkedApps = () => [...document.querySelectorAll("[data-app]:checked")].map((c) => (CATALOG.apps || []).find((a) => a.id === c.dataset.app));
+function createApps() {
   const opts = { classes: $("classes").value };
-  return (curTask().recipe?.post || []).map((id) => ({ id, st: POST[id].create(opts) }));
+  return checkedApps().map((a) => ({ id: a.id, st: APPS[a.id].create(opts) }));
 }
-function applyPost(r, ctx) {
-  for (const p of state.post) POST[p.id].update(p.st, r, ctx);
+function applyApps(r, ctx) {
+  for (const a of state.apps) APPS[a.id].update(a.st, r, ctx);
 }
-const postSummary = () => {
-  const s = state.post.map((p) => POST[p.id].summary?.(p.st)).filter(Boolean).join(" ・ ");
-  return s ? { summary: s } : {};
-};
+// 実行履歴の「結果」欄: base（モデルの結果の要約や追跡の ID 数）に応用の集計を足す
+const appsSummary = (base) => ({ summary: [base, ...state.apps.map((a) => APPS[a.id].summary?.(a.st))].filter(Boolean).join(" ・ ") });
 
 // 検出のあと、models.json の cascade に書いたクラスの枠を切り出して小さな分類モデルにかけ、枠の表示に状態を足す
 // （例: 目 → OCEC で開/閉）。seq のモデルは追跡の ID ごとに切り出しをためて、T 枚そろったら判定する
@@ -1033,6 +1049,7 @@ async function init() {
   $("bench-start").onclick = runBench;
   $("bench-profile-note").hidden = !PROFILE;
   $("bench-models").addEventListener("change", updateBenchCount);
+  $("apps").addEventListener("change", onAppsChange);
   $("local-onnx").onchange = (ev) => { const fs = [...ev.target.files]; ev.target.value = ""; if (fs.length) importLocalOnnx(fs); };
   renderLocalKnown();
   state.runs = loadRuns();

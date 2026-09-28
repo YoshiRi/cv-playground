@@ -135,6 +135,8 @@ Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrom
 
 SegFormer B0（ADE20K）は transformers.js の image-segmentation パイプラインで動かしていたが、前処理（512×512 に引き伸ばして ImageNet の平均・標準偏差で正規化）も後処理（画素ごとに最大のクラス）も単純なので、汎用 ONNX（後処理の部品 `segmap`）に移した。M4 の Chrome で1回 981ms → 42ms（fp16 + graph capture。fp32 でも 56ms）。transformers.js 版は 150 クラスの出力を元画像の大きさに広げてから最大を取り、クラスごとのマスクも作るので後処理が重かった。こちらは出力の解像度（128×128）のまま最大を取って表示で広げるので、境界の細かさは少し違うが、クラスと面積はほぼ同じ（街の写真で road 50.4% と 50.9%、上位 8 クラスの順も同じ）。サーバー（adapters.py の `post_segmap`）も同じ手順
 
+Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレーム 123〜161ms（前処理 6〜7・モデル実行 116〜139・後処理 21〜23ms）、6〜8fps。transformers.js 版は1回 1695ms（読み込み済み、Chrome）だったので 10 倍以上速い。スマホではモデル実行（M4 の約 3.5 倍）が主で、次は入力を 512 より小さくする余地がある。後処理（150 クラスの最大を JS で）の 21ms は GPU に移せば縮む
+
 ## Grounding DINO の候補の扱い
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）

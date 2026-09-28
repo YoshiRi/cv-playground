@@ -137,7 +137,30 @@ ADAPTERS["hf-xxx"] = HfXxx
 | `web/` に同梱（`path` + `url`） | 配布元がブラウザから取れない（GitHub Releases は CORS 不可など）で、**再配布できるライセンス**（MIT、Apache-2.0 など） | 出典とライセンスを同じフォルダの README に書く（例: `web/pinto/README.md`） |
 | `models/` に置いてサーバーだけが配る（`server_file`） | 再配布したくない・できない重み（AGPL の YOLO26 など） | `models/` は `.gitignore` 済み。作り方のスクリプトを `tools/` に置く（例: `tools/export_yolo26_dynamic.py`） |
 
-## 7. 足したあとの確認
+## 7. 速く動かす（ブラウザ）
+
+汎用 ONNX（`adapter: "onnx"`）で書けば、次は**自動で**かかる。モデルごとに作業は要らない。
+
+| 自動でかかるもの | 中身 | かからない時 |
+| --- | --- | --- |
+| fp16 | 実行設定の既定。`onnx.file_fp16` があればそれを使う | fp16 版が無い（fp32 のまま） |
+| graph capture | 2回目以降、記録した GPU の命令をまとめて流す（スマホで特に効く） | CPU に回るノードがあるモデル（自動で外れ、実行場所に「graph capture 不可」） |
+| 入力の形の固定 | ONNX の可変の次元（`batch_size` など）を、`pre.size` から決まる大きさに固定 | `pre.dynamic`・`batch`・`seq`・`keep_aspect` のモデル |
+| GPU の前処理 | 縮小は canvas、正規化などは GPU（`?pre=` で切り替え） | GPU 版が知らない `pre` の指定がある（自動で CPU） |
+| 連続実行のパイプライン化 | 前のフレームの推論中に次を送る | － |
+
+transformers.js の adapter（`tjs-*`）にはどれもかからない（1回ずつライブラリに任せる）。**前処理・後処理が単純なモデルは、transformers.js にあっても汎用 ONNX で書く**（SegFormer は後処理の部品 `segmap` を足して 981ms → 42ms。HF の `onnx/` にある ONNX と `preprocessor_config.json` の値をそのまま `onnx`・`pre` に写せばよい）。
+
+モデルを足した時に見ること（どれも画面だけでできる）
+
+1. **経路**: モデルの説明欄の「実行: …」が `onnxruntime-web を直接` になっているか
+2. **速さ**: 「速度を測る」で 20 回以上。記録の「実行場所」に実際に使った設定（`fp16 graph 前処理GPU…`）、列に前処理・モデル実行・後処理が出る
+3. **graph capture 不可と出たら**: URL に `?profile=1` を付けて実行設定を「fp32（graph capture なし）」にして測ると、表に「CPU に回ったノード」が出る。後処理の部分（Mod・Range・TopK など）なら、ONNX から後処理を外して JS の部品で行うと使えるようになることがある
+4. **どこが重いか**: 同じ `?profile=1` の表の「演算ごとの GPU 時間」。畳み込み・行列積が大半なら計算そのものが重い（入力を小さくする、fp16 版、軽いモデルに替える）。後処理の列が大きければ JS の部品を見直す
+5. **結果が合っているか**: 移す前の経路（transformers.js・サーバー）と同じ画像で、件数・クラス・面積を比べる。前処理の違いは `?pre=cpu` で CPU の前処理と比べられる
+6. **スマホで**: Mac で速くてもスマホで逆になることがある（`?pre=gpu` は Galaxy Z Fold6 で遅くなった。DETR panoptic は Adreno 750 で WebGPU の shader が作れない）。記録の Markdown を貼れば比べられる
+
+## 8. 足したあとの確認
 
 1. `scripts/serve.sh` でサーバー版を開き、ブラウザ実行・サーバー実行（`where` に書いた分）で結果が出ること
 2. 汎用 ONNX で両方に書いたなら、同じ画像でブラウザとサーバーの結果がほぼ同じこと（縮小の補間の違いで境界の検出は少し変わる）

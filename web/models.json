@@ -169,7 +169,8 @@
     "type": "yolo_detect",
     "classes": "coco"
    },
-   "license": "AGPL-3.0（Ultralytics）"
+   "license": "AGPL-3.0（Ultralytics）",
+   "bench": true
   },
   {
    "key": "yolo26n-dyn",
@@ -367,7 +368,8 @@
    "post": {
     "type": "yolo_pose"
    },
-   "license": "AGPL-3.0（Ultralytics）"
+   "license": "AGPL-3.0（Ultralytics）",
+   "bench": true
   },
   {
    "key": "yolo26n-pose-dyn",
@@ -531,7 +533,8 @@
     "webgpu": "fp32",
     "wasm": "fp32"
    },
-   "license": "NVIDIA Source Code License（非商用）"
+   "license": "NVIDIA Source Code License（非商用）",
+   "bench": true
   },
   {
    "key": "eomt-ade-large",
@@ -654,7 +657,8 @@
    "server": {
     "providers": "cpu"
    },
-   "license": "Apache-2.0"
+   "license": "Apache-2.0",
+   "bench": true
   },
   {
    "key": "dav2-large",
@@ -964,7 +968,8 @@
      "seq": 4
     }
    ],
-   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）",
+   "bench": true
   },
   {
    "key": "deimv2-femto",

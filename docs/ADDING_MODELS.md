@@ -15,6 +15,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | どのタブに出すか | `task`: `models.json` の `tasks[].id`（新しいタブは [ADDING_UI.md](ADDING_UI.md)） |
 | ライセンス | `license`: 画面のモデルの説明に出す（例: `"Apache-2.0"`、`"CC BY-NC 4.0（非商用）"`）。**必ず書く** |
 | 大きさ | `mb`: ブラウザが最初に取得するおおよその MB。100MB を超えると初回に確認を出す |
+| ベンチマーク | `bench: true` にすると「速度を測る」で最初から選ばれる（軽い代表だけに付ける） |
 | どこで動かすか | `where`: `["browser"]` / `["server"]` / `["browser", "server"]`（両方なら同じモデルを比べられる） |
 | どう動かすか | 素の ONNX で前処理・後処理が単純 → `adapter: "onnx"`（JSON を書くだけ）。ライブラリのプロセッサが要る → 専用の adapter を書く |
 | 重みをどこから取るか | 下の「重みの置き場所」 |

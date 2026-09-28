@@ -114,8 +114,15 @@
         <div class="progress" id="progress" hidden><progress id="progress-bar" max="100"></progress><span id="progress-text"></span></div>
         <div id="status" class="status" aria-live="polite"></div>
       </div>
-      <div class="view-toggle" id="view-toggle" hidden>
-        <label class="field row">表示 <select id="view"></select></label>
+      <div class="result-tools">
+        <div class="view-toggle" id="view-toggle" hidden>
+          <label class="field row">表示 <select id="view"></select></label>
+        </div>
+        <div class="result-actions" id="result-actions" hidden>
+          <button type="button" class="ghost" id="save-image">画像を保存</button>
+          <button type="button" class="ghost" id="save-data">結果データ（JSON）</button>
+          <label class="check small"><input type="checkbox" id="caption" checked> 説明の帯を付ける</label>
+        </div>
       </div>
       <div id="result" class="result"></div>
     </section>
@@ -123,7 +130,13 @@
 
   <section class="history">
     <div class="history-head">
-      <h2>実行履歴</h2>
+      <h2>実行履歴 <small class="muted" id="history-count"></small></h2>
+      <div class="export-box">
+        <button type="button" class="ghost" id="export-csv">CSV</button>
+        <button type="button" class="ghost" id="export-json">JSON</button>
+        <button type="button" class="ghost" id="export-md">Markdown をコピー</button>
+        <button type="button" class="ghost" id="clear-runs">記録を消す</button>
+      </div>
       <div class="server-box" id="server-box">
         <span id="server-status" class="muted"></span>
         <button type="button" class="ghost" id="unload">サーバーのモデルを解放</button>
@@ -136,6 +149,22 @@
       </table>
     </div>
     <p class="muted small">読み込み＝初回のダウンロードとモデル初期化（2回目以降は 0）。推論＝画像1枚の処理時間（連続実行は平均）。動画・カメラは元の解像度で表示し、推論には「処理解像度」（長辺、既定 640px）に縮めたフレームを渡す。ブラウザ実行はこの端末の性能、サーバー実行はサーバーの性能と通信を含む。</p>
+  </section>
+
+  <section class="bench">
+    <h2>速度を測る（ベンチマーク）</h2>
+    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
+    <details class="advanced">
+      <summary id="bench-summary">測るモデルを選ぶ</summary>
+      <div class="bench-models" id="bench-models"></div>
+    </details>
+    <div class="row-actions">
+      <label class="field row">回数
+        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option></select>
+      </label>
+      <span class="muted small" id="bench-progress"></span>
+      <button type="button" class="primary" id="bench-start">▶ 測る</button>
+    </div>
   </section>
 
   <section class="about">

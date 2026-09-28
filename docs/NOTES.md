@@ -83,3 +83,10 @@ GPU の性能順にきれいに並ぶので、固定の手間より計算量が�
 - ブラウザ: transformers.js の image-segmentation パイプライン（SegFormer B0、DETR ResNet-50 panoptic）。`subtask` を明示すると 3.8.1・4.3.0 とも関数名の文字列を呼ぼうとして "x is not a function" で落ちるので、省いてモデルの後処理から自動で選ばせる。DETR panoptic の config は stuff クラスの名前が `LABEL_184` のように空なので、cocodataset/panopticapi の `panoptic_coco_categories.json` で名前を付ける（models.json の `label_map`）
 - サーバー: EoMT（DINOv3）。パノプティックはパイプラインで正しいが、セマンティックはパイプラインでもプロセッサ直呼びでも、横長の画像で塗り分けが縦につぶれる（プロセッサは長辺 512 に縮めて右下を余白で埋めた正方形にするのに、後処理は余白ごと元の大きさに引き伸ばす。transformers 5.17）。入力の大きさで塗り分けを出し、余白を切ってから戻している（黒い四角の位置で横長・縦長とも一致を確認）
 - 色はクラス名から決まる（ブラウザの `segColor` とサーバーの `seg_color` が同じ式）。パノプティックの同じクラスの物は明るさを変えて塗る
+
+## 書き出しと速度を測る（`web/export.js`）
+
+- 実行の記録は1回の実行（連続実行・ベンチマークは1まとめ）を1行にし、ブラウザ内（localStorage）に最新 500 件まで残す。CSV は BOM 付き UTF-8（Excel で文字化けしない）で、端末の列（ブラウザ、OS、機種名、GPU、CPU スレッド数、WASM スレッド数、配り方、アプリの版など）を毎行に入れるので、別の端末の CSV をそのまま連結して比べられる。機種名は Chrome 系の User-Agent Client Hints（Android なら機種名が取れる）、GPU は WebGPU のアダプタ情報
+- 連続実行の統計は1フレーム目（モデルの読み込み・初期化を含む）を除いたフレームごとの推論時間から出す（平均・中央値・p90・最小・最大）
+- 速度を測る: 決まった画像（transformers.js-docs の city-streets.jpg、800×800）で、ウォームアップ 3 回のあと N 回。クリックで点を置くタブ（プロンプト（SAM））は条件が決まらないので対象外。既定で選ぶのは models.json の `bench: true`（M4 Mac の Chrome で5モデル・各 20 回が約 46 秒、ダウンロード込み）
+- 画像の保存: 表示中の canvas（「表示」の選択を反映）に説明の帯を付けた PNG。スマホで共有シートが使える時（`navigator.canShare`）は共有シートから「写真に保存」などを選べる

@@ -71,7 +71,7 @@ KINDS.mykind = {
 - 動画では `draw` が新しいフレームごとに呼ばれるので、重い処理は `prepare` に寄せる
 - 色は `labelColor(label)`（ラベルごとに固定）と `idColor(id)`（追跡の ID ごと）を使うと他の結果とそろう
 
-結果欄の上の部分（モデル名・実行場所・推論時間・fps・内訳の帯）は `web/app.js` の `renderResult()` が全種類共通で描く。
+結果欄の上の部分（モデル名・実行場所・推論時間・fps・内訳の帯）は `web/app.js` の `renderResult()` が全種類共通で描く。「画像を保存」「結果データ（JSON）」も全種類共通（表示中の canvas と、結果から画像の層を除いたもの）で、実行履歴の「結果」欄には `summary` が入る。
 
 ## 4. 見た目（`web/style.css`）
 

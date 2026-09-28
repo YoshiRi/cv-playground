@@ -169,6 +169,19 @@ th { color: var(--muted); font-weight: 500; }
 .about ul { margin: 8px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
 .row-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
 .chip small { color: var(--muted); margin-left: 3px; }
+
+.result-tools { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.result-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.export-box { display: flex; gap: 6px; flex-wrap: wrap; }
+.history-head h2 small { font-weight: 400; font-size: 13px; }
+td small { color: var(--muted); margin-left: 2px; }
+.bench { margin: 0 16px 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.bench p { margin: 0; }
+.bench-models { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.bench-models fieldset { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 8px; margin: 0; display: flex; flex-direction: column; gap: 3px; }
+.bench-models legend { font-size: 12.5px; color: var(--muted); padding: 0 4px; }
+.bench-models .check { font-size: 13px; }
+.bench .primary { padding: 8px 18px; }
 </style>
 </head>
 <body>
@@ -276,8 +289,15 @@ th { color: var(--muted); font-weight: 500; }
         <div class="progress" id="progress" hidden><progress id="progress-bar" max="100"></progress><span id="progress-text"></span></div>
         <div id="status" class="status" aria-live="polite"></div>
       </div>
-      <div class="view-toggle" id="view-toggle" hidden>
-        <label class="field row">表示 <select id="view"></select></label>
+      <div class="result-tools">
+        <div class="view-toggle" id="view-toggle" hidden>
+          <label class="field row">表示 <select id="view"></select></label>
+        </div>
+        <div class="result-actions" id="result-actions" hidden>
+          <button type="button" class="ghost" id="save-image">画像を保存</button>
+          <button type="button" class="ghost" id="save-data">結果データ（JSON）</button>
+          <label class="check small"><input type="checkbox" id="caption" checked> 説明の帯を付ける</label>
+        </div>
       </div>
       <div id="result" class="result"></div>
     </section>
@@ -285,7 +305,13 @@ th { color: var(--muted); font-weight: 500; }
 
   <section class="history">
     <div class="history-head">
-      <h2>実行履歴</h2>
+      <h2>実行履歴 <small class="muted" id="history-count"></small></h2>
+      <div class="export-box">
+        <button type="button" class="ghost" id="export-csv">CSV</button>
+        <button type="button" class="ghost" id="export-json">JSON</button>
+        <button type="button" class="ghost" id="export-md">Markdown をコピー</button>
+        <button type="button" class="ghost" id="clear-runs">記録を消す</button>
+      </div>
       <div class="server-box" id="server-box">
         <span id="server-status" class="muted"></span>
         <button type="button" class="ghost" id="unload">サーバーのモデルを解放</button>
@@ -298,6 +324,22 @@ th { color: var(--muted); font-weight: 500; }
       </table>
     </div>
     <p class="muted small">読み込み＝初回のダウンロードとモデル初期化（2回目以降は 0）。推論＝画像1枚の処理時間（連続実行は平均）。動画・カメラは元の解像度で表示し、推論には「処理解像度」（長辺、既定 640px）に縮めたフレームを渡す。ブラウザ実行はこの端末の性能、サーバー実行はサーバーの性能と通信を含む。</p>
+  </section>
+
+  <section class="bench">
+    <h2>速度を測る（ベンチマーク）</h2>
+    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
+    <details class="advanced">
+      <summary id="bench-summary">測るモデルを選ぶ</summary>
+      <div class="bench-models" id="bench-models"></div>
+    </details>
+    <div class="row-actions">
+      <label class="field row">回数
+        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option></select>
+      </label>
+      <span class="muted small" id="bench-progress"></span>
+      <button type="button" class="primary" id="bench-start">▶ 測る</button>
+    </div>
   </section>
 
   <section class="about">
@@ -951,7 +993,7 @@ return { COCO };
 })();
 const { CATALOG, TASKS, MODELS, SKELETON } = await (async () => {
 // タブ（tasks）とモデル（models）の定義は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
-const CATALOG = {"_doc": ["UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"], "categories": [{"id": "detect", "name": "検出・追跡"}, {"id": "seg", "name": "セグメンテーション"}, {"id": "3d", "name": "深度・3D"}, {"id": "vl", "name": "画像と言語"}], "tasks": [{"id": "detect", "name": "物体検出", "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect"}, {"id": "pose", "name": "人物の姿勢", "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect"}, {"id": "wholebody", "name": "手・目（PINTO）", "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.35}, "category": "detect"}, {"id": "zsdetect", "name": "テキスト物体検知", "hint": "英語の名詞をカンマ区切り（例: cat, remote control）", "params": ["labels", "threshold", "track"], "defaults": {"threshold": 0.3, "labels": "person, bus, bag"}, "category": "detect"}, {"id": "segment", "name": "プロンプト（SAM）", "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）", "params": ["points"], "click": true, "category": "seg"}, {"id": "semantic", "name": "セマンティック", "category": "seg", "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる", "params": []}, {"id": "panoptic", "name": "パノプティック", "category": "seg", "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）", "params": []}, {"id": "depth", "name": "深度推定", "hint": "赤いほど近い（相対深度）", "params": [], "category": "3d"}, {"id": "classify", "name": "ゼロショット分類", "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", "params": ["labels"], "defaults": {"labels": "bus, truck, tram, street, office, cat"}, "category": "vl"}, {"id": "matting", "name": "背景除去", "hint": "前景だけを残す", "params": [], "category": "seg"}, {"id": "vlm", "name": "画像の説明・質問", "hint": "SmolVLM は英語のみ。日本語は Qwen", "params": ["prompt"], "defaults": {"prompt": "この画像を日本語で詳しく説明してください。"}, "category": "vl"}], "models": [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large", "license": "Apache-2.0"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base", "license": "Apache-2.0"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "SAM License（Meta）"}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large", "license": "Apache-2.0"}, {"key": "segformer-b0", "task": "semantic", "name": "SegFormer B0（ADE20K）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "semantic", "mb": 15, "repo": "Xenova/segformer-b0-finetuned-ade-512-512", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "NVIDIA Source Code License（非商用）"}, {"key": "eomt-ade-large", "task": "semantic", "name": "EoMT DINOv3 large（ADE20K）", "where": ["server"], "adapter": "hf-segment", "subtask": "semantic", "repo": "tue-mps/eomt-dinov3-ade-semantic-large-512", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "detr-panoptic", "task": "panoptic", "name": "DETR ResNet-50（COCO パノプティック）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "panoptic", "mb": 172, "repo": "Xenova/detr-resnet-50-panoptic", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0", "label_map": {"184": "tree-merged", "185": "fence-merged", "186": "ceiling-merged", "187": "sky-other-merged", "188": "cabinet-merged", "189": "table-merged", "190": "floor-other-merged", "191": "pavement-merged", "192": "mountain-merged", "193": "grass-merged", "194": "dirt-merged", "195": "paper-merged", "196": "food-other-merged", "197": "building-other-merged", "198": "rock-merged", "199": "wall-other-merged", "200": "rug-merged"}, "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"}, {"key": "eomt-coco-panoptic", "task": "panoptic", "name": "EoMT DINOv3 base（COCO パノプティック）", "where": ["server"], "adapter": "hf-segment", "subtask": "panoptic", "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}, "license": "Apache-2.0"}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf", "license": "CC BY-NC 4.0（非商用）"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}, "license": "MIT"}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1028, "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "prompt": "Describe this image in detail.", "license": "Apache-2.0", "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}, "license": "Apache-2.0"}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}, "license": "MIT（torchreid）"}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意", "license": "モデルによる（qwen3-vl は Apache-2.0）"}]};
+const CATALOG = {"_doc": ["UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"], "categories": [{"id": "detect", "name": "検出・追跡"}, {"id": "seg", "name": "セグメンテーション"}, {"id": "3d", "name": "深度・3D"}, {"id": "vl", "name": "画像と言語"}], "tasks": [{"id": "detect", "name": "物体検出", "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect"}, {"id": "pose", "name": "人物の姿勢", "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect"}, {"id": "wholebody", "name": "手・目（PINTO）", "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.35}, "category": "detect"}, {"id": "zsdetect", "name": "テキスト物体検知", "hint": "英語の名詞をカンマ区切り（例: cat, remote control）", "params": ["labels", "threshold", "track"], "defaults": {"threshold": 0.3, "labels": "person, bus, bag"}, "category": "detect"}, {"id": "segment", "name": "プロンプト（SAM）", "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）", "params": ["points"], "click": true, "category": "seg"}, {"id": "semantic", "name": "セマンティック", "category": "seg", "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる", "params": []}, {"id": "panoptic", "name": "パノプティック", "category": "seg", "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）", "params": []}, {"id": "depth", "name": "深度推定", "hint": "赤いほど近い（相対深度）", "params": [], "category": "3d"}, {"id": "classify", "name": "ゼロショット分類", "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", "params": ["labels"], "defaults": {"labels": "bus, truck, tram, street, office, cat"}, "category": "vl"}, {"id": "matting", "name": "背景除去", "hint": "前景だけを残す", "params": [], "category": "seg"}, {"id": "vlm", "name": "画像の説明・質問", "hint": "SmolVLM は英語のみ。日本語は Qwen", "params": ["prompt"], "defaults": {"prompt": "この画像を日本語で詳しく説明してください。"}, "category": "vl"}], "models": [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large", "license": "Apache-2.0"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base", "license": "Apache-2.0"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "SAM License（Meta）"}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large", "license": "Apache-2.0"}, {"key": "segformer-b0", "task": "semantic", "name": "SegFormer B0（ADE20K）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "semantic", "mb": 15, "repo": "Xenova/segformer-b0-finetuned-ade-512-512", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "NVIDIA Source Code License（非商用）", "bench": true}, {"key": "eomt-ade-large", "task": "semantic", "name": "EoMT DINOv3 large（ADE20K）", "where": ["server"], "adapter": "hf-segment", "subtask": "semantic", "repo": "tue-mps/eomt-dinov3-ade-semantic-large-512", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "detr-panoptic", "task": "panoptic", "name": "DETR ResNet-50（COCO パノプティック）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "panoptic", "mb": 172, "repo": "Xenova/detr-resnet-50-panoptic", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0", "label_map": {"184": "tree-merged", "185": "fence-merged", "186": "ceiling-merged", "187": "sky-other-merged", "188": "cabinet-merged", "189": "table-merged", "190": "floor-other-merged", "191": "pavement-merged", "192": "mountain-merged", "193": "grass-merged", "194": "dirt-merged", "195": "paper-merged", "196": "food-other-merged", "197": "building-other-merged", "198": "rock-merged", "199": "wall-other-merged", "200": "rug-merged"}, "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"}, {"key": "eomt-coco-panoptic", "task": "panoptic", "name": "EoMT DINOv3 base（COCO パノプティック）", "where": ["server"], "adapter": "hf-segment", "subtask": "panoptic", "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "tjs-depth", "mb": 99, "repo": "onnx-community/depth-anything-v2-small", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data"}, "pre": {"resize": "keep_aspect", "short": 518, "multiple": 14, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}, "license": "Apache-2.0", "bench": true}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf", "license": "CC BY-NC 4.0（非商用）"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx"}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}, "license": "MIT"}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1028, "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "prompt": "Describe this image in detail.", "license": "Apache-2.0", "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}, "license": "Apache-2.0"}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）", "bench": true}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx"}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}, "license": "MIT（torchreid）"}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意", "license": "モデルによる（qwen3-vl は Apache-2.0）"}]};
 const TASKS = CATALOG.tasks;
 const MODELS = CATALOG.models;
 
@@ -1535,6 +1577,159 @@ class Tracker {
 
 return { TRACKER_DEFAULTS, Tracker };
 })();
+const { APP_VERSION, stats, collectEnv, RUN_COLUMNS, ENV_COLUMNS, toCSV, toJSON, toMarkdown, stamp, safeName, download, shareOrDownload, composeImage, resultData } = await (async () => {
+// 書き出し: 可視化画像の保存、結果データ（JSON）、実行の記録（CSV / JSON / Markdown）と端末の情報、統計。
+// 端末の情報は書き出すファイルに入れるだけで、どこにも送らない。
+
+// アプリの版（記録に入れる。大きく変えた時に上げる）
+const APP_VERSION = "2026.09.28";
+
+// ---------- 統計 ----------
+
+function stats(xs) {
+  const a = xs.filter((x) => Number.isFinite(x)).sort((p, q) => p - q);
+  if (!a.length) return null;
+  const q = (f) => a[Math.min(a.length - 1, Math.floor(f * (a.length - 1) + 0.5))];
+  const mean = a.reduce((s, x) => s + x, 0) / a.length;
+  return { n: a.length, mean, median: q(0.5), p90: q(0.9), min: a[0], max: a[a.length - 1] };
+}
+
+// ---------- 端末の情報 ----------
+
+let envCache = null;
+async function collectEnv(variant) {
+  if (envCache) return envCache;
+  const ua = navigator.userAgent, e = { variant, app_version: APP_VERSION, user_agent: ua };
+  // ブラウザと OS（Chrome 系は User-Agent Client Hints で機種名も取れる）
+  const uad = navigator.userAgentData;
+  if (uad?.getHighEntropyValues) {
+    try {
+      const h = await uad.getHighEntropyValues(["model", "platformVersion", "fullVersionList"]);
+      const b = (h.fullVersionList || uad.brands).find((x) => !/Not.?A.?Brand|Chromium/i.test(x.brand)) || (h.fullVersionList || uad.brands)[0];
+      Object.assign(e, { browser: b ? `${b.brand} ${b.version}` : "", os: `${uad.platform} ${h.platformVersion || ""}`.trim(), device_model: h.model || "" });
+    } catch { /* 取れない環境 */ }
+  }
+  if (!e.browser) {
+    const m = ua.match(/(Edg|OPR|Chrome|Firefox|Version)\/([\d.]+)/);
+    e.browser = m ? `${m[1] === "Version" ? "Safari" : m[1]} ${m[2]}` : "";
+    e.os = /iPhone|iPad/.test(ua) ? `iOS ${(ua.match(/OS ([\d_]+)/)?.[1] || "").replace(/_/g, ".")}` : /Android ([\d.]+)/.test(ua) ? `Android ${RegExp.$1}` : /Mac OS X ([\d_]+)/.test(ua) ? `macOS ${RegExp.$1.replace(/_/g, ".")}` : /Windows/.test(ua) ? "Windows" : "";
+    e.device_model = /Android[^;]*; ([^;)]+)/.test(ua) ? RegExp.$1.trim() : /iPad/.test(ua) ? "iPad" : /iPhone/.test(ua) ? "iPhone" : "";
+  }
+  Object.assign(e, {
+    cpu_threads: navigator.hardwareConcurrency ?? "",
+    device_memory_gb: navigator.deviceMemory ?? "",
+    cross_origin_isolated: self.crossOriginIsolated,
+    wasm_threads: self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 4) : 1,
+    screen: `${screen.width}x${screen.height}@${devicePixelRatio}`,
+  });
+  try {
+    const ad = navigator.gpu && (await navigator.gpu.requestAdapter());
+    const i = ad?.info || {};
+    e.webgpu = !!ad;
+    e.gpu = [i.vendor, i.architecture, i.device, i.description].filter(Boolean).join(" ");
+  } catch { e.webgpu = false; e.gpu = ""; }
+  envCache = e;
+  return e;
+}
+
+// ---------- CSV / JSON / Markdown ----------
+
+// 1行 = 1回の実行（連続実行・ベンチマークは1まとめ）。端末の列を毎行に入れるので、別の端末の CSV をそのまま連結して比べられる
+const RUN_COLUMNS = [
+  "time", "mode", "task", "model_key", "model_name", "where", "device", "runtime", "input_size", "frame_w", "frame_h",
+  "load_ms", "infer_ms", "grab_ms", "pre_ms", "run_ms", "post_ms", "roundtrip_ms", "reid_ms", "cascade_ms",
+  "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
+];
+const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
+  "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];
+
+const cell = (v) => {
+  if (v == null) return "";
+  const s = typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(2)) : String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+function toCSV(runs, env) {
+  const cols = [...RUN_COLUMNS, ...ENV_COLUMNS];
+  const rows = runs.map((r) => cols.map((c) => cell(c in r ? r[c] : env[c])).join(","));
+  // BOM 付き UTF-8（Excel で日本語が化けないように）
+  return "﻿" + [cols.join(","), ...rows].join("\r\n") + "\r\n";
+}
+
+function toJSON(runs, env) {
+  return JSON.stringify({ app: "cv-playground", app_version: APP_VERSION, exported_at: new Date().toISOString(), env, runs }, null, 1);
+}
+
+function toMarkdown(runs, env) {
+  const ms = (v) => (v == null || v === "" ? "" : Number(v).toFixed(v < 10 ? 1 : 0));
+  const head = `端末: ${[env.device_model, env.os, env.browser].filter(Boolean).join(" / ")}${env.gpu ? ` / GPU: ${env.gpu}` : ""}（${env.variant}、CV Playground ${APP_VERSION}）\n\n`;
+  const lines = ["| 日時 | 種類 | タスク | モデル | 実行場所 | 入力 | 推論 ms（中央値） | p90 | fps | 読み込み ms |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
+  for (const r of runs) {
+    lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} |`);
+  }
+  return head + lines.join("\n") + "\n";
+}
+
+// ---------- 保存 ----------
+
+const stamp = () => {
+  const d = new Date(), z = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`;
+};
+const safeName = (s) => String(s).replace(/[\\/:*?"<>|\s（）()、]+/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+
+function download(blob, filename) {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+// スマホ（共有シートが使える環境）では共有シートを出し、「写真に保存」などを選べるようにする。使えなければダウンロード
+async function shareOrDownload(blob, filename) {
+  const file = new File([blob], filename, { type: blob.type });
+  const touch = matchMedia("(pointer: coarse)").matches;
+  if (touch && navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: filename }); return "shared"; }
+    catch (e) { if (e.name === "AbortError") return "cancelled"; }
+  }
+  download(blob, filename);
+  return "downloaded";
+}
+
+// 表示中の canvas に、下に説明の帯（モデル名・実行場所・推論時間・日時）を付けた画像
+async function composeImage(canvas, lines) {
+  const w = canvas.width, h = canvas.height;
+  if (!lines?.length) return new Promise((res) => canvas.toBlob(res, "image/png"));
+  const fs = Math.max(13, Math.round(w / 55)), pad = Math.round(fs * 0.7), bh = lines.length * fs * 1.45 + pad * 2;
+  const c = document.createElement("canvas");
+  c.width = w; c.height = Math.round(h + bh);
+  const x = c.getContext("2d");
+  x.drawImage(canvas, 0, 0);
+  x.fillStyle = "#0b0f14"; x.fillRect(0, h, w, bh);
+  x.fillStyle = "#e6e9ef"; x.textBaseline = "top";
+  lines.forEach((t, i) => {
+    x.font = `${i === 0 ? "600 " : ""}${fs}px system-ui, -apple-system, "Hiragino Sans", sans-serif`;
+    x.fillStyle = i === 0 ? "#e6e9ef" : "#98a2b3";
+    x.fillText(t, pad, h + pad + i * fs * 1.45, w - pad * 2);
+  });
+  return new Promise((res) => c.toBlob(res, "image/png"));
+}
+
+// 結果データ: 画像の層（canvas・Blob）を除いた、数値とラベルだけ
+function resultData(r, m, extra) {
+  const drop = new Set(["layer", "gray", "alpha", "tint", "mask", "image"]);
+  const out = {};
+  for (const [k, v] of Object.entries(r)) if (!drop.has(k)) out[k] = v;
+  if (r.mask || r.image) out.note = "マスク・深度・色分けの画像は「画像を保存」で保存する（ここには入れない）";
+  return { app: "cv-playground", app_version: APP_VERSION, model: { key: m.key, name: m.name, where: m.where, license: m.license }, ...extra, result: out };
+}
+
+return { APP_VERSION, stats, collectEnv, RUN_COLUMNS, ENV_COLUMNS, toCSV, toJSON, toMarkdown, stamp, safeName, download, shareOrDownload, composeImage, resultData };
+})();
 (async () => {
 const fmt = fmtMs;
 
@@ -1562,6 +1757,8 @@ const state = {
   serverModels: new Set(),
   hasServer: false,  // server.py の API に届くか（静的版・1ファイル版では false）
   frameNo: 0,
+  runs: [],          // 実行の記録（init で localStorage から読む）
+  bench: false,      // ベンチマーク中
   category: null,    // 選んでいるタブの分類（models.json の categories）
   auto: false,       // クリックで切り出しの「全体を自動分割」
 };
@@ -1924,6 +2121,7 @@ function updateViewSelect() {
 }
 
 function draw() {
+  $("result-actions").hidden = !state.result;
   const cv = $("canvas");
   const ctx = cv.getContext("2d");
   const b = baseSource();
@@ -1967,13 +2165,157 @@ function renderResult(m, r, live) {
     + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
 }
 
-function addHistory(m, r, summaryOverride) {
-  const tr = document.createElement("tr");
+// ---------- 実行の記録（実行履歴・CSV 書き出し・ベンチマーク） ----------
+
+// 1回の実行（連続実行・ベンチマークは1まとめ）を1件の記録にする。列は export.js の RUN_COLUMNS
+function makeRecord(m, r, mode, extra = {}) {
   const task = TASKS.find((t) => t.id === m.task).name;
-  const where = m.where === "browser" ? `ブラウザ ${r.device}` : `サーバー ${r.device}`;
-  const summary = summaryOverride ?? KINDS[r.kind]?.summary(r) ?? r.kind;
-  tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${task}</td><td>${esc(m.name)}</td><td>${where}</td><td>${r.w}×${r.h}</td><td class="num">${fmt(r.load_ms)}</td><td class="num">${fmt(r.infer_ms)}</td><td>${esc(summary)}</td>`;
-  $("history").prepend(tr);
+  const bd = r.breakdown || {};
+  return {
+    time: new Date().toISOString(), mode, task, model_key: m.key, model_name: m.name, where: m.where === "browser" ? "ブラウザ" : "サーバー",
+    device: r.device, runtime: m.where === "browser" ? r.dtype || "" : "", input_size: m.pre?.dynamic ? parseInt($("input-size").value, 10) : "",
+    frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
+    roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind, ...extra,
+  };
+}
+
+// 記録はブラウザ内（localStorage）に最新 500 件まで残す（再読み込みしても消えない）
+const RUNS_KEY = "cvpg-runs", MAX_RUNS = 500;
+function loadRuns() { try { return JSON.parse(localStorage.getItem(RUNS_KEY) || "[]"); } catch { return []; } }
+function saveRuns() { try { localStorage.setItem(RUNS_KEY, JSON.stringify(state.runs.slice(-MAX_RUNS))); } catch { /* 保存できない環境 */ } }
+
+function addRun(rec) {
+  state.runs.push(rec);
+  if (state.runs.length > MAX_RUNS) state.runs.shift();
+  saveRuns();
+  $("history").prepend(historyRow(rec));
+  $("history-count").textContent = `${state.runs.length} 件`;
+}
+
+function historyRow(rec) {
+  const tr = document.createElement("tr");
+  const mode = { single: "", live: "連続 ", bench: "ベンチ " }[rec.mode] ?? "";
+  const infer = rec.infer_median_ms ?? rec.infer_ms;
+  const extra = rec.mode === "single" ? rec.summary : `${mode}${rec.frames ?? ""}回${rec.fps ? ` ${Number(rec.fps).toFixed(1)}fps` : ""}${rec.infer_p90_ms != null ? ` p90 ${fmt(rec.infer_p90_ms)}` : ""}${rec.summary ? ` ・ ${rec.summary}` : ""}`;
+  tr.innerHTML = `<td>${new Date(rec.time).toLocaleTimeString()}</td><td>${esc(rec.task)}</td><td>${esc(rec.model_name)}</td><td>${esc(rec.where)} ${esc(rec.device ?? "")}</td>`
+    + `<td>${rec.input_size ? `入力 ${rec.input_size}` : `${rec.frame_w}×${rec.frame_h}`}</td><td class="num">${fmt(rec.load_ms)}</td><td class="num">${fmt(infer)}${rec.infer_median_ms != null ? "<small>（中央値）</small>" : ""}</td><td>${esc(extra)}</td>`;
+  return tr;
+}
+
+function renderHistory() {
+  $("history").innerHTML = "";
+  for (const rec of state.runs) $("history").prepend(historyRow(rec));
+  $("history-count").textContent = state.runs.length ? `${state.runs.length} 件` : "";
+}
+
+const variantName = () => (STANDALONE ? "1ファイル版" : state.hasServer ? "サーバー版" : "静的版");
+
+async function exportRuns(kind) {
+  if (!state.runs.length) { setStatus("書き出す記録がまだ無い", "warn"); return; }
+  const env = await collectEnv(variantName());
+  const base = `cv-playground_runs_${safeName(env.device_model || env.os || "device")}_${stamp()}`;
+  if (kind === "csv") download(new Blob([toCSV(state.runs, env)], { type: "text/csv" }), base + ".csv");
+  if (kind === "json") download(new Blob([toJSON(state.runs, env)], { type: "application/json" }), base + ".json");
+  if (kind === "md") {
+    const md = toMarkdown(state.runs, env);
+    try { await navigator.clipboard.writeText(md); setStatus("Markdown の表をコピーした"); }
+    catch { download(new Blob([md], { type: "text/markdown" }), base + ".md"); }
+  }
+}
+
+// ---------- 速度を測る（ベンチマーク） ----------
+// 決まった画像で、ウォームアップ 3 回のあと N 回測る。端末ごとに同じ条件で比べられるようにする
+
+const BENCH_IMAGE = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg";
+const BENCH_WARMUP = 3;
+
+// 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
+// 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
+function benchCandidates() {
+  return TASKS.filter((t) => !t.click).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+}
+
+function renderBench() {
+  const groups = {};
+  for (const { t, v } of benchCandidates()) (groups[t.name] ??= []).push(v);
+  $("bench-models").innerHTML = Object.entries(groups).map(([name, vs]) => `<fieldset><legend>${esc(name)}</legend>${vs.map((v) => {
+    const on = v.where === "browser" && !!v.bench;
+    const size = v.where === "browser" ? `${v.mb >= 1000 ? (v.mb / 1000).toFixed(1) + "GB" : v.mb + "MB"}` : "サーバー";
+    return `<label class="check"><input type="checkbox" data-bench="${esc(v.id)}"${on ? " checked" : ""}> ${esc(v.name)} <small class="muted">${size}</small></label>`;
+  }).join("")}</fieldset>`).join("");
+  updateBenchCount();
+}
+function updateBenchCount() {
+  const n = document.querySelectorAll("[data-bench]:checked").length;
+  $("bench-summary").textContent = `測るモデルを選ぶ（${n} 個を選択中）`;
+}
+
+async function runBench() {
+  if (state.bench) { state.bench = false; return; } // 中止
+  const pick = new Set([...document.querySelectorAll("[data-bench]")].filter((c) => c.checked).map((c) => c.dataset.bench));
+  const list = benchCandidates().filter(({ v }) => pick.has(v.id));
+  if (!list.length) { setStatus("測るモデルを選んでください", "warn"); return; }
+  const N = parseInt($("bench-runs").value, 10);
+  state.bench = true;
+  $("bench-start").textContent = "■ 中止";
+  stopLive();
+  await setImage(BENCH_IMAGE);
+  const done = [];
+  for (let i = 0; i < list.length && state.bench; i++) {
+    const { t, v } = list[i];
+    const def = t.defaults || {};
+    const overrides = { threshold: def.threshold ?? 0.4, labels: def.labels ?? "", prompt: v.prompt || def.prompt || "", points: [], auto: false };
+    const times = [], bd = { grab: [], pre: [], run: [], post: [] };
+    let first = null, r = null;
+    try {
+      for (let k = 0; k < BENCH_WARMUP + N && state.bench; k++) {
+        $("bench-progress").textContent = `${i + 1}/${list.length} ${v.name}（${v.where === "browser" ? "ブラウザ" : "サーバー"}）: ${k < BENCH_WARMUP ? `ウォームアップ ${k + 1}/${BENCH_WARMUP}` : `${k - BENCH_WARMUP + 1}/${N} 回`}`;
+        r = await runOnce(v, overrides);
+        if (!first) first = r;
+        if (k >= BENCH_WARMUP) {
+          times.push(r.roundtrip_ms || r.infer_ms);
+          for (const key of Object.keys(bd)) if (r.breakdown?.[key] != null) bd[key].push(r.breakdown[key]);
+        }
+      }
+    } catch (e) {
+      setStatus(`${v.name}: ${e.message}`, "err");
+      continue;
+    }
+    if (!times.length) continue;
+    const st = stats(times), avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : undefined);
+    addRun(makeRecord(v, r, "bench", {
+      load_ms: first.load_ms, infer_ms: st.mean, grab_ms: avg(bd.grab), pre_ms: avg(bd.pre), run_ms: avg(bd.run), post_ms: avg(bd.post),
+      frames: st.n, fps: +(1000 / st.mean).toFixed(2), infer_mean_ms: st.mean, infer_median_ms: st.median, infer_p90_ms: st.p90,
+      infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(),
+    }));
+    done.push(v.name);
+    renderResult(v, r);
+    draw();
+  }
+  $("bench-progress").textContent = state.bench ? `完了: ${done.length} モデル（結果は実行履歴に「ベンチ」として追加。CSV で書き出せる）` : `中止した（${done.length} モデル分を記録）`;
+  state.bench = false;
+  $("bench-start").textContent = "▶ 測る";
+}
+
+// ---------- 結果の保存（表示中の画像・結果データ） ----------
+
+async function saveImage() {
+  const m = currentModel(), r = state.result;
+  if (!r || !m) return;
+  const lines = $("caption").checked ? [
+    `${TASKS.find((t) => t.id === m.task).name} ・ ${m.name}`,
+    `${m.where === "browser" ? "ブラウザ" : "サーバー"} ${r.device}${r.dtype ? " " + r.dtype : ""} ・ 推論 ${fmt(r.infer_ms)} ・ ${new Date().toLocaleString()} ・ CV Playground`,
+  ] : null;
+  const blob = await composeImage($("canvas"), lines);
+  const how = await shareOrDownload(blob, `cv-playground_${safeName(TASKS.find((t) => t.id === m.task).name)}_${safeName(m.key)}_${stamp()}.png`);
+  if (how === "downloaded") setStatus("画像を保存した");
+}
+
+function saveResultData() {
+  const m = currentModel(), r = state.result;
+  if (!r || !m) return;
+  const data = resultData(r, m, { task: m.task, time: new Date().toISOString(), view: $("view").value, image_size: [r.w, r.h] });
+  download(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }), `cv-playground_${safeName(m.key)}_${stamp()}.json`);
 }
 
 // ---------- 実行 ----------
@@ -2023,7 +2365,7 @@ async function run() {
     const r = await runOnce(m);
     await applyCascade(m, r, null);
     renderResult(m, r);
-    addHistory(m, r);
+    addRun(makeRecord(m, r, "single"));
     setStatus("");
     draw();
     if (m.where === "server") refreshServer();
@@ -2044,7 +2386,8 @@ function failed(m, e) {
 // fps は2フレーム目以降で測る（1フレーム目はモデルの読み込みを含むため）
 async function liveLoop() {
   const m = currentModel();
-  let frames = 0, inferSum = 0, first = null, tStart = 0, fps = 0;
+  let frames = 0, first = null, tStart = 0, fps = 0;
+  const times = []; // 1フレーム目（モデルの読み込み・初期化を含む）を除いた、フレームごとの推論時間
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
   const th = parseFloat($("threshold").value);
@@ -2071,7 +2414,7 @@ async function liveLoop() {
       await applyCascade(m, r, tracker ? seqStore : null);
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
-      inferSum += r.infer_ms;
+      if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
       renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
       if ($("video").paused) draw();
@@ -2079,7 +2422,14 @@ async function liveLoop() {
   } catch (e) {
     failed(m, e);
   }
-  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
+  if (first) {
+    const st = stats(times);
+    addRun(makeRecord(m, state.result || first, "live", {
+      load_ms: first.load_ms, infer_ms: st?.mean ?? first.infer_ms, frames, fps: +fps.toFixed(2),
+      infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_min_ms: st?.min, infer_max_ms: st?.max, warmup: 1,
+      summary: tracker ? `${trackerName.split("（")[0]} ID ${ids.size}個` : "",
+    }));
+  }
   state.live = false;
   updateButtons();
 }
@@ -2253,6 +2603,20 @@ async function init() {
   };
   for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
   $("clear-cache").onclick = clearDownloads;
+  $("save-image").onclick = saveImage;
+  $("save-data").onclick = saveResultData;
+  $("export-csv").onclick = () => exportRuns("csv");
+  $("export-json").onclick = () => exportRuns("json");
+  $("export-md").onclick = () => exportRuns("md");
+  $("clear-runs").onclick = () => {
+    if (!state.runs.length || !confirm("実行の記録（この端末に保存している分）を消します。")) return;
+    state.runs = []; saveRuns(); renderHistory();
+  };
+  $("bench-start").onclick = runBench;
+  $("bench-models").addEventListener("change", updateBenchCount);
+  state.runs = loadRuns();
+  renderHistory();
+  renderBench();
   showStorage();
   $("canvas").addEventListener("click", (ev) => {
     if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;

@@ -1,5 +1,6 @@
 import { CATALOG, MODELS, TASKS } from "./catalog.js";
 import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
+import { collectEnv, composeImage, download, resultData, safeName, shareOrDownload, stamp, stats, toCSV, toJSON, toMarkdown } from "./export.js";
 import { Tracker } from "./tracker.js";
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +27,8 @@ const state = {
   serverModels: new Set(),
   hasServer: false,  // server.py の API に届くか（静的版・1ファイル版では false）
   frameNo: 0,
+  runs: [],          // 実行の記録（init で localStorage から読む）
+  bench: false,      // ベンチマーク中
   category: null,    // 選んでいるタブの分類（models.json の categories）
   auto: false,       // クリックで切り出しの「全体を自動分割」
 };
@@ -388,6 +391,7 @@ function updateViewSelect() {
 }
 
 function draw() {
+  $("result-actions").hidden = !state.result;
   const cv = $("canvas");
   const ctx = cv.getContext("2d");
   const b = baseSource();
@@ -431,13 +435,157 @@ function renderResult(m, r, live) {
     + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
 }
 
-function addHistory(m, r, summaryOverride) {
-  const tr = document.createElement("tr");
+// ---------- 実行の記録（実行履歴・CSV 書き出し・ベンチマーク） ----------
+
+// 1回の実行（連続実行・ベンチマークは1まとめ）を1件の記録にする。列は export.js の RUN_COLUMNS
+function makeRecord(m, r, mode, extra = {}) {
   const task = TASKS.find((t) => t.id === m.task).name;
-  const where = m.where === "browser" ? `ブラウザ ${r.device}` : `サーバー ${r.device}`;
-  const summary = summaryOverride ?? KINDS[r.kind]?.summary(r) ?? r.kind;
-  tr.innerHTML = `<td>${new Date().toLocaleTimeString()}</td><td>${task}</td><td>${esc(m.name)}</td><td>${where}</td><td>${r.w}×${r.h}</td><td class="num">${fmt(r.load_ms)}</td><td class="num">${fmt(r.infer_ms)}</td><td>${esc(summary)}</td>`;
-  $("history").prepend(tr);
+  const bd = r.breakdown || {};
+  return {
+    time: new Date().toISOString(), mode, task, model_key: m.key, model_name: m.name, where: m.where === "browser" ? "ブラウザ" : "サーバー",
+    device: r.device, runtime: m.where === "browser" ? r.dtype || "" : "", input_size: m.pre?.dynamic ? parseInt($("input-size").value, 10) : "",
+    frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
+    roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind, ...extra,
+  };
+}
+
+// 記録はブラウザ内（localStorage）に最新 500 件まで残す（再読み込みしても消えない）
+const RUNS_KEY = "cvpg-runs", MAX_RUNS = 500;
+function loadRuns() { try { return JSON.parse(localStorage.getItem(RUNS_KEY) || "[]"); } catch { return []; } }
+function saveRuns() { try { localStorage.setItem(RUNS_KEY, JSON.stringify(state.runs.slice(-MAX_RUNS))); } catch { /* 保存できない環境 */ } }
+
+function addRun(rec) {
+  state.runs.push(rec);
+  if (state.runs.length > MAX_RUNS) state.runs.shift();
+  saveRuns();
+  $("history").prepend(historyRow(rec));
+  $("history-count").textContent = `${state.runs.length} 件`;
+}
+
+function historyRow(rec) {
+  const tr = document.createElement("tr");
+  const mode = { single: "", live: "連続 ", bench: "ベンチ " }[rec.mode] ?? "";
+  const infer = rec.infer_median_ms ?? rec.infer_ms;
+  const extra = rec.mode === "single" ? rec.summary : `${mode}${rec.frames ?? ""}回${rec.fps ? ` ${Number(rec.fps).toFixed(1)}fps` : ""}${rec.infer_p90_ms != null ? ` p90 ${fmt(rec.infer_p90_ms)}` : ""}${rec.summary ? ` ・ ${rec.summary}` : ""}`;
+  tr.innerHTML = `<td>${new Date(rec.time).toLocaleTimeString()}</td><td>${esc(rec.task)}</td><td>${esc(rec.model_name)}</td><td>${esc(rec.where)} ${esc(rec.device ?? "")}</td>`
+    + `<td>${rec.input_size ? `入力 ${rec.input_size}` : `${rec.frame_w}×${rec.frame_h}`}</td><td class="num">${fmt(rec.load_ms)}</td><td class="num">${fmt(infer)}${rec.infer_median_ms != null ? "<small>（中央値）</small>" : ""}</td><td>${esc(extra)}</td>`;
+  return tr;
+}
+
+function renderHistory() {
+  $("history").innerHTML = "";
+  for (const rec of state.runs) $("history").prepend(historyRow(rec));
+  $("history-count").textContent = state.runs.length ? `${state.runs.length} 件` : "";
+}
+
+const variantName = () => (STANDALONE ? "1ファイル版" : state.hasServer ? "サーバー版" : "静的版");
+
+async function exportRuns(kind) {
+  if (!state.runs.length) { setStatus("書き出す記録がまだ無い", "warn"); return; }
+  const env = await collectEnv(variantName());
+  const base = `cv-playground_runs_${safeName(env.device_model || env.os || "device")}_${stamp()}`;
+  if (kind === "csv") download(new Blob([toCSV(state.runs, env)], { type: "text/csv" }), base + ".csv");
+  if (kind === "json") download(new Blob([toJSON(state.runs, env)], { type: "application/json" }), base + ".json");
+  if (kind === "md") {
+    const md = toMarkdown(state.runs, env);
+    try { await navigator.clipboard.writeText(md); setStatus("Markdown の表をコピーした"); }
+    catch { download(new Blob([md], { type: "text/markdown" }), base + ".md"); }
+  }
+}
+
+// ---------- 速度を測る（ベンチマーク） ----------
+// 決まった画像で、ウォームアップ 3 回のあと N 回測る。端末ごとに同じ条件で比べられるようにする
+
+const BENCH_IMAGE = "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg";
+const BENCH_WARMUP = 3;
+
+// 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
+// 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
+function benchCandidates() {
+  return TASKS.filter((t) => !t.click).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+}
+
+function renderBench() {
+  const groups = {};
+  for (const { t, v } of benchCandidates()) (groups[t.name] ??= []).push(v);
+  $("bench-models").innerHTML = Object.entries(groups).map(([name, vs]) => `<fieldset><legend>${esc(name)}</legend>${vs.map((v) => {
+    const on = v.where === "browser" && !!v.bench;
+    const size = v.where === "browser" ? `${v.mb >= 1000 ? (v.mb / 1000).toFixed(1) + "GB" : v.mb + "MB"}` : "サーバー";
+    return `<label class="check"><input type="checkbox" data-bench="${esc(v.id)}"${on ? " checked" : ""}> ${esc(v.name)} <small class="muted">${size}</small></label>`;
+  }).join("")}</fieldset>`).join("");
+  updateBenchCount();
+}
+function updateBenchCount() {
+  const n = document.querySelectorAll("[data-bench]:checked").length;
+  $("bench-summary").textContent = `測るモデルを選ぶ（${n} 個を選択中）`;
+}
+
+async function runBench() {
+  if (state.bench) { state.bench = false; return; } // 中止
+  const pick = new Set([...document.querySelectorAll("[data-bench]")].filter((c) => c.checked).map((c) => c.dataset.bench));
+  const list = benchCandidates().filter(({ v }) => pick.has(v.id));
+  if (!list.length) { setStatus("測るモデルを選んでください", "warn"); return; }
+  const N = parseInt($("bench-runs").value, 10);
+  state.bench = true;
+  $("bench-start").textContent = "■ 中止";
+  stopLive();
+  await setImage(BENCH_IMAGE);
+  const done = [];
+  for (let i = 0; i < list.length && state.bench; i++) {
+    const { t, v } = list[i];
+    const def = t.defaults || {};
+    const overrides = { threshold: def.threshold ?? 0.4, labels: def.labels ?? "", prompt: v.prompt || def.prompt || "", points: [], auto: false };
+    const times = [], bd = { grab: [], pre: [], run: [], post: [] };
+    let first = null, r = null;
+    try {
+      for (let k = 0; k < BENCH_WARMUP + N && state.bench; k++) {
+        $("bench-progress").textContent = `${i + 1}/${list.length} ${v.name}（${v.where === "browser" ? "ブラウザ" : "サーバー"}）: ${k < BENCH_WARMUP ? `ウォームアップ ${k + 1}/${BENCH_WARMUP}` : `${k - BENCH_WARMUP + 1}/${N} 回`}`;
+        r = await runOnce(v, overrides);
+        if (!first) first = r;
+        if (k >= BENCH_WARMUP) {
+          times.push(r.roundtrip_ms || r.infer_ms);
+          for (const key of Object.keys(bd)) if (r.breakdown?.[key] != null) bd[key].push(r.breakdown[key]);
+        }
+      }
+    } catch (e) {
+      setStatus(`${v.name}: ${e.message}`, "err");
+      continue;
+    }
+    if (!times.length) continue;
+    const st = stats(times), avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : undefined);
+    addRun(makeRecord(v, r, "bench", {
+      load_ms: first.load_ms, infer_ms: st.mean, grab_ms: avg(bd.grab), pre_ms: avg(bd.pre), run_ms: avg(bd.run), post_ms: avg(bd.post),
+      frames: st.n, fps: +(1000 / st.mean).toFixed(2), infer_mean_ms: st.mean, infer_median_ms: st.median, infer_p90_ms: st.p90,
+      infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(),
+    }));
+    done.push(v.name);
+    renderResult(v, r);
+    draw();
+  }
+  $("bench-progress").textContent = state.bench ? `完了: ${done.length} モデル（結果は実行履歴に「ベンチ」として追加。CSV で書き出せる）` : `中止した（${done.length} モデル分を記録）`;
+  state.bench = false;
+  $("bench-start").textContent = "▶ 測る";
+}
+
+// ---------- 結果の保存（表示中の画像・結果データ） ----------
+
+async function saveImage() {
+  const m = currentModel(), r = state.result;
+  if (!r || !m) return;
+  const lines = $("caption").checked ? [
+    `${TASKS.find((t) => t.id === m.task).name} ・ ${m.name}`,
+    `${m.where === "browser" ? "ブラウザ" : "サーバー"} ${r.device}${r.dtype ? " " + r.dtype : ""} ・ 推論 ${fmt(r.infer_ms)} ・ ${new Date().toLocaleString()} ・ CV Playground`,
+  ] : null;
+  const blob = await composeImage($("canvas"), lines);
+  const how = await shareOrDownload(blob, `cv-playground_${safeName(TASKS.find((t) => t.id === m.task).name)}_${safeName(m.key)}_${stamp()}.png`);
+  if (how === "downloaded") setStatus("画像を保存した");
+}
+
+function saveResultData() {
+  const m = currentModel(), r = state.result;
+  if (!r || !m) return;
+  const data = resultData(r, m, { task: m.task, time: new Date().toISOString(), view: $("view").value, image_size: [r.w, r.h] });
+  download(new Blob([JSON.stringify(data, null, 1)], { type: "application/json" }), `cv-playground_${safeName(m.key)}_${stamp()}.json`);
 }
 
 // ---------- 実行 ----------
@@ -487,7 +635,7 @@ async function run() {
     const r = await runOnce(m);
     await applyCascade(m, r, null);
     renderResult(m, r);
-    addHistory(m, r);
+    addRun(makeRecord(m, r, "single"));
     setStatus("");
     draw();
     if (m.where === "server") refreshServer();
@@ -508,7 +656,8 @@ function failed(m, e) {
 // fps は2フレーム目以降で測る（1フレーム目はモデルの読み込みを含むため）
 async function liveLoop() {
   const m = currentModel();
-  let frames = 0, inferSum = 0, first = null, tStart = 0, fps = 0;
+  let frames = 0, first = null, tStart = 0, fps = 0;
+  const times = []; // 1フレーム目（モデルの読み込み・初期化を含む）を除いた、フレームごとの推論時間
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
   const th = parseFloat($("threshold").value);
@@ -535,7 +684,7 @@ async function liveLoop() {
       await applyCascade(m, r, tracker ? seqStore : null);
       if (!first) { first = r; tStart = performance.now(); setStatus(""); }
       frames++;
-      inferSum += r.infer_ms;
+      if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
       fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
       renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
       if ($("video").paused) draw();
@@ -543,7 +692,14 @@ async function liveLoop() {
   } catch (e) {
     failed(m, e);
   }
-  if (first) addHistory(m, { ...first, infer_ms: inferSum / frames }, `連続 ${frames}フレーム ${fps.toFixed(1)}fps${tracker ? ` ・ ${trackerName.split("（")[0]} ID ${ids.size}個` : ""}`);
+  if (first) {
+    const st = stats(times);
+    addRun(makeRecord(m, state.result || first, "live", {
+      load_ms: first.load_ms, infer_ms: st?.mean ?? first.infer_ms, frames, fps: +fps.toFixed(2),
+      infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_min_ms: st?.min, infer_max_ms: st?.max, warmup: 1,
+      summary: tracker ? `${trackerName.split("（")[0]} ID ${ids.size}個` : "",
+    }));
+  }
   state.live = false;
   updateButtons();
 }
@@ -717,6 +873,20 @@ async function init() {
   };
   for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
   $("clear-cache").onclick = clearDownloads;
+  $("save-image").onclick = saveImage;
+  $("save-data").onclick = saveResultData;
+  $("export-csv").onclick = () => exportRuns("csv");
+  $("export-json").onclick = () => exportRuns("json");
+  $("export-md").onclick = () => exportRuns("md");
+  $("clear-runs").onclick = () => {
+    if (!state.runs.length || !confirm("実行の記録（この端末に保存している分）を消します。")) return;
+    state.runs = []; saveRuns(); renderHistory();
+  };
+  $("bench-start").onclick = runBench;
+  $("bench-models").addEventListener("change", updateBenchCount);
+  state.runs = loadRuns();
+  renderHistory();
+  renderBench();
   showStorage();
   $("canvas").addEventListener("click", (ev) => {
     if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;

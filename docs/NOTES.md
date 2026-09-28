@@ -70,6 +70,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 | iPad Pro | 70ms |
 | M1 MacBook Air | 60ms（内訳: 前処理 8.5ms・モデル実行 61ms。WASM 190ms。「fp32 + graph capture 63ms」は graph capture が効いていなかった頃の値） |
 | M4 Mac mini | 20〜30ms |
+| Galaxy Z Fold6（SM-F956Q、Adreno 750） | 64ms（graph capture 50ms、fp16 + graph capture 42ms。2026-09-28） |
 
 GPU の性能順にきれいに並ぶので、固定の手間より計算量が主因。YOLO26n（640）は1回 5〜6 GFLOPs なので実効 100 GFLOP/s 前後で、ブラウザの WebGPU（onnxruntime-web）の畳み込みの効率はまだ低い。入力を小さくする（入力サイズ可変の YOLO26）のが一番効くはず。
 
@@ -99,6 +100,15 @@ M4 Mac mini の Chrome、ベンチ（街の画像、20 回の中央値、1回の
 | YOLO26n-pose | 24.8 | 23.2 | 不可 | 21.2（fp16 のみ） |
 
 （DEIMv2 は fp16 版が無いので、fp16 を選んでも fp32 のまま。検出の件数はどの設定でも同じ）
+
+Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrome 153、静的版）、ベンチ 50 回の中央値（ms）
+
+| モデル | 標準 | graph capture | fp16 + graph capture |
+| --- | --- | --- | --- |
+| YOLO26n | 64 | 50 | 42 |
+| DEIMv2 Atto 320 | 40 | 19 | 19（fp16 版なし） |
+
+詳細計測（profiler あり、1回の平均）: YOLO26n は ONNX の実行 79ms のうち GPU の命令の合計は 30ms（畳み込み 78%）。DEIMv2 Atto は 91ms のうち 13ms（命令 624 個）。**スマホでは GPU の計算より、命令を1つずつ出す CPU 側の手間の方が大きい**ので、それをまとめる graph capture が M4 以上に効く（DEIMv2 は半分以下）。graph capture 後の YOLO26n は GPU の計算（fp32 で約 30ms、fp16 で減る）が主になる
 
 **分かったこと**
 

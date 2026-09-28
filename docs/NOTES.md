@@ -70,7 +70,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 | iPad Pro | 70ms |
 | M1 MacBook Air | 60ms（内訳: 前処理 8.5ms・モデル実行 61ms。WASM 190ms。「fp32 + graph capture 63ms」は graph capture が効いていなかった頃の値） |
 | M4 Mac mini | 20〜30ms |
-| Galaxy Z Fold6（SM-F956Q、Adreno 750） | 64ms（graph capture 50ms、fp16 + graph capture 42ms。2026-09-28） |
+| Galaxy Z Fold6（SM-F956Q、Adreno 750） | 64ms → 32ms（2026-09-29 の既定: fp16 + graph capture + 前処理 upload。途中は graph capture 50ms、fp16 + graph capture 42ms） |
 
 GPU の性能順にきれいに並ぶので、固定の手間より計算量が主因。YOLO26n（640）は1回 5〜6 GFLOPs なので実効 100 GFLOP/s 前後で、ブラウザの WebGPU（onnxruntime-web）の畳み込みの効率はまだ低い。入力を小さくする（入力サイズ可変の YOLO26）のが一番効くはず。
 
@@ -125,6 +125,7 @@ Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrom
   - `?pre=gpu`: 画像を `copyExternalImageToTexture` でテクスチャに送り、compute shader で縮小（双線形）・余白・正規化・チャンネルの並べ替えをして、モデルの入力の GPU バッファ（`ort.Tensor.fromGpuBuffer`、graph capture の入力バッファ）に直接書く。M4 では最速（YOLO26n のベンチ 17.8 → 13.5ms）だが、**Galaxy Z Fold6 ではモデル実行が 18〜28ms 遅くなった**（YOLO26n 30 → 48ms、DEIMv2 Atto 17 → 45ms。前処理そのものは 13 → 2ms）。上乗せが画像の大きさによらずほぼ一定なので、画像を GPU に送る所で待ち合わせが起きているらしい
   - `?pre=upload`（既定）: 縮小は CPU の前処理と同じ canvas で行い、8 bit の画素を `writeTexture` で送って、余白・正規化・並べ替えだけ shader で。CPU の前処理から JS のループと float の転送（4倍の量）を除いたもので、入力は CPU の前処理と完全に一致する。M4 で YOLO26n 15.2ms、DEIMv2 Pico 19.6 → 17.7ms
   - `?pre=cpu`（`?cpupre=1` も同じ）: 従来の CPU の前処理
+  - Galaxy Z Fold6（ベンチ 50 回の中央値、前処理・モデル実行）: YOLO26n は upload 32ms（7.1・25）/ cpu 39ms（11・29）/ gpu 61ms（2.6・57）、DEIMv2 Atto は upload 17ms（1.7・15）/ cpu 19ms（3.6・16）/ gpu 46ms（2.5・45）。**スマホでも upload が最速**で、gpu はまた大きく遅い（再現した）。M4 との差は gpu が 1.7ms 速いだけなので、既定は全端末で upload にしている
   - GPU 版が対応している指定（縮小方法と scale・mean・std・bgr・pad_value・add_dims）だけのモデルで使い、それ以外（バッチ・フレーム列のモデル、新しく足した指定）は自動で CPU の前処理になる。記録の実行場所に、使った前処理を出す
   - `gpu` の縮小は canvas と少し違う（640 → 320 で入力の差が平均 0.35、画素値 0〜255）。サーバー（PIL）との差は CPU 2.27、GPU 2.17 でほぼ同じ。しきい値すれすれの検出はこの差でも出たり消えたりする（サッカーの写真の DEIMv2 で 33 件と 36 件）
 - **連続実行のパイプライン化**（汎用 ONNX のブラウザ実行）: 前のフレームの推論中に次のフレームを取り込んで Worker に送っておく（同時に2フレームまで）。Worker は onnxruntime の実行を1つずつ順番に行う（`serial`）ので、届いていた次のフレームをすぐ始められ、結果の受け渡し・追跡・描画の間も GPU が休まない。結果はフレームの順に追跡・表示する。M4 で人物の動画を4倍速（約 48fps）で流すと、YOLO26n の連続実行が 24.7 → 35.8fps、BoT-SORT + ReID つきで 18.1 → 20.9fps（`?nopipe=1` で従来の1フレームずつと比べられる）

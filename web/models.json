@@ -18,6 +18,10 @@
   {
    "id": "vl",
    "name": "画像と言語"
+  },
+  {
+   "id": "apps",
+   "name": "応用"
   }
  ],
  "tasks": [
@@ -75,6 +79,28 @@
     "labels": "person, bus, bag"
    },
    "category": "detect"
+  },
+  {
+   "id": "count",
+   "name": "物体カウント",
+   "hint": "物体検出の結果をクラスごとに数える（COCO の英語名、例: person, car）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す。今の数は直近5フレームの中央値",
+   "category": "apps",
+   "recipe": {
+    "base": "detect",
+    "post": [
+     "count"
+    ]
+   },
+   "params": [
+    "classes",
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.25,
+    "classes": "person, car",
+    "tracker": "bytetrack"
+   }
   },
   {
    "id": "segment",

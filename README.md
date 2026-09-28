@@ -24,11 +24,12 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 
 ## Features
 
-- **Tasks** (grouped into four categories)
+- **Tasks** (grouped into five categories)
   - Detection & tracking: object detection / human pose / hands & eyes (PINTO's ultra-light models) / text-prompted object detection
   - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
   - Depth & 3D: depth estimation
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)
+  - Applications: object counting (counts detections + tracks per class: current and cumulative)
 - **Input**: images, video files, and live camera. Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
 - **Runtime options**: fp16, WebGPU graph capture, CPU (WASM), and a selectable input long side (320–960) for models with dynamic input
@@ -97,6 +98,7 @@ In most cases, adding one entry to `web/models.json` is enough (for plain ONNX m
 | `web/models.json` | **Definitions of tabs (tasks) and models, shared by browser and server** |
 | `web/app.js` | UI, continuous video/camera runs, wiring for tracking and cascades, run history, benchmark |
 | `web/renderers.js` | How each result kind is shown (boxes, masks, depth, segment maps, labels, text) |
+| `web/post.js` | Post-processing for application tabs (stateful aggregation across frames and its overlay, e.g. object counting) |
 | `web/export.js` | Image saving, result data, run-record export (CSV / JSON / Markdown), device info, statistics |
 | `web/worker.js` | Browser-side adapters (Web Workers; separate workers for onnxruntime-web and transformers.js) |
 | `web/onnx_generic.js` | Browser-side generic ONNX (pre/post-processing blocks) |

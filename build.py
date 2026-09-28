@@ -4,7 +4,7 @@
 
 ブラウザ実行のモデルだけを使い、transformers.js は jsDelivr、モデルは Hugging Face から各ブラウザが直接取得する。
 ファイルを開くだけで動く（file:// でも、任意の静的ホスティングでも）。本体と同じソースから作るので、web/ を直したら作り直す。
-- coco.js / catalog.js / onnx_generic.js / worker.js / app.js の import・export を外して1つにまとめ、models.json を埋め込む
+- coco.js / catalog.js / onnx_generic.js / worker.js / post.js / app.js の import・export を外して1つにまとめ、models.json を埋め込む
 - Worker は <script type="text/plain"> に入れた本文から Blob URL で作る
 """
 import json
@@ -38,7 +38,7 @@ def main() -> None:
     assert "import.meta" not in catalog
     # Worker は classic で起動するので、トップレベル await を避けて全体を1つの async 関数に入れる
     worker = "(async () => {\n" + module("coco.js") + module("onnx_generic.js") + module("worker.js") + "})();\n"
-    app = module("coco.js") + module("catalog.js", catalog) + module("renderers.js") + module("tracker.js") + module("export.js") + module("app.js")
+    app = module("coco.js") + module("catalog.js", catalog) + module("renderers.js") + module("tracker.js") + module("export.js") + module("post.js") + module("app.js")
     html = (WEB / "index.html").read_text()
     css = (WEB / "style.css").read_text()
 

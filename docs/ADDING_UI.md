@@ -7,12 +7,13 @@
 | タブ（タスク） | `web/models.json` の `tasks` |
 | タブの設定欄（閾値・候補・質問など） | 既存の部品を `tasks[].params` で選ぶ。新しい部品は `web/index.html` と `web/app.js`（下の手順） |
 | 結果の見せ方（枠・マスク・深度など） | `web/renderers.js` の `KINDS` |
+| 応用のタブ（既存のモデルの結果を集計する。例: 物体カウント） | `models.json` の `tasks[].recipe` と `web/post.js` の `POST` |
 
 モデルの足し方は [ADDING_MODELS.md](ADDING_MODELS.md)。
 
 ## 1. タブ（`models.json` の `tasks`）と分類（`categories`）
 
-タブは分類ごとにまとめて表示する（画面上部の「検出・追跡 / セグメンテーション / 深度・3D / 画像と言語」）。分類は `models.json` の `categories`（`{id, name}` の並び）で、タブの `category` がそれを指す。分類を足す時は `categories` に1件足す。タブが増えても、選んだ分類のタブだけが並ぶので設定欄は長くならない。
+タブは分類ごとにまとめて表示する（画面上部の「検出・追跡 / セグメンテーション / 深度・3D / 画像と言語 / 応用」）。分類は `models.json` の `categories`（`{id, name}` の並び）で、タブの `category` がそれを指す。分類を足す時は `categories` に1件足す。タブが増えても、選んだ分類のタブだけが並ぶので設定欄は長くならない。
 
 ```json
 { "id": "wholebody", "name": "手・目（PINTO）", "category": "detect",
@@ -73,11 +74,38 @@ KINDS.mykind = {
 
 結果欄の上の部分（モデル名・実行場所・推論時間・fps・内訳の帯）は `web/app.js` の `renderResult()` が全種類共通で描く。「画像を保存」「結果データ（JSON）」も全種類共通（表示中の canvas と、結果から画像の層を除いたもの）で、実行履歴の「結果」欄には `summary` が入る。
 
-## 4. 見た目（`web/style.css`）
+## 4. 応用のタブ（`tasks[].recipe` と `web/post.js`）
+
+モデルそのものを見るタブ（1〜3）と分けて、既存のモデルの結果を**フレームをまたいで集計する**タブは「応用」の分類に置く。応用のタブはモデルを持たず、`recipe.base` のタブのモデルをそのまま使い、`recipe.post` に並べた後処理を追跡・cascade のあとで順に呼ぶ。
+
+```json
+{ "id": "count", "name": "物体カウント", "category": "apps",
+  "recipe": { "base": "detect", "post": ["count"] },
+  "params": ["classes", "threshold", "track"],
+  "defaults": { "threshold": 0.25, "classes": "person, car", "tracker": "bytetrack" } }
+```
+
+後処理は `web/post.js` の `POST` に1件書く（形は `KINDS` と同じ考え方で、集計の状態を持つ点が違う）。
+
+```js
+POST.mypost = {
+  create: (opts) => ({ ... }),          // 状態。連続実行の開始時と、静止画の1回ごとに作り直す。opts = { classes }（設定欄の値）
+  update(st, r, { tracked }) { ... },   // 1フレームごと。r.items を絞り込んでよい（枠の表示にも反映される）
+  draw(ctx, st, r, base) { ... },       // canvas に重ねる（元画像と結果の枠は描画済み）
+  panel: (st) => "<div>…</div>",        // 結果欄に足す HTML
+  summary: (st) => "person 12",         // 実行履歴の「結果」欄に足す文字
+};
+```
+
+- 呼び出しは `web/app.js` の `createPost()` / `applyPost()`（`run()` と `liveLoop()` から）、`draw()` と `renderResult()` の3か所だけ。モデルのタブの動きは変えない
+- 応用のタブはベンチマークの候補に出さない（モデルは `recipe.base` のタブで測れる）
+- 設定欄を足す時は 2. の手順（`defaults.tracker` で追跡の既定も選べる）
+
+## 5. 見た目（`web/style.css`）
 
 色は `:root` の変数（`--bg`, `--panel`, `--text`, `--muted`, `--line`, `--accent`, `--chip` など）で、ダークモードは `prefers-color-scheme` で切り替わる。結果欄の部品のクラス: `.stat`（数値のバッジ）、`.chip`（件数）、`.bar`（分類の棒）、`.legend`（色の凡例）、`.answer`（文章）、`.sub`（補足の文）。
 
-## 5. 足したあとの確認
+## 6. 足したあとの確認
 
 1. サーバー版（`scripts/serve.sh`）と静的版（リポジトリ直下を静的に配るか GitHub Pages）の両方で、タブと結果が出ること
 2. スマホの幅（390px 前後）で横スクロールが出ないこと

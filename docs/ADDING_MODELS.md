@@ -65,6 +65,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `ultra_e2e_detect` / `ultra_e2e_pose` | Ultralytics の end2end 書き出し: (1, 300, 6 / 57) 入力のピクセル座標 | boxes |
 | `deim_wholebody` | PINTO の DEIMv2: (1, Q, 6) = クラス, 正規化 xyxy, スコア。`classes` と表示する `show` を指定 | boxes |
 | `alpha` | 前景の度合い（`sigmoid` で確率に） | mask（`cutout`） |
+| `segmap` | セマンティック・セグメンテーションの logits (1, クラス数, h, w)。画素ごとに最大のクラスで塗る。`labels` にクラス名の並び、`output` に出力名 | segmap（凡例つき） |
 | `depth` | 深度。`inverse`（大きいほど遠い深度を反転）、`intrinsics`（内部パラメータの出力名、あれば画角を出す） | depth |
 | `embedding` | 特徴ベクトル・確率（ReID や cascade の分類で使う） | － |
 
@@ -86,6 +87,7 @@ SAM・Grounding DINO・VLM のように、前処理・後処理がライブラ�
 },
 ```
 
+- どの経路で動くかは、画面のモデルの説明欄（「実行: onnxruntime-web を直接」「実行: transformers.js 4.3.0（tjs-…）」など）と、結果欄・記録の「実行場所」に出る
 - ライブラリは Worker ごとに分かれている: `adapter: "onnx"` は onnxruntime-web の Worker、それ以外は transformers.js の Worker（`lib: "3"` なら 3.8.1、既定は 4.3）
 - transformers.js のモデルは `repo` と `dtype`（`{"webgpu": "fp16", "wasm": "q8"}` など）を書き、読み込みは `tjsOpts(e, device, onProgress)` を渡す
 

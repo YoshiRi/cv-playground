@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { onnxEmbed, onnxLoad, onnxProfile, onnxRun } from "./onnx_generic.js";
+import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -253,18 +253,6 @@ async function autoSegment(st, img, p) {
   return { kind: "segmap", image: await toPng(new T.RawImage(rgba, S, S, 4)), count: kept.length, prompts: G * G };
 }
 
-// クラス名から決まる色（adapters.py の seg_color と同じ式）。同じクラスの k 番目は明るさを変える
-function segColor(label, k = 0) {
-  const h = ([...label].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
-  return hsl(h, 0.7, [0.55, 0.42, 0.68][k % 3]).map(Math.round);
-}
-
-function hsl(h, s, l) {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => { const k = (n + h / 30) % 12; return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
-  return [f(0), f(8), f(4)];
-}
-
 // ---------- 画像の受け渡しと実行 ----------
 
 // 静止画は Blob、動画のフレームは ImageBitmap で届く（毎フレーム JPEG にすると遅いので）。
@@ -355,7 +343,7 @@ self.onmessage = async (ev) => {
     const result = self.name === "ort" ? await serial(go) : await go();
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
-    result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : `transformers.js ${TJS_VERSION} ${e.dtype?.[device] ?? ""}`.trim();
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

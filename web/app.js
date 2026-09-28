@@ -318,13 +318,21 @@ function currentModel() {
 // 質問欄は、既定の文のままならモデルごとの既定（models.json の prompt、無ければタスクの defaults.prompt）に入れ替える
 const TASK_PROMPT = (task) => TASKS.find((t) => t.id === task)?.defaults?.prompt || "";
 const DEFAULT_PROMPTS = new Set([...TASKS.map((t) => t.defaults?.prompt), ...MODELS.map((x) => x.prompt)].filter(Boolean));
+// どのライブラリ・実装で動くか（デバッグ用に説明欄に出す。実際に使った設定は結果欄と記録の「実行場所」に出る）
+const TJS_VERSIONS = { 3: "3.8.1", 4: "4.3.0" };
+function runtimeLabel(m) {
+  if (m.where === "server") return `サーバーの adapters.py（${m.adapter}）`;
+  if (m.adapter === "onnx") return "onnxruntime-web を直接（汎用 ONNX。前処理・後処理は models.json）";
+  return `transformers.js ${TJS_VERSIONS[m.lib || 4]}（${m.adapter}）`;
+}
+
 function updateModelNote() {
   const m = currentModel();
   if (!m) return;
   if (!$("prompt").value || DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || TASK_PROMPT(m.task);
   const notes = [];
   notes.push(m.repo || m.onnx?.repo || m.ollama || "");
-  notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
+  notes.push(`実行: ${runtimeLabel(m)}`);
   if (m.where === "browser") notes.push(downloaded().has(m.key) ? "取得済み" : m.mb >= CONFIRM_MB ? "初回のダウンロードが大きい（モバイル回線では注意）" : "");
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.license) notes.push(`ライセンス: ${m.license}`);

@@ -161,6 +161,24 @@ def post_depth(out, m, post, p):
     return res
 
 
+def post_segmap(out, m, post, p):
+    """セマンティック・セグメンテーション: logits (1, クラス数, h, w) の画素ごとに最大のクラスで塗る（onnx_generic.js の segmap と同じ）"""
+    lg = np.asarray(out[post["output"]] if post.get("output") else next(iter(out.values())))[0]
+    C, gh, gw = lg.shape
+    fx, fy = gw / m["iw"], gh / m["ih"]
+    x0, y0 = round(m["ox"] * fx), round(m["oy"] * fy)
+    cw, ch = max(1, round(m["cw"] * fx)), max(1, round(m["ch"] * fy))
+    cls = lg[:, y0:y0 + ch, x0:x0 + cw].argmax(0)
+    names = post.get("labels") or []
+    name = lambda c: names[c] if c < len(names) else str(c)
+    colors = np.array([seg_color(name(c)) for c in range(C)], dtype=np.uint8)
+    rgba = np.concatenate([colors[cls], np.full((*cls.shape, 1), 255, np.uint8)], axis=-1)
+    ids, counts = np.unique(cls, return_counts=True)
+    legend = sorted(({"label": name(int(c)), "color": "rgb({},{},{})".format(*colors[c]), "count": 1, "area": float(k / cls.size)}
+                     for c, k in zip(ids, counts)), key=lambda g: -g["area"])
+    return {"kind": "segmap", "image": png_data_url(rgba), "count": len(legend), "subtask": "semantic", "legend": legend}
+
+
 def post_ultra_e2e_detect(out, m, post, p):
     # Ultralytics の end2end 書き出し: (1, 300, 6) = x1, y1, x2, y2, スコア, クラス（入力のピクセル座標）
     th, items = float(p.get("threshold", 0.4)), []
@@ -199,7 +217,7 @@ def post_deim_wholebody(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
-POST = {"ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+POST = {"segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):
@@ -250,7 +268,7 @@ class HfDetect(Adapter):
 
 
 def seg_color(label, k=0):
-    """クラス名から決まる色（ブラウザの worker.js の segColor と同じ式）。同じクラスの k 番目は明るさを変える"""
+    """クラス名から決まる色（ブラウザの onnx_generic.js の segColor と同じ式）。同じクラスの k 番目は明るさを変える"""
     import colorsys
     h = (sum(map(ord, label)) * 47) % 360
     r, g, b = colorsys.hls_to_rgb(h / 360, [0.55, 0.42, 0.68][k % 3], 0.7)

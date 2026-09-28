@@ -333,7 +333,43 @@ async function cropResizePng(vals, w, h, m) {
 
 // ---------- 後処理: 出力 → 結果（形式は adapters.py の冒頭を参照） ----------
 
+// クラス名から決まる色（adapters.py の seg_color と同じ式）。同じクラスの k 番目は明るさを変える
+export function segColor(label, k = 0) {
+  const h = ([...label].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
+  return hsl(h, 0.7, [0.55, 0.42, 0.68][k % 3]).map(Math.round);
+}
+
+export function hsl(h, s, l) {
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => { const k = (n + h / 30) % 12; return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+  return [f(0), f(8), f(4)];
+}
+
 const POST = {
+  // セマンティック・セグメンテーション: logits (1, クラス数, h, w) の画素ごとに最大のクラスで塗る（出力の解像度のまま。
+  // 表示で画面の大きさに広げる）。クラス名は post.labels。transformers.js のパイプラインは出力を元画像の大きさに
+  // 広げてから最大を取るので、境界の細かさが少し違う
+  async segmap(out, m, post) {
+    const t = post.output ? out[post.output] : Object.values(out)[0], L = t.data, [, C, gh, gw] = t.dims, n = gh * gw;
+    const fx = gw / m.iw, fy = gh / m.ih, x0 = Math.round(m.ox * fx), y0 = Math.round(m.oy * fy);
+    const cw = Math.max(1, Math.round(m.cw * fx)), ch = Math.max(1, Math.round(m.ch * fy));
+    const names = post.labels || [], colors = Array.from({ length: C }, (_, c) => segColor(names[c] ?? String(c)));
+    const rgba = new Uint8ClampedArray(cw * ch * 4), area = new Float64Array(C);
+    for (let y = 0; y < ch; y++) for (let x = 0; x < cw; x++) {
+      const i = (y + y0) * gw + x + x0;
+      let best = 0, bv = L[i];
+      for (let c = 1; c < C; c++) { const v = L[c * n + i]; if (v > bv) { bv = v; best = c; } }
+      const o = (y * cw + x) * 4, col = colors[best];
+      rgba[o] = col[0]; rgba[o + 1] = col[1]; rgba[o + 2] = col[2]; rgba[o + 3] = 255;
+      area[best]++;
+    }
+    const cv = new OffscreenCanvas(cw, ch);
+    cv.getContext("2d").putImageData(new ImageData(rgba, cw, ch), 0, 0);
+    const legend = [];
+    area.forEach((a, c) => { if (a) legend.push({ label: names[c] ?? String(c), color: `rgb(${colors[c].join(",")})`, count: 1, area: a / (cw * ch) }); });
+    legend.sort((a, b) => b.area - a.area);
+    return { kind: "segmap", image: await cv.convertToBlob({ type: "image/png" }), count: legend.length, subtask: "semantic", legend };
+  },
   // YOLO26 は NMS 込みの出力: logits (1,300,80) はシグモイド前、pred_boxes (1,300,4) は入力に対する正規化 cx cy w h
   yolo_detect(out, m, post, p) {
     const L = out.logits.data, B = out.pred_boxes.data, [, Q, C] = out.logits.dims, th = p.threshold ?? 0.4, items = [];

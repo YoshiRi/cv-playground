@@ -32,7 +32,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
   - Applications: object counting (counts detections + tracks per class: current and cumulative)
 - **Input**: images, video files, and live camera. Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
-- **Runtime options**: fp16, WebGPU graph capture, CPU (WASM), and a selectable input long side (320–960) for models with dynamic input
+- **Runtime options**: by default, generic ONNX models run with fp16 (when the model has an fp16 file) and WebGPU graph capture, which is dropped automatically for models that cannot use it. You can switch to fp32, no graph capture, or CPU (WASM), and pick the input long side (320–960) for models with dynamic input. Fixed-size models also get their symbolic input dimensions pinned
 - **Compare**: the same model in the browser and on the server (generic ONNX models build pre/post-processing from shared blocks, so both sides follow the same steps). Timings are kept in the run history
 - **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 / 100 measured runs, recording median, p90, p95, and fps. Compare devices under identical conditions. Add `?profile=1` to the URL to also get per-operator GPU time for generic ONNX models (see [docs/NOTES.md](docs/NOTES.md))
 - **Use local ONNX files**: if you already have a published model's file, pick it and use it without downloading (only files whose SHA-256 matches exactly; generic ONNX models only)

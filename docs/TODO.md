@@ -3,9 +3,8 @@
 ## 速さ（特にスマホ）
 
 - [ ] スマホ（S25 Ultra・Pixel 6a・iPad）で「入力サイズ可変の YOLO26」を 480 / 640 / 960 で測り、実用になる組み合わせを決める
-- [ ] 前処理を GPU で行う（今は OffscreenCanvas から画素を読み出して JS で正規化。M1 で 8〜17ms）。WebGPU のテクスチャから直接入力テンソルを作り、`ort.Tensor.fromGpuBuffer` で渡す
-- [ ] 前処理・推論・描画のパイプライン化（今は1フレームずつ順番）。GPU は間が空くと遅くなる（M4 で YOLO26n が続けて 12.5ms、5ms 空けると 21.5ms）ので、次のフレームの前処理を推論中に済ませて GPU を休ませない
-- [ ] M1・スマホで `?profile=1` のベンチを取り、graph capture・fp16・入力の形の固定の効き方を確かめる。効くなら graph capture（と fp16）を既定にする（M4 では YOLO26n 24 → 17ms、DEIMv2 Atto 19 → 7.5ms）
+- [ ] スマホで連続実行のパイプライン化の効き方を測る（`?nopipe=1` と比べる）。前処理は Galaxy Z Fold6 でも既定の `upload` が最速だった（`gpu` はモデル実行が 20〜30ms 遅くなる。iPhone・他の Android でも確かめる）
+- [ ] 前処理の縮小をサーバー（PIL の BILINEAR、縮小率に応じて周りも平均する）に合わせる。今は canvas も GPU も周りを平均しないので、大きく縮める時（DEIMv2 の 192 など）にサーバーと入力が少し違う
 - [ ] YOLO26n-pose・入力サイズ可変の YOLO26 で graph capture を使う: 後処理のノード（Mod・Range・Cast など）が CPU に回るので作れない。ONNX から後処理を外して JS で行う、または形の固定で消えるか確かめる
 - [ ] バッチ固定のモデル（OSNet の 16 など）も入力の形を固定する（今は `pre.batch` のあるモデルは対象外）
 - [ ] WebNN（NPU）を onnxruntime-web の WebNN EP で試す（Chrome の実験機能）

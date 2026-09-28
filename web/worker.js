@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { onnxEmbed, onnxLoad, onnxProfile, onnxRun } from "./onnx_generic.js";
+import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -253,18 +253,6 @@ async function autoSegment(st, img, p) {
   return { kind: "segmap", image: await toPng(new T.RawImage(rgba, S, S, 4)), count: kept.length, prompts: G * G };
 }
 
-// クラス名から決まる色（adapters.py の seg_color と同じ式）。同じクラスの k 番目は明るさを変える
-function segColor(label, k = 0) {
-  const h = ([...label].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
-  return hsl(h, 0.7, [0.55, 0.42, 0.68][k % 3]).map(Math.round);
-}
-
-function hsl(h, s, l) {
-  const a = s * Math.min(l, 1 - l);
-  const f = (n) => { const k = (n + h / 30) % 12; return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
-  return [f(0), f(8), f(4)];
-}
-
 // ---------- 画像の受け渡しと実行 ----------
 
 // 静止画は Blob、動画のフレームは ImageBitmap で届く（毎フレーム JPEG にすると遅いので）。
@@ -280,6 +268,11 @@ async function toInput(image, kind) {
 
 const loaded = new Map(); // entry.key -> Promise<state>
 
+// onnxruntime の実行は1つずつ順番に（画面が次のフレームを先に送ってくる＝パイプライン化しても、同じ wasm の中で実行が重ならないように）。
+// 待ち時間は推論時間に入れない（fn の中で測る）
+let ortQueue = Promise.resolve();
+const serial = (fn) => { const p = ortQueue.then(fn, fn); ortQueue = p.catch(() => {}); return p; };
+
 // 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
 async function embed(id, e, crops) {
   try {
@@ -289,12 +282,23 @@ async function embed(id, e, crops) {
       loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
       try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
     }
-    const t0 = performance.now();
-    const feats = await onnxEmbed(ort, (await loaded.get(e.key)).session, e, crops);
-    self.postMessage({ id, type: "result", result: { feats, ms: performance.now() - t0 } });
+    const st = await loaded.get(e.key);
+    const result = await serial(async () => {
+      const t0 = performance.now();
+      return { feats: await onnxEmbed(ort, st.session, e, crops), ms: performance.now() - t0 };
+    });
+    self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });
   }
+}
+
+// 記録の「実行場所」に出す、実際に使った設定（選んだ設定ではなく。fp16 版が無ければ fp32、graph capture を作れなければ無し）
+function ortRuntime(e, session, device) {
+  if (e.opt === "wasm" || device !== "webgpu") return `onnxruntime-web wasm ${ort.env.wasm.numThreads}スレッド`;
+  const g = session?.cvpg || {};
+  const pre = { gpu: " 前処理GPU", upload: " 前処理GPU（縮小はcanvas）", cpu: " 前処理CPU" }[g.pre] || "";
+  return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${pre}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
 }
 
 // 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
@@ -303,7 +307,7 @@ async function profile(id, e, last) {
     const st = await loaded.get(e.key);
     loaded.delete(e.key);
     if (!st?.session) throw new Error("計測中のモデルが無い");
-    const result = await onnxProfile(st.session, last);
+    const result = await serial(() => onnxProfile(st.session, last));
     st.session.release?.();
     self.postMessage({ id, type: "result", result });
   } catch (err) {
@@ -330,12 +334,16 @@ self.onmessage = async (ev) => {
     }
     const st = await loaded.get(e.key);
     const img = await toInput(image, A.image);
-    const t1 = performance.now();
-    const result = await A.run(st, img, params, e);
-    result.infer_ms = performance.now() - t1;
+    const go = async () => {
+      const t1 = performance.now();
+      const r = await A.run(st, img, params, e);
+      r.infer_ms = performance.now() - t1;
+      return r;
+    };
+    const result = self.name === "ort" ? await serial(go) : await go();
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
-    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}${st.session?.cvpg?.graphFallback ? "（このモデルは graph capture 不可）" : ""}` : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : `transformers.js ${TJS_VERSION} ${e.dtype?.[device] ?? ""}`.trim();
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

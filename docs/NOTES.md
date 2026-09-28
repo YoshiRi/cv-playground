@@ -31,7 +31,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 ## スマホで速くするには
 
 - 連続実行の結果欄に「内訳: フレーム取り込み / 前処理 / モデル実行 / 後処理」を出している（汎用 ONNX のモデル）。まずこれでどこが重いかを見る
-- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。2026-09-28 より前は graph capture が実際には効いていなかった（下の「モデル実行の内訳」）。効き方の測り直しはそちら
+- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。2026-09-28 より前は graph capture が実際には効いていなかった（下の「モデル実行の内訳」）。効き方の測り直しはそちら。M4 と Galaxy Z Fold6 の両方で速くなったので、2026-09-29 から既定を「fp16 + graph capture」にした（fp16 版が無いモデルは fp32、graph capture を作れないモデルは無しで動く。記録の実行場所には実際に使った方を出す）
 - 実行設定の「CPU（WASM）」: 小さいモデルは WebGPU より速いことがある（以下は 2026-09-28 に入力の形を固定する前の値。今は DEIMv2 Atto 320 が WebGPU で 11ms、graph capture で 7ms）。M4 Mac の Chrome では WebGPU のモデル実行が大きさによらず約 24ms で頭打ちになり（GPU に命令を出して結果を読み戻す固定の手間）、WASM（4スレッド）は DEIMv2 Atto 192 で 8ms、Atto 320 で 16ms、Femto 416 で 20ms、Pico 640 で 45ms（WebGPU 38ms）。YOLO26n-pose は WebGPU 24〜30ms、WASM 50ms
 - WASM の複数スレッドは crossOriginIsolated の時だけ使える。server.py は COOP/COEP ヘッダを付けるので使えるが、GitHub Pages ではヘッダを付けられないので1スレッドになる
 - 動画・カメラの描画は新しいフレームが来た時だけにしている（画面の更新ごとに描くと、120Hz のスマホでは毎秒120回描いて推論と GPU を取り合う）
@@ -54,6 +54,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 - transformers 5.17 の zero-shot-object-detection パイプラインは Grounding DINO でスコアが極端に低い。プロセッサに候補名のリストを直接渡すと正常
 - transformers.js 4.3 × Mac の Chrome（WebGPU の `maxStorageBuffersPerShaderStage` = 10）で BiRefNet が "Too many storage buffers in shader (11 > 10)"。一度失敗すると同じ Worker の以後の実行も全部失敗するので、失敗時に Worker を作り直している
 - SmolVLM 256M は WebGPU の fp16 だと画像によって意味のない文章になる（街の写真で「150s on the street side…」）。当初は transformers.js の版（4.3 → 3.8.1）の問題と見たが、fp32 なら 4.3 でも 3.8.1 でも正常だった（2026-09-28）ので fp32 にした（約1GB）。WASM の q8 は壊れた文字列になる。モデルごとにライブラリの版を選ぶ仕組み（models.json の `lib`）は残している
+- DETR ResNet-50 panoptic（transformers.js、fp32）は Galaxy Z Fold6（Adreno 750）の WebGPU で `Failed to create a WebGPU compute pipeline: [Invalid ShaderModule "Conv2dMM"] is invalid due to a previous error` になる（2026-09-29）。M4 では動くが1回 3.6 秒と重く、スマホ向きではない。Adreno 750 と onnxruntime-web 1.30 の shader の作成失敗は他でも報告がある（musetric/musetric#901）
 - SigLIP2 は transformers.js のパイプラインだと "Invalid array length"。文字列を max_length 64 で埋めて直接呼べば動く
 - YOLO26 の前処理は Ultralytics 公式と同じ letterbox にしている（onnx-community の ONNX に付く設定は引き伸ばし）
 - Depth Anything 3 の ONNX は入力が (batch, 視点数, 3, H, W) の多視点前提で、深度に加えてカメラの内部・外部パラメータも返す
@@ -70,7 +71,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 | iPad Pro | 70ms |
 | M1 MacBook Air | 60ms（内訳: 前処理 8.5ms・モデル実行 61ms。WASM 190ms。「fp32 + graph capture 63ms」は graph capture が効いていなかった頃の値） |
 | M4 Mac mini | 20〜30ms |
-| Galaxy Z Fold6（SM-F956Q、Adreno 750） | 64ms（graph capture 50ms、fp16 + graph capture 42ms。2026-09-28） |
+| Galaxy Z Fold6（SM-F956Q、Adreno 750） | 64ms → 32ms（2026-09-29 の既定: fp16 + graph capture + 前処理 upload。途中は graph capture 50ms、fp16 + graph capture 42ms） |
 
 GPU の性能順にきれいに並ぶので、固定の手間より計算量が主因。YOLO26n（640）は1回 5〜6 GFLOPs なので実効 100 GFLOP/s 前後で、ブラウザの WebGPU（onnxruntime-web）の畳み込みの効率はまだ低い。入力を小さくする（入力サイズ可変の YOLO26）のが一番効くはず。
 
@@ -118,6 +119,23 @@ Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrom
 - fp16 版は GPU 時間の合計が 16.6 → 12.3ms（畳み込み 9.9 → 6.7ms）に減るが、graph capture なしだと M4 では1回の時間はほぼ変わらない（命令を出す手間と待ちが効いている）
 - **GPU を休ませると遅くなる**: Worker で YOLO26n（graph capture）を続けて回すと 1回 12.5ms だが、実行の間に 5ms でも空けると 21.5ms になる（20ms 空けても同じ）。画面の実行は前処理・結果の受け渡しで間が空くので、ベンチの 1回（graph capture で約 17ms）は続けて回した時より遅い。前処理と推論を重ねて GPU を休ませない（パイプライン化）と縮む余地がある
 - 前処理（縮小・正規化）は M4 で 2.7ms（640×640）。M1 では 8.5ms の報告があり、端末によっては大きい
+
+## GPU の前処理と連続実行のパイプライン化（2026-09-29）
+
+- **前処理を GPU で行う**（汎用 ONNX の WebGPU 実行。URL の `?pre=` で3通りを選べる）
+  - `?pre=gpu`: 画像を `copyExternalImageToTexture` でテクスチャに送り、compute shader で縮小（双線形）・余白・正規化・チャンネルの並べ替えをして、モデルの入力の GPU バッファ（`ort.Tensor.fromGpuBuffer`、graph capture の入力バッファ）に直接書く。M4 では最速（YOLO26n のベンチ 17.8 → 13.5ms）だが、**Galaxy Z Fold6 ではモデル実行が 18〜28ms 遅くなった**（YOLO26n 30 → 48ms、DEIMv2 Atto 17 → 45ms。前処理そのものは 13 → 2ms）。上乗せが画像の大きさによらずほぼ一定なので、画像を GPU に送る所で待ち合わせが起きているらしい
+  - `?pre=upload`（既定）: 縮小は CPU の前処理と同じ canvas で行い、8 bit の画素を `writeTexture` で送って、余白・正規化・並べ替えだけ shader で。CPU の前処理から JS のループと float の転送（4倍の量）を除いたもので、入力は CPU の前処理と完全に一致する。M4 で YOLO26n 15.2ms、DEIMv2 Pico 19.6 → 17.7ms
+  - `?pre=cpu`（`?cpupre=1` も同じ）: 従来の CPU の前処理
+  - Galaxy Z Fold6（ベンチ 50 回の中央値、前処理・モデル実行）: YOLO26n は upload 32ms（7.1・25）/ cpu 39ms（11・29）/ gpu 61ms（2.6・57）、DEIMv2 Atto は upload 17ms（1.7・15）/ cpu 19ms（3.6・16）/ gpu 46ms（2.5・45）。**スマホでも upload が最速**で、gpu はまた大きく遅い（再現した）。M4 との差は gpu が 1.7ms 速いだけなので、既定は全端末で upload にしている
+  - GPU 版が対応している指定（縮小方法と scale・mean・std・bgr・pad_value・add_dims）だけのモデルで使い、それ以外（バッチ・フレーム列のモデル、新しく足した指定）は自動で CPU の前処理になる。記録の実行場所に、使った前処理を出す
+  - `gpu` の縮小は canvas と少し違う（640 → 320 で入力の差が平均 0.35、画素値 0〜255）。サーバー（PIL）との差は CPU 2.27、GPU 2.17 でほぼ同じ。しきい値すれすれの検出はこの差でも出たり消えたりする（サッカーの写真の DEIMv2 で 33 件と 36 件）
+- **連続実行のパイプライン化**（汎用 ONNX のブラウザ実行）: 前のフレームの推論中に次のフレームを取り込んで Worker に送っておく（同時に2フレームまで）。Worker は onnxruntime の実行を1つずつ順番に行う（`serial`）ので、届いていた次のフレームをすぐ始められ、結果の受け渡し・追跡・描画の間も GPU が休まない。結果はフレームの順に追跡・表示する。次のフレームの表示は送った直後から待ち始める（前の結果の処理後に待ち始めると、処理が1フレームの間隔を少しでも超えた時に1つおきになり、Galaxy Z Fold6 で 30fps の動画が 1フレーム 36ms なのに 14.5fps だった）。M4 で人物の動画を速めて流した時の連続実行（`?nopipe=1` が従来の1フレームずつ）: 6倍速（約 72fps）で YOLO26n-pose 20.1 → 39.6fps、YOLO26n + BoT-SORT + ReID 17.0 → 27.5fps。3倍速（約 36fps）で 23.9 → 32.1fps、18.6 → 23.9fps
+
+## SegFormer を汎用 ONNX に移した（2026-09-29）
+
+SegFormer B0（ADE20K）は transformers.js の image-segmentation パイプラインで動かしていたが、前処理（512×512 に引き伸ばして ImageNet の平均・標準偏差で正規化）も後処理（画素ごとに最大のクラス）も単純なので、汎用 ONNX（後処理の部品 `segmap`）に移した。M4 の Chrome で1回 981ms → 42ms（fp16 + graph capture。fp32 でも 56ms）。transformers.js 版は 150 クラスの出力を元画像の大きさに広げてから最大を取り、クラスごとのマスクも作るので後処理が重かった。こちらは出力の解像度（128×128）のまま最大を取って表示で広げるので、境界の細かさは少し違うが、クラスと面積はほぼ同じ（街の写真で road 50.4% と 50.9%、上位 8 クラスの順も同じ）。サーバー（adapters.py の `post_segmap`）も同じ手順
+
+Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレーム 123〜161ms（前処理 6〜7・モデル実行 116〜139・後処理 21〜23ms）、6〜8fps。transformers.js 版は1回 1695ms（読み込み済み、Chrome）だったので 10 倍以上速い。スマホではモデル実行（M4 の約 3.5 倍）が主で、次は入力を 512 より小さくする余地がある。後処理（150 クラスの最大を JS で）の 21ms は GPU に移せば縮む
 
 ## Grounding DINO の候補の扱い
 

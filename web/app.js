@@ -19,6 +19,11 @@ const WEB_ROOT = new URL(STANDALONE ? "../web/" : "./", location.href).href;
 // 詳細計測: URL に ?profile=1 を付けた時だけ。汎用 ONNX のブラウザ実行で onnxruntime の profiler を有効にし、ベンチに GPU の内訳を付ける
 // （計測の手間で遅くなるので通常は切る。記録は実行のたびにたまる）
 const PROFILE = new URLSearchParams(location.search).has("profile");
+// 汎用 ONNX の WebGPU 実行の前処理（比べる用に URL で選べる）: ?pre=upload（既定。縮小は canvas、正規化などは GPU）/
+// ?pre=gpu（縮小も GPU）/ ?pre=cpu（全部 CPU。?cpupre=1 も同じ）
+const PRE_MODE = new URLSearchParams(location.search).has("cpupre") ? "cpu" : new URLSearchParams(location.search).get("pre") || "upload";
+// ?nopipe=1: 連続実行をパイプライン化しない（1フレームずつ順番。比べる用）
+const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
 const state = {
   task: "detect",
@@ -88,7 +93,7 @@ function runInBrowser(model, image, params) {
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
     const profile = PROFILE && model.adapter === "onnx";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, webRoot: WEB_ROOT }, image, params }, transfer);
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT }, image, params }, transfer);
   });
 }
 
@@ -320,13 +325,21 @@ function currentModel() {
 // 質問欄は、既定の文のままならモデルごとの既定（models.json の prompt、無ければタスクの defaults.prompt）に入れ替える
 const TASK_PROMPT = (task) => TASKS.find((t) => t.id === task)?.defaults?.prompt || "";
 const DEFAULT_PROMPTS = new Set([...TASKS.map((t) => t.defaults?.prompt), ...MODELS.map((x) => x.prompt)].filter(Boolean));
+// どのライブラリ・実装で動くか（デバッグ用に説明欄に出す。実際に使った設定は結果欄と記録の「実行場所」に出る）
+const TJS_VERSIONS = { 3: "3.8.1", 4: "4.3.0" };
+function runtimeLabel(m) {
+  if (m.where === "server") return `サーバーの adapters.py（${m.adapter}）`;
+  if (m.adapter === "onnx") return "onnxruntime-web を直接（汎用 ONNX。前処理・後処理は models.json）";
+  return `transformers.js ${TJS_VERSIONS[m.lib || 4]}（${m.adapter}）`;
+}
+
 function updateModelNote() {
   const m = currentModel();
   if (!m) return;
   if (!$("prompt").value || DEFAULT_PROMPTS.has($("prompt").value)) $("prompt").value = m.prompt || TASK_PROMPT(m.task);
   const notes = [];
   notes.push(m.repo || m.onnx?.repo || m.ollama || "");
-  notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
+  notes.push(`実行: ${runtimeLabel(m)}`);
   if (m.where === "browser") notes.push(downloaded().has(m.key) ? "取得済み" : m.mb >= CONFIRM_MB ? "初回のダウンロードが大きい（モバイル回線では注意）" : "");
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
   if (m.license) notes.push(`ライセンス: ${m.license}`);
@@ -703,8 +716,9 @@ function paramsFor(key, w, auto) {
   };
 }
 
-// 1回分。結果を state.result に入れ、描画用の層を用意する
-async function runOnce(m, overrides = {}) {
+// 1回分。結果を state.result に入れ（commit: false なら入れない。パイプライン化した連続実行で、前のフレームの結果を表示中に
+// 次のフレームの結果で上書きしないように）、描画用の層を用意する
+async function runOnce(m, overrides = {}, { commit = true } = {}) {
   const [w, h] = inferSize();
   const tg = performance.now();
   const { image, key } = await grabFrame(m.where === "server");
@@ -718,7 +732,7 @@ async function runOnce(m, overrides = {}) {
   $("progress").hidden = true;
   if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
   await KINDS[r.kind]?.prepare?.(r);
-  state.result = r;
+  if (commit) state.result = r;
   return r;
 }
 
@@ -771,27 +785,45 @@ async function liveLoop() {
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.post = createPost();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
+  const overrides = tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {};
+  // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
+  const handle = async (r) => {
+    if (tracker) {
+      const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
+      if (feats) r.reid_ms = feats.ms;
+      r.items = tracker.update(r.items, feats?.feats);
+      r.items.forEach((it) => ids.add(it.id));
+    }
+    state.result = r;
+    await applyCascade(m, r, tracker ? seqStore : null);
+    applyPost(r, { tracked: !!tracker });
+    if (!first) { first = r; tStart = performance.now(); setStatus(""); }
+    frames++;
+    if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
+    fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
+    renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
+    if ($("video").paused) draw();
+  };
+  // パイプライン化（汎用 ONNX のブラウザ実行）: 前のフレームの推論中に、次のフレームを取り込んで Worker に送っておく。
+  // Worker は届いた順に続けて実行するので、結果の受け渡し・追跡・描画の間も GPU が休まない（GPU は間が空くと遅くなる）。
+  // 同時に送るのは2フレームまで。結果はフレームの順に処理する
+  const pipe = m.where === "browser" && m.adapter === "onnx" && !NO_PIPE;
+  // 次のフレームの表示は、送った直後から待ち始める。前の結果の処理（追跡・描画）の間に表示されても取りこぼさない
+  // （処理が1フレームの間隔より少しでも長いと、待ち始めが遅れて1つおきになり、30fps の動画で 15fps に落ちていた）
+  let inflight = null, next = null;
   try {
     while (state.live && state.video) {
-      if (frames) await nextVideoFrame($("video"));
+      if (frames || inflight) await (next ?? nextVideoFrame($("video")));
+      next = null;
       if (!state.live) break;
-      const r = await runOnce(m, tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {});
-      if (tracker) {
-        const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
-        if (feats) r.reid_ms = feats.ms;
-        r.items = tracker.update(r.items, feats?.feats);
-        r.items.forEach((it) => ids.add(it.id));
-        state.result = r;
-      }
-      await applyCascade(m, r, tracker ? seqStore : null);
-      applyPost(r, { tracked: !!tracker });
-      if (!first) { first = r; tStart = performance.now(); setStatus(""); }
-      frames++;
-      if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
-      fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
-      renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
-      if ($("video").paused) draw();
+      const cur = runOnce(m, overrides, { commit: !pipe });
+      if (!pipe) { await handle(await cur); continue; }
+      cur.catch(() => {}); // 失敗は下で await した時に扱う
+      next = nextVideoFrame($("video"));
+      if (inflight) await handle(await inflight);
+      inflight = cur;
     }
+    if (inflight && state.video) await handle(await inflight);
   } catch (e) {
     failed(m, e);
   }

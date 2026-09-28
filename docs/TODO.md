@@ -4,9 +4,12 @@
 
 - [ ] スマホ（S25 Ultra・Pixel 6a・iPad）で「入力サイズ可変の YOLO26」を 480 / 640 / 960 で測り、実用になる組み合わせを決める
 - [ ] 前処理を GPU で行う（今は OffscreenCanvas から画素を読み出して JS で正規化。M1 で 8〜17ms）。WebGPU のテクスチャから直接入力テンソルを作り、`ort.Tensor.fromGpuBuffer` で渡す
-- [ ] 前処理・推論・描画のパイプライン化（今は1フレームずつ順番）
+- [ ] 前処理・推論・描画のパイプライン化（今は1フレームずつ順番）。GPU は間が空くと遅くなる（M4 で YOLO26n が続けて 12.5ms、5ms 空けると 21.5ms）ので、次のフレームの前処理を推論中に済ませて GPU を休ませない
+- [ ] M1・スマホで `?profile=1` のベンチを取り、graph capture・fp16・入力の形の固定の効き方を確かめる。効くなら graph capture（と fp16）を既定にする（M4 では YOLO26n 24 → 17ms、DEIMv2 Atto 19 → 7.5ms）
+- [ ] YOLO26n-pose・入力サイズ可変の YOLO26 で graph capture を使う: 後処理のノード（Mod・Range・Cast など）が CPU に回るので作れない。ONNX から後処理を外して JS で行う、または形の固定で消えるか確かめる
+- [ ] バッチ固定のモデル（OSNet の 16 など）も入力の形を固定する（今は `pre.batch` のあるモデルは対象外）
 - [ ] WebNN（NPU）を onnxruntime-web の WebNN EP で試す（Chrome の実験機能）
-- [ ] 小さいモデルは WebGPU の固定の手間（M4 Mac で約 15〜24ms）が支配的。端末ごとに WebGPU と WASM の速い方を自動で選ぶ
+- [ ] 小さいモデルは WebGPU の固定の手間が支配的だった（入力の形の固定と graph capture で DEIMv2 Atto 192 は 4.7ms まで縮んだので、WASM との比べ直しから）。端末ごとに WebGPU と WASM の速い方を自動で選ぶ
 - [ ] YOLO26 の s / m も入力サイズ可変で書き出す（`tools/export_yolo26_dynamic.py yolo26s ...`）
 - [ ] ブラウザの外（Android の LiteRT GPU/NPU、iOS の CoreML）との比較
 

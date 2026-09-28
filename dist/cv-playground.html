@@ -185,6 +185,12 @@ td small { color: var(--muted); margin-left: 2px; }
 #local-result { list-style: none; padding-left: 0; }
 .local code { font-size: 12px; overflow-wrap: anywhere; }
 .bench .primary { padding: 8px 18px; }
+#bench-profile { display: flex; flex-direction: column; gap: 12px; }
+#bench-profile:empty { display: none; }
+.prof { display: flex; flex-direction: column; gap: 4px; overflow-x: auto; }
+.prof table { border-collapse: collapse; width: max-content; }
+.prof th, .prof td { padding: 2px 10px 2px 0; text-align: left; border-bottom: 1px solid var(--line); }
+.prof .num { text-align: right; }
 </style>
 </head>
 <body>
@@ -331,18 +337,20 @@ td small { color: var(--muted); margin-left: 2px; }
 
   <section class="bench">
     <h2>速度を測る（ベンチマーク）</h2>
-    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
+    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90・p95 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
     <details class="advanced">
       <summary id="bench-summary">測るモデルを選ぶ</summary>
       <div class="bench-models" id="bench-models"></div>
     </details>
     <div class="row-actions">
       <label class="field row">回数
-        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option></select>
+        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>
       </label>
       <span class="muted small" id="bench-progress"></span>
       <button type="button" class="primary" id="bench-start">▶ 測る</button>
     </div>
+    <p class="muted small" id="bench-profile-note" hidden>詳細計測中（URL の <code>?profile=1</code>）: 汎用 ONNX のブラウザ実行で、演算ごとの GPU 時間を測る。計測の手間で推論が遅くなるので、端末どうしの速さの比較には使わない。結果は下の表と、実行履歴の JSON に入る。</p>
+    <div id="bench-profile"></div>
   </section>
 
   <section class="bench local">
@@ -386,7 +394,7 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
 
 return { COCO };
 })();
-const { onnxLoad, onnxEmbed, onnxRun } = await (async () => {
+const { onnxLoad, onnxProfile, onnxEmbed, onnxRun } = await (async () => {
 // 汎用 ONNX adapter のブラウザ版（onnxruntime-web を直接使う）。サーバー版は adapters.py の OnnxAdapter。
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
@@ -440,14 +448,46 @@ async function onnxLoad(ort, e, device, onProgress) {
   const model = e.onnx.server_file
     ? await fetchModelFile(new URL("local-models/" + e.onnx.server_file, e.webRoot).href, onProgress)
     : e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
-  const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
+  // WebGPU は { name } の形で渡す。onnxruntime-web 1.30 は文字列の "webgpu" だと enableGraphCapture を WebGPU EP に渡さず、
+  // graph capture が黙って無効になる（EP の設定のログが "graph capture enable: 0" のまま）
+  const opts = { executionProviders: [device === "webgpu" ? { name: "webgpu" } : "wasm"], graphOptimizationLevel: "all" };
   if (e.onnx.data) {
     opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
   }
+  // 詳細計測（?profile=1 の時だけ）: onnxruntime の profiler で、ノードごとの時間と WebGPU の命令ごとの GPU 時間を記録する
+  if (e.profile) opts.enableProfiling = true;
+  let session = await ort.InferenceSession.create(model, opts);
+  // 入力の大きさが決まっているモデルは、ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定して作り直す。
+  // 形の計算が CPU に回らずに済み、GPU の命令も形に合わせて作られる（DEIMv2 Atto は M4 で 18 → 11ms）。名前はモデルごとに違うので、
+  // 一度作ったセッションの inputMetadata から読む
+  const fixed = fixedDims(e), shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;
+  const fdo = {};
+  if (fixed && shape?.length === fixed.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = fixed[i]; });
+  if (Object.keys(fdo).length) opts.freeDimensionOverrides = fdo;
+  // graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
+  // （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしにする
   const graph = opt.includes("graph");
-  if (graph) Object.assign(opts, { preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
-  const session = await ort.InferenceSession.create(model, opts);
-  return Object.assign(session, { cvpg: { graph, file, gpuInput: null } });
+  let graphFallback = false;
+  if (graph || opts.freeDimensionOverrides) {
+    await session.release();
+    try {
+      session = await ort.InferenceSession.create(model, graph ? { ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true } : opts);
+    } catch (err) {
+      if (!graph || !/graph capture/i.test(String(err?.message || err))) throw err;
+      session = await ort.InferenceSession.create(model, opts);
+      graphFallback = true;
+    }
+  }
+  return Object.assign(session, { cvpg: { graph: graph && !graphFallback, graphFallback, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
+}
+
+// 入力の形が1通りに決まるモデルの入力の次元（前処理と同じ並び）。入力サイズ可変・バッチ・フレーム列のモデルは決まらないので null
+function fixedDims(e) {
+  const pre = e.pre;
+  if (!pre.size || pre.dynamic || pre.batch || pre.seq || pre.resize === "keep_aspect") return null;
+  const dims = [1, 3, pre.size[1], pre.size[0]];
+  for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
+  return dims;
 }
 
 // graph capture の時は入力を毎回同じ GPU バッファに書き込み、出力は GPU から読み戻す
@@ -461,9 +501,49 @@ async function runSession(ort, session, name, tensor) {
   }
   dev.queue.writeBuffer(g.gpuInput, 0, tensor.data);
   const out = await session.run({ [name]: g.feed });
-  const cpu = {};
-  for (const [k, t] of Object.entries(out)) cpu[k] = { data: await t.getData(true), dims: t.dims };
-  return cpu;
+  // 出力の読み戻しはまとめて待つ（1つずつ待つと GPU との往復が出力の数だけ増える。YOLO26n で 2ms ほど違う）
+  const ents = Object.entries(out), datas = await Promise.all(ents.map(([, t]) => t.getData(true)));
+  return Object.fromEntries(ents.map(([k, t], i) => [k, { data: datas[i], dims: t.dims }]));
+}
+
+// 詳細計測の結果をまとめる。onnxruntime-web は profiler の記録（Chrome trace の JSON）を console に出すだけなので、
+// endProfiling の間だけ console の出力を拾う。onnxruntime（emscripten）は読み込み時に console.log を覚えてしまうので、
+// 後から差し替えても届かない。先に（このモジュールの読み込み時に）中継する関数に替えておき、拾う間だけ行き先を変える。
+// 記録は読み込みから全部の実行ぶん入っているので、最後の last 回だけ集計する。
+// 1回あたりの平均: model_run（ONNX の実行の壁時計）、gpu（WebGPU の命令の GPU 時間の合計）、ops（演算の種類ごとの GPU 時間）、
+// CPU に回ったノード、GPU との転送（入力の転送と、結果の待ち＋読み戻し）
+let consoleSink = null;
+for (const k of ["log", "info", "warn", "error"]) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => (consoleSink ? consoleSink.push(a.join(" ")) : orig(...a));
+}
+
+async function onnxProfile(session, last) {
+  const lines = (consoleSink = []);
+  try { await session.endProfiling(); } finally { consoleSink = null; }
+  const txt = lines.join("\n"), a = txt.indexOf("[\n"), b = txt.lastIndexOf("]");
+  if (a < 0 || b < a) return { error: "profiler の記録が取れなかった" };
+  const ev = JSON.parse(txt.slice(a, b + 1));
+  // CPU 側のノードの記録は実行の時間内に入る。GPU の命令の時刻は後からまとめて取るので実行の区切りと合わない。
+  // どの実行も同じ命令の並びを出すので、GPU の命令は「全部の数 ÷ 実行の回数」ずつ順に区切り、最後の last 回ぶんを使う
+  const all = ev.filter((x) => x.name === "model_run"), runs = all.slice(-last);
+  if (!runs.length) return { error: "実行の記録が無い" };
+  const nodes = ev.filter((x) => x.cat === "Node" && x.name.endsWith("_kernel_time") && runs.some((r) => x.ts >= r.ts && x.ts <= r.ts + r.dur));
+  // graph capture の再生ではノードを1つずつ動かさないので、演算ごとの記録が無い
+  if (!nodes.length) return { runs: runs.length, run_ms: Math.round(runs.reduce((s, r) => s + r.dur, 0) / runs.length / 10) / 100, note: "graph capture の再生中は演算ごとの記録が取れない（内訳を見る時は graph capture なしで測る）" };
+  const allGpu = ev.filter((x) => x.cat === "Api" && x.name.includes("&")), per = Math.round(allGpu.length / all.length);
+  const gpu = per ? allGpu.slice(-per * runs.length) : [];
+  const n = runs.length, r2 = (v) => Math.round((v / n / 1000) * 100) / 100;
+  const ops = {};
+  for (const x of gpu) { const op = x.name.split("&")[1]; (ops[op] ??= { op, us: 0, n: 0 }).us += x.dur; ops[op].n++; }
+  const gpuSum = gpu.reduce((s, x) => s + x.dur, 0);
+  const nodeMs = (op) => r2(nodes.filter((x) => x.args?.op_name === op).reduce((s, x) => s + x.dur, 0));
+  const cpu = [...new Set(nodes.filter((x) => x.args?.provider === "CPUExecutionProvider").map((x) => `${x.args.op_name} ${x.name.replace(/_kernel_time$/, "")}`))];
+  return {
+    runs: n, run_ms: r2(runs.reduce((s, r) => s + r.dur, 0)), gpu_ms: r2(gpuSum), dispatches: per,
+    upload_ms: nodeMs("MemcpyFromHost"), readback_wait_ms: nodeMs("MemcpyToHost"), cpu_nodes: cpu,
+    ops: Object.values(ops).sort((p, q) => q.us - p.us).map((o) => ({ op: o.op, ms: r2(o.us), count: Math.round(o.n / n), pct: Math.round((1000 * o.us) / gpuSum) / 10 })),
+  };
 }
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
@@ -657,7 +737,7 @@ async function onnxRun(ort, session, e, bitmap, params) {
   return res;
 }
 
-return { onnxLoad, onnxEmbed, onnxRun };
+return { onnxLoad, onnxProfile, onnxEmbed, onnxRun };
 })();
 (async () => {
 // ブラウザ内推論。重い処理で画面が固まらないように Web Worker で動かす。
@@ -958,8 +1038,23 @@ async function embed(id, e, crops) {
   }
 }
 
+// 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
+async function profile(id, e, last) {
+  try {
+    const st = await loaded.get(e.key);
+    loaded.delete(e.key);
+    if (!st?.session) throw new Error("計測中のモデルが無い");
+    const result = await onnxProfile(st.session, last);
+    st.session.release?.();
+    self.postMessage({ id, type: "result", result });
+  } catch (err) {
+    self.postMessage({ id, type: "error", message: String(err?.message || err) });
+  }
+}
+
 self.onmessage = async (ev) => {
   if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
+  if (ev.data.type === "profile") return profile(ev.data.id, ev.data.model, ev.data.last);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;
@@ -981,7 +1076,7 @@ self.onmessage = async (ev) => {
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
-    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}` : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}${st.session?.cvpg?.graphFallback ? "（このモデルは graph capture 不可）" : ""}` : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });
@@ -1608,7 +1703,7 @@ function stats(xs) {
   if (!a.length) return null;
   const q = (f) => a[Math.min(a.length - 1, Math.floor(f * (a.length - 1) + 0.5))];
   const mean = a.reduce((s, x) => s + x, 0) / a.length;
-  return { n: a.length, mean, median: q(0.5), p90: q(0.9), min: a[0], max: a[a.length - 1] };
+  return { n: a.length, mean, median: q(0.5), p90: q(0.9), p95: q(0.95), min: a[0], max: a[a.length - 1] };
 }
 
 // ---------- 端末の情報 ----------
@@ -1656,6 +1751,7 @@ const RUN_COLUMNS = [
   "time", "mode", "task", "model_key", "model_name", "where", "device", "runtime", "input_size", "frame_w", "frame_h",
   "load_ms", "infer_ms", "grab_ms", "pre_ms", "run_ms", "post_ms", "roundtrip_ms", "reid_ms", "cascade_ms",
   "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
+  "infer_p95_ms", "gpu_ms", // 後から足した列（前の版の CSV と列の位置が変わらないように末尾に置く）
 ];
 const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
   "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];
@@ -1762,6 +1858,9 @@ const STANDALONE = !!globalThis.CVPG_STANDALONE;
 const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
 // web/ の場所（同梱したモデルを読む基準）。1ファイル版は dist/ にあるので ../web/
 const WEB_ROOT = new URL(STANDALONE ? "../web/" : "./", location.href).href;
+// 詳細計測: URL に ?profile=1 を付けた時だけ。汎用 ONNX のブラウザ実行で onnxruntime の profiler を有効にし、ベンチに GPU の内訳を付ける
+// （計測の手間で遅くなるので通常は切る。記録は実行のたびにたまる）
+const PROFILE = new URLSearchParams(location.search).has("profile");
 
 const state = {
   task: "detect",
@@ -1829,7 +1928,17 @@ function runInBrowser(model, image, params) {
     const lib = workerLib(model);
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, webRoot: WEB_ROOT }, image, params }, transfer);
+    const profile = PROFILE && model.adapter === "onnx";
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, webRoot: WEB_ROOT }, image, params }, transfer);
+  });
+}
+
+// 詳細計測の結果（最後の last 回ぶん）を受け取る。そのモデルは Worker で捨てられ、次の実行で読み直す
+function profileInBrowser(model, last) {
+  const id = ++seq;
+  return new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject });
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "profile", id, model, last });
   });
 }
 
@@ -2336,7 +2445,8 @@ async function runBench() {
   $("bench-start").textContent = "■ 中止";
   stopLive();
   await setImage(BENCH_IMAGE);
-  const done = [];
+  const done = [], profiles = [];
+  $("bench-profile").innerHTML = "";
   for (let i = 0; i < list.length && state.bench; i++) {
     const { t, v } = list[i];
     const def = t.defaults || {};
@@ -2358,11 +2468,17 @@ async function runBench() {
       continue;
     }
     if (!times.length) continue;
+    let profile;
+    if (PROFILE && v.where === "browser" && v.adapter === "onnx") {
+      try { profile = await profileInBrowser(v, times.length); } catch (e) { profile = { error: e.message }; }
+      profiles.push({ name: v.name, runtime: r.dtype, ...profile });
+      renderProfiles(profiles);
+    }
     const st = stats(times), avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : undefined);
     addRun(makeRecord(v, r, "bench", {
       load_ms: first.load_ms, infer_ms: st.mean, grab_ms: avg(bd.grab), pre_ms: avg(bd.pre), run_ms: avg(bd.run), post_ms: avg(bd.post),
-      frames: st.n, fps: +(1000 / st.mean).toFixed(2), infer_mean_ms: st.mean, infer_median_ms: st.median, infer_p90_ms: st.p90,
-      infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(),
+      frames: st.n, fps: +(1000 / st.mean).toFixed(2), infer_mean_ms: st.mean, infer_median_ms: st.median, infer_p90_ms: st.p90, infer_p95_ms: st.p95,
+      gpu_ms: profile?.gpu_ms, ...(profile ? { profile } : {}), infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(),
     }));
     done.push(v.name);
     renderResult(v, r);
@@ -2371,6 +2487,17 @@ async function runBench() {
   $("bench-progress").textContent = state.bench ? `完了: ${done.length} モデル（結果は実行履歴に「ベンチ」として追加。CSV で書き出せる）` : `中止した（${done.length} モデル分を記録）`;
   state.bench = false;
   $("bench-start").textContent = "▶ 測る";
+}
+
+// 詳細計測の表: モデルごとに ONNX の実行・GPU の命令の合計・転送と、GPU 時間の大きい演算
+function renderProfiles(ps) {
+  const f = (v) => (v == null ? "" : fmt(v));
+  $("bench-profile").innerHTML = ps.map((p) => p.error || p.note ? `<p class="small">${esc(p.name)}: ${esc(p.error || `ONNX の実行 ${f(p.run_ms)}。${p.note}`)}</p>` : `<div class="prof">
+    <div class="small"><b>${esc(p.name)}</b> <span class="muted">${esc(p.runtime || "")}・${p.runs} 回の平均</span></div>
+    <div class="small">ONNX の実行 ${f(p.run_ms)} ・ GPU の命令の合計 ${f(p.gpu_ms)}（${p.dispatches} 個）・ 入力の転送 ${f(p.upload_ms)} ・ 結果の待ちと読み戻し ${f(p.readback_wait_ms)}</div>
+    <div class="small">CPU に回ったノード: ${p.cpu_nodes.length ? esc(p.cpu_nodes.join("、")) : "なし"}</div>
+    <table class="small"><tr><th>演算</th><th class="num">GPU ms</th><th class="num">個数</th><th class="num">割合</th></tr>${p.ops.slice(0, 8).map((o) => `<tr><td>${esc(o.op)}</td><td class="num">${f(o.ms)}</td><td class="num">${o.count}</td><td class="num">${o.pct}%</td></tr>`).join("")}</table>
+  </div>`).join("");
 }
 
 // ---------- 結果の保存（表示中の画像・結果データ） ----------
@@ -2502,7 +2629,7 @@ async function liveLoop() {
     const st = stats(times);
     addRun(makeRecord(m, state.result || first, "live", {
       load_ms: first.load_ms, infer_ms: st?.mean ?? first.infer_ms, frames, fps: +fps.toFixed(2),
-      infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_min_ms: st?.min, infer_max_ms: st?.max, warmup: 1,
+      infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_p95_ms: st?.p95, infer_min_ms: st?.min, infer_max_ms: st?.max, warmup: 1,
       summary: tracker ? `${trackerName.split("（")[0]} ID ${ids.size}個` : "",
     }));
   }
@@ -2689,6 +2816,7 @@ async function init() {
     state.runs = []; saveRuns(); renderHistory();
   };
   $("bench-start").onclick = runBench;
+  $("bench-profile-note").hidden = !PROFILE;
   $("bench-models").addEventListener("change", updateBenchCount);
   $("local-onnx").onchange = (ev) => { const fs = [...ev.target.files]; ev.target.value = ""; if (fs.length) importLocalOnnx(fs); };
   renderLocalKnown();

@@ -177,3 +177,9 @@ td small { color: var(--muted); margin-left: 2px; }
 #local-result { list-style: none; padding-left: 0; }
 .local code { font-size: 12px; overflow-wrap: anywhere; }
 .bench .primary { padding: 8px 18px; }
+#bench-profile { display: flex; flex-direction: column; gap: 12px; }
+#bench-profile:empty { display: none; }
+.prof { display: flex; flex-direction: column; gap: 4px; overflow-x: auto; }
+.prof table { border-collapse: collapse; width: max-content; }
+.prof th, .prof td { padding: 2px 10px 2px 0; text-align: left; border-bottom: 1px solid var(--line); }
+.prof .num { text-align: right; }

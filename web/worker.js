@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { onnxEmbed, onnxLoad, onnxRun } from "./onnx_generic.js";
+import { onnxEmbed, onnxLoad, onnxProfile, onnxRun } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -297,8 +297,23 @@ async function embed(id, e, crops) {
   }
 }
 
+// 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
+async function profile(id, e, last) {
+  try {
+    const st = await loaded.get(e.key);
+    loaded.delete(e.key);
+    if (!st?.session) throw new Error("計測中のモデルが無い");
+    const result = await onnxProfile(st.session, last);
+    st.session.release?.();
+    self.postMessage({ id, type: "result", result });
+  } catch (err) {
+    self.postMessage({ id, type: "error", message: String(err?.message || err) });
+  }
+}
+
 self.onmessage = async (ev) => {
   if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
+  if (ev.data.type === "profile") return profile(ev.data.id, ev.data.model, ev.data.last);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;
@@ -320,7 +335,7 @@ self.onmessage = async (ev) => {
     result.infer_ms = performance.now() - t1;
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
-    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}` : e.dtype?.[device];
+    result.dtype = e.adapter === "onnx" ? `onnxruntime-web${e.opt ? " " + e.opt : ""}${e.opt === "wasm" ? ` ${ort.env.wasm.numThreads}スレッド` : ""}${st.session?.cvpg?.graphFallback ? "（このモデルは graph capture 不可）" : ""}` : e.dtype?.[device];
     self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });

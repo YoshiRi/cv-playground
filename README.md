@@ -33,7 +33,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
 - **Runtime options**: fp16, WebGPU graph capture, CPU (WASM), and a selectable input long side (320–960) for models with dynamic input
 - **Compare**: the same model in the browser and on the server (generic ONNX models build pre/post-processing from shared blocks, so both sides follow the same steps). Timings are kept in the run history
-- **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 measured runs, recording median, p90, and fps. Compare devices under identical conditions
+- **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 / 100 measured runs, recording median, p90, p95, and fps. Compare devices under identical conditions. Add `?profile=1` to the URL to also get per-operator GPU time for generic ONNX models (see [docs/NOTES.md](docs/NOTES.md))
 - **Use local ONNX files**: if you already have a published model's file, pick it and use it without downloading (only files whose SHA-256 matches exactly; generic ONNX models only)
 - **Export**: the displayed image (with an optional caption strip; on phones, the share sheet lets you save to Photos), result data (JSON), and run records (CSV / JSON / Markdown table). Records include device, browser, and GPU info, so CSVs from different devices can be concatenated and compared as is
 

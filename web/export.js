@@ -11,7 +11,7 @@ export function stats(xs) {
   if (!a.length) return null;
   const q = (f) => a[Math.min(a.length - 1, Math.floor(f * (a.length - 1) + 0.5))];
   const mean = a.reduce((s, x) => s + x, 0) / a.length;
-  return { n: a.length, mean, median: q(0.5), p90: q(0.9), min: a[0], max: a[a.length - 1] };
+  return { n: a.length, mean, median: q(0.5), p90: q(0.9), p95: q(0.95), min: a[0], max: a[a.length - 1] };
 }
 
 // ---------- 端末の情報 ----------
@@ -59,6 +59,7 @@ export const RUN_COLUMNS = [
   "time", "mode", "task", "model_key", "model_name", "where", "device", "runtime", "input_size", "frame_w", "frame_h",
   "load_ms", "infer_ms", "grab_ms", "pre_ms", "run_ms", "post_ms", "roundtrip_ms", "reid_ms", "cascade_ms",
   "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
+  "infer_p95_ms", "gpu_ms", // 後から足した列（前の版の CSV と列の位置が変わらないように末尾に置く）
 ];
 export const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
   "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];

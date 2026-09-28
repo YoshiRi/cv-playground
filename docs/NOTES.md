@@ -31,8 +31,8 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 ## スマホで速くするには
 
 - 連続実行の結果欄に「内訳: フレーム取り込み / 前処理 / モデル実行 / 後処理」を出している（汎用 ONNX のモデル）。まずこれでどこが重いかを見る
-- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。M4 Mac の Chrome では YOLO26n-pose のモデル実行が 38ms → 27〜29ms（fp16）→ 25〜28ms（fp16 + graph capture）。ばらつきが大きく、スマホでの効き方は未確認
-- 実行設定の「CPU（WASM）」: 小さいモデルは WebGPU より速いことがある。M4 Mac の Chrome では WebGPU のモデル実行が大きさによらず約 24ms で頭打ちになり（GPU に命令を出して結果を読み戻す固定の手間）、WASM（4スレッド）は DEIMv2 Atto 192 で 8ms、Atto 320 で 16ms、Femto 416 で 20ms、Pico 640 で 45ms（WebGPU 38ms）。YOLO26n-pose は WebGPU 24〜30ms、WASM 50ms
+- 汎用 ONNX のモデルは「実行設定」で fp16 版（YOLO26 は `model_fp16.onnx`）と WebGPU の graph capture（記録した GPU コマンドをまとめて流す）を選べる。2026-09-28 より前は graph capture が実際には効いていなかった（下の「モデル実行の内訳」）。効き方の測り直しはそちら
+- 実行設定の「CPU（WASM）」: 小さいモデルは WebGPU より速いことがある（以下は 2026-09-28 に入力の形を固定する前の値。今は DEIMv2 Atto 320 が WebGPU で 11ms、graph capture で 7ms）。M4 Mac の Chrome では WebGPU のモデル実行が大きさによらず約 24ms で頭打ちになり（GPU に命令を出して結果を読み戻す固定の手間）、WASM（4スレッド）は DEIMv2 Atto 192 で 8ms、Atto 320 で 16ms、Femto 416 で 20ms、Pico 640 で 45ms（WebGPU 38ms）。YOLO26n-pose は WebGPU 24〜30ms、WASM 50ms
 - WASM の複数スレッドは crossOriginIsolated の時だけ使える。server.py は COOP/COEP ヘッダを付けるので使えるが、GitHub Pages ではヘッダを付けられないので1スレッドになる
 - 動画・カメラの描画は新しいフレームが来た時だけにしている（画面の更新ごとに描くと、120Hz のスマホでは毎秒120回描いて推論と GPU を取り合う）
 
@@ -68,10 +68,44 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 | Pixel 6a | 150ms |
 | Galaxy S25 Ultra | 90ms |
 | iPad Pro | 70ms |
-| M1 MacBook Air | 60ms（内訳: 前処理 8.5ms・モデル実行 61ms。WASM 190ms、fp32 + graph capture 63ms） |
+| M1 MacBook Air | 60ms（内訳: 前処理 8.5ms・モデル実行 61ms。WASM 190ms。「fp32 + graph capture 63ms」は graph capture が効いていなかった頃の値） |
 | M4 Mac mini | 20〜30ms |
 
 GPU の性能順にきれいに並ぶので、固定の手間より計算量が主因。YOLO26n（640）は1回 5〜6 GFLOPs なので実効 100 GFLOP/s 前後で、ブラウザの WebGPU（onnxruntime-web）の畳み込みの効率はまだ低い。入力を小さくする（入力サイズ可変の YOLO26）のが一番効くはず。
+
+## モデル実行の内訳（詳細計測、`?profile=1`）と速くした点（2026-09-28）
+
+URL に `?profile=1` を付けると、汎用 ONNX のブラウザ実行で onnxruntime の profiler を有効にし、ベンチマークの結果に「演算ごとの GPU 時間・CPU に回ったノード・GPU との転送」を付ける（画面の表と、実行履歴の JSON の `profile`、CSV の `gpu_ms`）。計測の手間で遅くなる（M4 の YOLO26n で 18ms → 29ms）ので、速さの比較は通常の URL で測る。graph capture の再生中は演算ごとの記録が出ない。
+
+- onnxruntime-web 1.30 の `ort.webgpu` は、旧来の JSEP（JavaScript の WebGPU 実装）ではなく C++ の WebGPU EP を wasm にしたもの。`ort.env.webgpu.profiling` は効かず、セッションの `enableProfiling` を使う。記録（Chrome trace の JSON）は `endProfiling()` の時に console に出るだけなので拾っている（emscripten が読み込み時に console.log を覚えるので、先に中継の関数に替えておく）。GPU の時間は `timestamp-query` で取られるが、時刻は後からまとめて取るので実行の区切りとは合わない（命令の数で区切って1回ぶんにしている。命令の間の空きは正しく出ないので出さない）
+- 既定: 畳み込みは NHWC（入力の NCHW → NHWC の並べ替えが最初に1回入り、M4 で 1ms）。`preferredLayout: "NCHW"` はやや遅い
+
+**直した点**
+
+1. **graph capture が効いていなかった**: `executionProviders: ["webgpu"]`（文字列）だと、onnxruntime-web 1.30 は `enableGraphCapture` を WebGPU EP に渡さない（EP の設定のログが `graph capture enable: 0`）。`[{ name: "webgpu" }]` で渡すと効く。以前の「fp32 + graph capture」の計測（M1 で 63ms など）は実際には graph capture なしだった
+2. **全部のノードが WebGPU で動くモデルだけ graph capture できる**。CPU に回るノードがあるとセッションが作れないので、その時は graph capture なしで作り直し、実行設定の表示に「このモデルは graph capture 不可」と出す。YOLO26n・DEIMv2 は可、YOLO26n-pose（後処理の Mod・Range・Cast などが CPU）、入力サイズ可変の YOLO26、Depth Anything 3 は不可
+3. **入力の形の固定**: ONNX の入力は `batch_size`・`N, H, W` などの可変の次元で書かれていることが多い。入力の大きさが決まっているモデルは、一度作ったセッションの `inputMetadata` から名前を読み、`freeDimensionOverrides` で固定して作り直す。形の計算（Gather・Unsqueeze・Concat など）が CPU に回らなくなり、DEIMv2 は graph capture もできるようになる
+4. graph capture の時の出力の読み戻しを1つずつ待たずにまとめて待つ（YOLO26n で 2ms）
+
+M4 Mac mini の Chrome、ベンチ（街の画像、20 回の中央値、1回の推論 ms）
+
+| モデル | 前 | 形の固定 | + graph capture | + fp16 |
+| --- | --- | --- | --- | --- |
+| YOLO26n | 24.0 | 23.7 | 19.2 | 17.3 |
+| DEIMv2 Atto 192 | － | 9.9 | 4.7 | 4.7 |
+| DEIMv2 Atto 320 | 19.3 | 11.6 | 7.5 | 7.5 |
+| DEIMv2 Femto 416 | － | 15.5 | 10.2 | 10.2 |
+| DEIMv2 Pico 640 | 35.4 | 25.5 | 19.5 | 19.5 |
+| YOLO26n-pose | 24.8 | 23.2 | 不可 | 21.2（fp16 のみ） |
+
+（DEIMv2 は fp16 版が無いので、fp16 を選んでも fp32 のまま。検出の件数はどの設定でも同じ）
+
+**分かったこと**
+
+- M4 の YOLO26n（640、fp32）1回あたり: GPU の命令 325 個、GPU 時間の合計 16.6ms（profiler あり）。畳み込み 60%、Transpose 12%（24 個。多くは NHWC と NCHW の並べ替え）、Concat 10%、Slice 6%、TopK 3%（並べ替えで約 100 個の命令）。CPU に回るのは出力の頭の小さい3ノードだけ
+- fp16 版は GPU 時間の合計が 16.6 → 12.3ms（畳み込み 9.9 → 6.7ms）に減るが、graph capture なしだと M4 では1回の時間はほぼ変わらない（命令を出す手間と待ちが効いている）
+- **GPU を休ませると遅くなる**: Worker で YOLO26n（graph capture）を続けて回すと 1回 12.5ms だが、実行の間に 5ms でも空けると 21.5ms になる（20ms 空けても同じ）。画面の実行は前処理・結果の受け渡しで間が空くので、ベンチの 1回（graph capture で約 17ms）は続けて回した時より遅い。前処理と推論を重ねて GPU を休ませない（パイプライン化）と縮む余地がある
+- 前処理（縮小・正規化）は M4 で 2.7ms（640×640）。M1 では 8.5ms の報告があり、端末によっては大きい
 
 ## Grounding DINO の候補の扱い
 

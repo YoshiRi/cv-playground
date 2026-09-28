@@ -153,18 +153,20 @@
 
   <section class="bench">
     <h2>速度を測る（ベンチマーク）</h2>
-    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
+    <p class="muted small">決まったサンプル画像（街）で、ウォームアップ 3 回のあと指定の回数だけ推論し、中央値・p90・p95 などを実行履歴に「ベンチ」として記録する。端末ごとに同じ条件で比べられるので、CSV を書き出して並べるとよい（端末の情報は書き出すファイルに入るだけで、どこにも送らない）。「モデル入力」「実行設定」は今の設定で測る。</p>
     <details class="advanced">
       <summary id="bench-summary">測るモデルを選ぶ</summary>
       <div class="bench-models" id="bench-models"></div>
     </details>
     <div class="row-actions">
       <label class="field row">回数
-        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option></select>
+        <select id="bench-runs"><option value="5">5</option><option value="20" selected>20</option><option value="50">50</option><option value="100">100</option></select>
       </label>
       <span class="muted small" id="bench-progress"></span>
       <button type="button" class="primary" id="bench-start">▶ 測る</button>
     </div>
+    <p class="muted small" id="bench-profile-note" hidden>詳細計測中（URL の <code>?profile=1</code>）: 汎用 ONNX のブラウザ実行で、演算ごとの GPU 時間を測る。計測の手間で推論が遅くなるので、端末どうしの速さの比較には使わない。結果は下の表と、実行履歴の JSON に入る。</p>
+    <div id="bench-profile"></div>
   </section>
 
   <section class="bench local">

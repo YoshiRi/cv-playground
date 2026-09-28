@@ -52,14 +52,46 @@ export async function onnxLoad(ort, e, device, onProgress) {
   const model = e.onnx.server_file
     ? await fetchModelFile(new URL("local-models/" + e.onnx.server_file, e.webRoot).href, onProgress)
     : e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
-  const opts = { executionProviders: [device === "webgpu" ? "webgpu" : "wasm"], graphOptimizationLevel: "all" };
+  // WebGPU は { name } の形で渡す。onnxruntime-web 1.30 は文字列の "webgpu" だと enableGraphCapture を WebGPU EP に渡さず、
+  // graph capture が黙って無効になる（EP の設定のログが "graph capture enable: 0" のまま）
+  const opts = { executionProviders: [device === "webgpu" ? { name: "webgpu" } : "wasm"], graphOptimizationLevel: "all" };
   if (e.onnx.data) {
     opts.externalData = [{ path: e.onnx.data.split("/").pop(), data: await fetchModelFile(base + e.onnx.data, onProgress) }];
   }
+  // 詳細計測（?profile=1 の時だけ）: onnxruntime の profiler で、ノードごとの時間と WebGPU の命令ごとの GPU 時間を記録する
+  if (e.profile) opts.enableProfiling = true;
+  let session = await ort.InferenceSession.create(model, opts);
+  // 入力の大きさが決まっているモデルは、ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定して作り直す。
+  // 形の計算が CPU に回らずに済み、GPU の命令も形に合わせて作られる（DEIMv2 Atto は M4 で 18 → 11ms）。名前はモデルごとに違うので、
+  // 一度作ったセッションの inputMetadata から読む
+  const fixed = fixedDims(e), shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;
+  const fdo = {};
+  if (fixed && shape?.length === fixed.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = fixed[i]; });
+  if (Object.keys(fdo).length) opts.freeDimensionOverrides = fdo;
+  // graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
+  // （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしにする
   const graph = opt.includes("graph");
-  if (graph) Object.assign(opts, { preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
-  const session = await ort.InferenceSession.create(model, opts);
-  return Object.assign(session, { cvpg: { graph, file, gpuInput: null } });
+  let graphFallback = false;
+  if (graph || opts.freeDimensionOverrides) {
+    await session.release();
+    try {
+      session = await ort.InferenceSession.create(model, graph ? { ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true } : opts);
+    } catch (err) {
+      if (!graph || !/graph capture/i.test(String(err?.message || err))) throw err;
+      session = await ort.InferenceSession.create(model, opts);
+      graphFallback = true;
+    }
+  }
+  return Object.assign(session, { cvpg: { graph: graph && !graphFallback, graphFallback, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
+}
+
+// 入力の形が1通りに決まるモデルの入力の次元（前処理と同じ並び）。入力サイズ可変・バッチ・フレーム列のモデルは決まらないので null
+function fixedDims(e) {
+  const pre = e.pre;
+  if (!pre.size || pre.dynamic || pre.batch || pre.seq || pre.resize === "keep_aspect") return null;
+  const dims = [1, 3, pre.size[1], pre.size[0]];
+  for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
+  return dims;
 }
 
 // graph capture の時は入力を毎回同じ GPU バッファに書き込み、出力は GPU から読み戻す
@@ -73,9 +105,49 @@ async function runSession(ort, session, name, tensor) {
   }
   dev.queue.writeBuffer(g.gpuInput, 0, tensor.data);
   const out = await session.run({ [name]: g.feed });
-  const cpu = {};
-  for (const [k, t] of Object.entries(out)) cpu[k] = { data: await t.getData(true), dims: t.dims };
-  return cpu;
+  // 出力の読み戻しはまとめて待つ（1つずつ待つと GPU との往復が出力の数だけ増える。YOLO26n で 2ms ほど違う）
+  const ents = Object.entries(out), datas = await Promise.all(ents.map(([, t]) => t.getData(true)));
+  return Object.fromEntries(ents.map(([k, t], i) => [k, { data: datas[i], dims: t.dims }]));
+}
+
+// 詳細計測の結果をまとめる。onnxruntime-web は profiler の記録（Chrome trace の JSON）を console に出すだけなので、
+// endProfiling の間だけ console の出力を拾う。onnxruntime（emscripten）は読み込み時に console.log を覚えてしまうので、
+// 後から差し替えても届かない。先に（このモジュールの読み込み時に）中継する関数に替えておき、拾う間だけ行き先を変える。
+// 記録は読み込みから全部の実行ぶん入っているので、最後の last 回だけ集計する。
+// 1回あたりの平均: model_run（ONNX の実行の壁時計）、gpu（WebGPU の命令の GPU 時間の合計）、ops（演算の種類ごとの GPU 時間）、
+// CPU に回ったノード、GPU との転送（入力の転送と、結果の待ち＋読み戻し）
+let consoleSink = null;
+for (const k of ["log", "info", "warn", "error"]) {
+  const orig = console[k].bind(console);
+  console[k] = (...a) => (consoleSink ? consoleSink.push(a.join(" ")) : orig(...a));
+}
+
+export async function onnxProfile(session, last) {
+  const lines = (consoleSink = []);
+  try { await session.endProfiling(); } finally { consoleSink = null; }
+  const txt = lines.join("\n"), a = txt.indexOf("[\n"), b = txt.lastIndexOf("]");
+  if (a < 0 || b < a) return { error: "profiler の記録が取れなかった" };
+  const ev = JSON.parse(txt.slice(a, b + 1));
+  // CPU 側のノードの記録は実行の時間内に入る。GPU の命令の時刻は後からまとめて取るので実行の区切りと合わない。
+  // どの実行も同じ命令の並びを出すので、GPU の命令は「全部の数 ÷ 実行の回数」ずつ順に区切り、最後の last 回ぶんを使う
+  const all = ev.filter((x) => x.name === "model_run"), runs = all.slice(-last);
+  if (!runs.length) return { error: "実行の記録が無い" };
+  const nodes = ev.filter((x) => x.cat === "Node" && x.name.endsWith("_kernel_time") && runs.some((r) => x.ts >= r.ts && x.ts <= r.ts + r.dur));
+  // graph capture の再生ではノードを1つずつ動かさないので、演算ごとの記録が無い
+  if (!nodes.length) return { runs: runs.length, run_ms: Math.round(runs.reduce((s, r) => s + r.dur, 0) / runs.length / 10) / 100, note: "graph capture の再生中は演算ごとの記録が取れない（内訳を見る時は graph capture なしで測る）" };
+  const allGpu = ev.filter((x) => x.cat === "Api" && x.name.includes("&")), per = Math.round(allGpu.length / all.length);
+  const gpu = per ? allGpu.slice(-per * runs.length) : [];
+  const n = runs.length, r2 = (v) => Math.round((v / n / 1000) * 100) / 100;
+  const ops = {};
+  for (const x of gpu) { const op = x.name.split("&")[1]; (ops[op] ??= { op, us: 0, n: 0 }).us += x.dur; ops[op].n++; }
+  const gpuSum = gpu.reduce((s, x) => s + x.dur, 0);
+  const nodeMs = (op) => r2(nodes.filter((x) => x.args?.op_name === op).reduce((s, x) => s + x.dur, 0));
+  const cpu = [...new Set(nodes.filter((x) => x.args?.provider === "CPUExecutionProvider").map((x) => `${x.args.op_name} ${x.name.replace(/_kernel_time$/, "")}`))];
+  return {
+    runs: n, run_ms: r2(runs.reduce((s, r) => s + r.dur, 0)), gpu_ms: r2(gpuSum), dispatches: per,
+    upload_ms: nodeMs("MemcpyFromHost"), readback_wait_ms: nodeMs("MemcpyToHost"), cpu_nodes: cpu,
+    ops: Object.values(ops).sort((p, q) => q.us - p.us).map((o) => ({ op: o.op, ms: r2(o.us), count: Math.round(o.n / n), pct: Math.round((1000 * o.us) / gpuSum) / 10 })),
+  };
 }
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------

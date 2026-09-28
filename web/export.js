@@ -84,9 +84,11 @@ export function toJSON(runs, env) {
 export function toMarkdown(runs, env) {
   const ms = (v) => (v == null || v === "" ? "" : Number(v).toFixed(v < 10 ? 1 : 0));
   const head = `端末: ${[env.device_model, env.os, env.browser].filter(Boolean).join(" / ")}${env.gpu ? ` / GPU: ${env.gpu}` : ""}（${env.variant}、CV Playground ${APP_VERSION}）\n\n`;
-  const lines = ["| 日時 | 種類 | タスク | モデル | 実行場所 | 入力 | 推論 ms（中央値） | p90 | fps | 読み込み ms |", "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
+  // 内訳（前処理・モデル実行・後処理、ベンチと連続実行は平均）も入れる。どこが重いかを貼っただけで読めるように
+  const lines = ["| 日時 | 種類 | タスク | モデル | 実行場所 | 入力 | 推論 ms（中央値） | p90 | p95 | 前処理 | モデル実行 | 後処理 | GPU（詳細計測） | fps | 読み込み ms |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   for (const r of runs) {
-    lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} |`);
+    lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${ms(r.infer_p95_ms)} | ${ms(r.pre_ms)} | ${ms(r.run_ms)} | ${ms(r.post_ms)} | ${ms(r.gpu_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} |`);
   }
   return head + lines.join("\n") + "\n";
 }

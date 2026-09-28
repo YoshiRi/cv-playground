@@ -787,14 +787,18 @@ async function liveLoop() {
   // Worker は届いた順に続けて実行するので、結果の受け渡し・追跡・描画の間も GPU が休まない（GPU は間が空くと遅くなる）。
   // 同時に送るのは2フレームまで。結果はフレームの順に処理する
   const pipe = m.where === "browser" && m.adapter === "onnx" && !NO_PIPE;
-  let inflight = null;
+  // 次のフレームの表示は、送った直後から待ち始める。前の結果の処理（追跡・描画）の間に表示されても取りこぼさない
+  // （処理が1フレームの間隔より少しでも長いと、待ち始めが遅れて1つおきになり、30fps の動画で 15fps に落ちていた）
+  let inflight = null, next = null;
   try {
     while (state.live && state.video) {
-      if (frames || inflight) await nextVideoFrame($("video"));
+      if (frames || inflight) await (next ?? nextVideoFrame($("video")));
+      next = null;
       if (!state.live) break;
       const cur = runOnce(m, overrides, { commit: !pipe });
       if (!pipe) { await handle(await cur); continue; }
       cur.catch(() => {}); // 失敗は下で await した時に扱う
+      next = nextVideoFrame($("video"));
       if (inflight) await handle(await inflight);
       inflight = cur;
     }

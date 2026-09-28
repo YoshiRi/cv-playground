@@ -252,7 +252,11 @@ function ensureInput(ort, g, dims) {
   g.inputKey = key;
 }
 
-function gpuPreprocess(ort, session, bitmap, pre, inputSize) {
+// mode "gpu": 画像をそのまま copyExternalImageToTexture で送り、縮小も GPU で（M4 では最速。Galaxy Z Fold6 ではモデル実行が
+//   18〜28ms 遅くなった。画像を GPU に送る所で待ち合わせが起きているらしい）
+// mode "upload": 縮小は CPU の前処理と同じ canvas で行い、8 bit の画素を writeTexture で送って、正規化・余白・並べ替えだけ GPU で。
+//   CPU の前処理から JS のループと float の転送（4倍の量）を除いたもの。入力は CPU の前処理と一致する
+function gpuPreprocess(ort, session, bitmap, pre, inputSize, mode) {
   const dev = ort.env.webgpu.device, g = session.cvpg;
   if (gpuPre?.device !== dev) {
     const module = dev.createShaderModule({ code: PRE_WGSL });
@@ -263,11 +267,12 @@ function gpuPreprocess(ort, session, bitmap, pre, inputSize) {
     };
   }
   const W = bitmap.width, H = bitmap.height, L = layout(W, H, pre, inputSize), dims = inputDims(pre, L);
+  const [tw, th] = mode === "upload" ? [L.cw, L.ch] : [W, H]; // テクスチャの大きさ（upload は縮小済みの画像）
   ensureInput(ort, g, dims);
   g.uniform ??= dev.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-  if (!g.tex || g.tex.width !== W || g.tex.height !== H) {
+  if (!g.tex || g.tex.width !== tw || g.tex.height !== th) {
     g.tex?.destroy();
-    g.tex = dev.createTexture({ size: [W, H], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+    g.tex = dev.createTexture({ size: [tw, th], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
   }
   if (g.bindTex !== g.tex || g.bindBuf !== g.gpuInput) {
     g.bind = dev.createBindGroup({ layout: gpuPre.pipeline.getBindGroupLayout(0), entries: [
@@ -275,7 +280,15 @@ function gpuPreprocess(ort, session, bitmap, pre, inputSize) {
       { binding: 2, resource: { buffer: g.gpuInput } }, { binding: 3, resource: { buffer: g.uniform } }] });
     g.bindTex = g.tex; g.bindBuf = g.gpuInput;
   }
-  dev.queue.copyExternalImageToTexture({ source: bitmap }, { texture: g.tex }, [W, H]);
+  if (mode === "upload") {
+    g.canvas ??= new OffscreenCanvas(1, 1);
+    if (g.canvas.width !== tw || g.canvas.height !== th) { g.canvas.width = tw; g.canvas.height = th; g.ctx = null; }
+    g.ctx ??= g.canvas.getContext("2d", { willReadFrequently: true });
+    g.ctx.drawImage(bitmap, 0, 0, tw, th);
+    dev.queue.writeTexture({ texture: g.tex }, g.ctx.getImageData(0, 0, tw, th).data, { bytesPerRow: tw * 4 }, [tw, th]);
+  } else {
+    dev.queue.copyExternalImageToTexture({ source: bitmap }, { texture: g.tex }, [W, H]);
+  }
   const ab = affine(pre), u = new ArrayBuffer(64), dv = new DataView(u);
   [L.iw, L.ih].forEach((v, i) => dv.setUint32(i * 4, v, true));
   [L.ox, L.oy].forEach((v, i) => dv.setInt32(8 + i * 4, v, true));
@@ -292,12 +305,12 @@ function gpuPreprocess(ort, session, bitmap, pre, inputSize) {
   return { feed: g.feed, meta: { ...L, W, H } };
 }
 
-// GPU の前処理を使うか: WebGPU のセッションで、1枚ずつ入れるモデル（?cpupre=1 の時は使わない。比べる用）。
+// GPU の前処理を使うか: WebGPU のセッションで、1枚ずつ入れるモデル（e.preMode が "cpu" の時は使わない。画面の ?pre= で選ぶ）。
 // GPU 版が対応している指定だけのモデルに限る。pre に新しい指定や縮小方法を足したら（preprocess と adapters.py に足す）、
 // ここに足すまでは自動で CPU の前処理になる（GPU 版が黙って違う入力を作らないように）
 const GPU_PRE_KEYS = new Set(["size", "resize", "dynamic", "stride", "short", "multiple", "pad_value", "scale", "mean", "std", "bgr", "input", "add_dims"]);
 const GPU_PRE_RESIZE = new Set(["letterbox", "letterbox_rect", "stretch", "keep_aspect"]);
-const useGpuPre = (ort, session, e) => session.cvpg?.webgpu && !session.cvpg.noGpuPre && !e.cpuPre && !!ort.env.webgpu?.device
+const useGpuPre = (ort, session, e) => session.cvpg?.webgpu && !session.cvpg.noGpuPre && e.preMode !== "cpu" && !!ort.env.webgpu?.device
   && GPU_PRE_RESIZE.has(e.pre.resize) && Object.keys(e.pre).every((k) => GPU_PRE_KEYS.has(k));
 
 const toOrig = (x, y, m) => [(x - m.ox) / m.sx, (y - m.oy) / m.sy];
@@ -437,9 +450,10 @@ export async function onnxRun(ort, session, e, bitmap, params) {
   const t0 = performance.now();
   let feed, meta;
   if (useGpuPre(ort, session, e)) {
-    try { ({ feed, meta } = gpuPreprocess(ort, session, bitmap, e.pre, params.input_size)); }
+    try { ({ feed, meta } = gpuPreprocess(ort, session, bitmap, e.pre, params.input_size, e.preMode === "gpu" ? "gpu" : "upload")); }
     catch (err) { console.warn("GPU の前処理が使えない。CPU で行う", err); session.cvpg.noGpuPre = true; }
   }
+  session.cvpg.pre = feed ? (e.preMode === "gpu" ? "gpu" : "upload") : "cpu";
   if (!feed) ({ tensor: feed, meta } = preprocess(ort, bitmap, e.pre, params.input_size));
   const t1 = performance.now();
   const out = await runSession(ort, session, e.pre.input, feed);

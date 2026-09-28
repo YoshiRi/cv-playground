@@ -309,7 +309,8 @@ async function embed(id, e, crops) {
 function ortRuntime(e, session, device) {
   if (e.opt === "wasm" || device !== "webgpu") return `onnxruntime-web wasm ${ort.env.wasm.numThreads}スレッド`;
   const g = session?.cvpg || {};
-  return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
+  const pre = { gpu: " 前処理GPU", upload: " 前処理GPU（縮小はcanvas）", cpu: " 前処理CPU" }[g.pre] || "";
+  return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${pre}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
 }
 
 // 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す

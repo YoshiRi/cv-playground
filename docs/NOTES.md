@@ -121,8 +121,12 @@ Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrom
 
 ## GPU の前処理と連続実行のパイプライン化（2026-09-29）
 
-- **前処理を GPU で行う**（汎用 ONNX の WebGPU 実行で既定。`?cpupre=1` で従来の CPU）: 画像を `copyExternalImageToTexture` でテクスチャに送り、compute shader で縮小（双線形）・余白・正規化・チャンネルの並べ替えをして、モデルの入力の GPU バッファ（`ort.Tensor.fromGpuBuffer`）に直接書く。graph capture の入力バッファにそのまま書くので、入力の転送も無い。M4 で YOLO26n（640×640）の前処理が 8〜9ms → 0.2ms（GPU に命令を出すまで。GPU の中の処理はモデル実行の側に入る）。ベンチ（M4、20 回の中央値、既定の fp16 + graph capture）: YOLO26n 17.4〜18.8 → 13.6〜14.9ms、YOLO26n-pose 21.6〜22.9 → 18.9〜19.7ms、DEIMv2 Pico 19.4〜19.7 → 16.7ms（モデル実行の時間は増えない）。GPU 版が対応している指定（縮小方法と scale・mean・std・bgr・pad_value・add_dims）だけのモデルで使い、それ以外（バッチ・フレーム列のモデル、新しく足した指定）は自動で CPU の前処理になる
-- CPU の前処理と入力がほぼ同じことを確かめた: 縮小が無い時（長辺 640 の画像を YOLO26n に）は検出が完全に一致。640 → 320 に縮める DEIMv2 では入力の差が平均 0.35（画素値 0〜255）で、サーバー（PIL）との差は CPU の前処理 2.27、GPU 2.17。しきい値すれすれの検出はこの差でも出たり消えたりする（サッカーの写真で 33 件 と 36 件）
+- **前処理を GPU で行う**（汎用 ONNX の WebGPU 実行。URL の `?pre=` で3通りを選べる）
+  - `?pre=gpu`: 画像を `copyExternalImageToTexture` でテクスチャに送り、compute shader で縮小（双線形）・余白・正規化・チャンネルの並べ替えをして、モデルの入力の GPU バッファ（`ort.Tensor.fromGpuBuffer`、graph capture の入力バッファ）に直接書く。M4 では最速（YOLO26n のベンチ 17.8 → 13.5ms）だが、**Galaxy Z Fold6 ではモデル実行が 18〜28ms 遅くなった**（YOLO26n 30 → 48ms、DEIMv2 Atto 17 → 45ms。前処理そのものは 13 → 2ms）。上乗せが画像の大きさによらずほぼ一定なので、画像を GPU に送る所で待ち合わせが起きているらしい
+  - `?pre=upload`（既定）: 縮小は CPU の前処理と同じ canvas で行い、8 bit の画素を `writeTexture` で送って、余白・正規化・並べ替えだけ shader で。CPU の前処理から JS のループと float の転送（4倍の量）を除いたもので、入力は CPU の前処理と完全に一致する。M4 で YOLO26n 15.2ms、DEIMv2 Pico 19.6 → 17.7ms
+  - `?pre=cpu`（`?cpupre=1` も同じ）: 従来の CPU の前処理
+  - GPU 版が対応している指定（縮小方法と scale・mean・std・bgr・pad_value・add_dims）だけのモデルで使い、それ以外（バッチ・フレーム列のモデル、新しく足した指定）は自動で CPU の前処理になる。記録の実行場所に、使った前処理を出す
+  - `gpu` の縮小は canvas と少し違う（640 → 320 で入力の差が平均 0.35、画素値 0〜255）。サーバー（PIL）との差は CPU 2.27、GPU 2.17 でほぼ同じ。しきい値すれすれの検出はこの差でも出たり消えたりする（サッカーの写真の DEIMv2 で 33 件と 36 件）
 - **連続実行のパイプライン化**（汎用 ONNX のブラウザ実行）: 前のフレームの推論中に次のフレームを取り込んで Worker に送っておく（同時に2フレームまで）。Worker は onnxruntime の実行を1つずつ順番に行う（`serial`）ので、届いていた次のフレームをすぐ始められ、結果の受け渡し・追跡・描画の間も GPU が休まない。結果はフレームの順に追跡・表示する。M4 で人物の動画を4倍速（約 48fps）で流すと、YOLO26n の連続実行が 24.7 → 35.8fps、BoT-SORT + ReID つきで 18.1 → 20.9fps（`?nopipe=1` で従来の1フレームずつと比べられる）
 
 ## Grounding DINO の候補の扱い

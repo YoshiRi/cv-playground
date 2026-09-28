@@ -12,18 +12,30 @@
 | | | |
 | --- | --- | --- |
 | ![姿勢と追跡](docs/images/pose-track.jpg)<br>**人物の姿勢 + 追跡**（YOLO26n-pose + ByteTrack。ID と軌跡） | ![物体検出](docs/images/detect.jpg)<br>**物体検出**（YOLO26n） | ![手・目](docs/images/wholebody.jpg)<br>**手・目**（PINTO の DEIMv2 + 目の開閉 OCEC） |
-| ![クリックで切り出し](docs/images/segment.jpg)<br>**クリックで切り出し**（SAM 2.1） | ![全体の自動分割](docs/images/segment-auto.jpg)<br>**全体の自動分割**（EdgeTAM、144 点から） | ![深度推定](docs/images/depth.jpg)<br>**深度推定**（Depth Anything 3、画角も推定） |
-| ![テキスト指定検出](docs/images/zsdetect.jpg)<br>**テキスト指定検出**（Grounding DINO、「orange, lemon」） | ![ゼロショット分類](docs/images/classify.jpg)<br>**ゼロショット分類**（SigLIP2） | ![背景除去](docs/images/matting.jpg)<br>**背景除去**（BiRefNet lite） |
+| ![セマンティック](docs/images/semantic.jpg)<br>**セマンティック・セグメンテーション**（EoMT DINOv3、ADE20K） | ![パノプティック](docs/images/panoptic.jpg)<br>**パノプティック・セグメンテーション**（EoMT DINOv3、COCO。椅子や机を1つずつ） | ![プロンプト](docs/images/segment.jpg)<br>**プロンプト・セグメンテーション**（SAM 2.1、クリックした人） |
+| ![全体の自動分割](docs/images/segment-auto.jpg)<br>**全体の自動分割**（EdgeTAM、144 点から） | ![深度推定](docs/images/depth.jpg)<br>**深度推定**（Depth Anything 3、画角も推定） | ![テキスト物体検知](docs/images/zsdetect.jpg)<br>**テキスト物体検知**（Grounding DINO、「orange, lemon」） |
+| ![ゼロショット分類](docs/images/classify.jpg)<br>**ゼロショット分類**（SigLIP2） | ![背景除去](docs/images/matting.jpg)<br>**背景除去**（BiRefNet lite） | |
 
 デモの映像は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0）の1フレーム。
 
 ## できること
 
-- **タスク**: 物体検出 / 人物の姿勢 / 手・目（PINTO の超軽量モデル）/ テキスト指定検出 / クリックで切り出し（全体の自動分割つき）/ 深度推定 / ゼロショット分類 / 背景除去 / 画像の説明・質問（VLM）
+- **タスク**（4つの分類にまとめて表示）
+  - 検出・追跡: 物体検出 / 人物の姿勢 / 手・目（PINTO の超軽量モデル）/ テキスト物体検知
+  - セグメンテーション: プロンプト（SAM、クリックと全体の自動分割）/ セマンティック / パノプティック / 背景除去
+  - 深度・3D: 深度推定
+  - 画像と言語: ゼロショット分類 / 画像の説明・質問（VLM）
 - **入力**: 画像、動画ファイル、カメラのライブ映像。動画・カメラは連続実行して結果を重ね、fps と処理の内訳（取り込み・前処理・モデル実行・後処理）を出す
 - **追跡**: ByteTrack / BoT-SORT / BoT-SORT + ReID（Ultralytics の実装を移植し、同じ検出列で結果が一致することを確認）
 - **実行設定**: fp16、WebGPU の graph capture、CPU（WASM）、入力サイズ可変のモデルは入力の長辺（320〜960）
 - **比べる**: 同じモデルをブラウザとサーバーで（汎用 ONNX は前処理・後処理を共通の部品で組むので同じ手順）。実行履歴に時間が残る
+
+## データ・通信・ライセンスについて
+
+- **ブラウザで実行するモデルは、初回にその端末へダウンロードする**（数MB〜約1.4GB。モデル名の横に大きさを表示）。**モバイル回線では通信量に注意**。100MB を超えるモデルは初回に確認してから取得し、2回目以降はブラウザのキャッシュから読む。ページ下の「ダウンロード済みのモデルを消す」で消せる
+- **画像・動画・カメラの映像は、ブラウザで実行する限り端末の外に送らない**（通信はモデルとライブラリの取得だけ）。「サーバーで実行」を選んだ時だけ、その画像をサーバーに送る
+- **モデルごとにライセンスが違う**（商用利用できないものもある。例: YOLO26 は AGPL-3.0、Depth Anything V2 Large と SegFormer は非商用）。画面のモデルの説明にライセンスを表示している
+- 対応ブラウザ: WebGPU のある Chrome / Edge / Safari（iOS 26 以降）を推奨。WebGPU が無いと WASM で動くが遅い
 
 ## 使い方
 

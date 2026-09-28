@@ -26,6 +26,7 @@
 
   <main>
     <section class="controls">
+      <div class="cats" id="cats" role="tablist"></div>
       <div class="tasks" id="tasks" role="tablist"></div>
       <p class="hint" id="task-hint"></p>
 
@@ -33,6 +34,8 @@
         <select id="model"></select>
       </label>
       <div class="model-note muted" id="model-note"></div>
+      <details class="advanced" id="advanced" hidden>
+        <summary>詳細設定</summary>
       <label class="field row" id="input-size-row" hidden>モデル入力（長辺）
         <select id="input-size">
           <option value="320">320</option>
@@ -50,6 +53,7 @@
           <option value="wasm">CPU（WASM）</option>
         </select>
       </label>
+      </details>
 
       <div id="params">
         <label class="field" data-param="labels">候補（カンマ区切り）
@@ -107,6 +111,7 @@
         </div>
 
         <button type="button" id="run" class="primary">実行</button>
+        <div class="progress" id="progress" hidden><progress id="progress-bar" max="100"></progress><span id="progress-text"></span></div>
         <div id="status" class="status" aria-live="polite"></div>
       </div>
       <div class="view-toggle" id="view-toggle" hidden>
@@ -131,6 +136,19 @@
       </table>
     </div>
     <p class="muted small">読み込み＝初回のダウンロードとモデル初期化（2回目以降は 0）。推論＝画像1枚の処理時間（連続実行は平均）。動画・カメラは元の解像度で表示し、推論には「処理解像度」（長辺、既定 640px）に縮めたフレームを渡す。ブラウザ実行はこの端末の性能、サーバー実行はサーバーの性能と通信を含む。</p>
+  </section>
+
+  <section class="about">
+    <h2>データと通信について</h2>
+    <ul>
+      <li><b>ブラウザで実行</b>するモデルは、初回にこの端末へダウンロードする（モデルの横に大きさを表示。数MB〜約1.4GB）。<b>モバイル回線では通信量に注意</b>。100MB を超えるモデルは、初回に確認してから取得する。2回目以降はブラウザのキャッシュから読むので通信しない</li>
+      <li><b>画像・動画・カメラの映像は、ブラウザで実行する限り端末の外に送らない</b>（通信するのはモデルとライブラリの取得だけ）。<b>サーバーで実行</b>を選んだ時だけ、その画像をサーバーに送る</li>
+      <li>各モデルのライセンスはモデルの説明に表示している（商用利用できないものもある）。重みは各配布元から取得する</li>
+    </ul>
+    <div class="row-actions">
+      <span id="storage" class="muted small"></span>
+      <button type="button" class="ghost" id="clear-cache">ダウンロード済みのモデルを消す</button>
+    </div>
   </section>
 
   <script type="module" src="app.js"></script>

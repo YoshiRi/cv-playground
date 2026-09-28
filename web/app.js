@@ -1,4 +1,4 @@
-import { MODELS, TASKS } from "./catalog.js";
+import { CATALOG, MODELS, TASKS } from "./catalog.js";
 import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { Tracker } from "./tracker.js";
 
@@ -26,6 +26,7 @@ const state = {
   serverModels: new Set(),
   hasServer: false,  // server.py の API に届くか（静的版・1ファイル版では false）
   frameNo: 0,
+  category: null,    // 選んでいるタブの分類（models.json の categories）
   auto: false,       // クリックで切り出しの「全体を自動分割」
 };
 
@@ -53,7 +54,7 @@ function restartWorker(lib) {
 function onWorkerMessage(ev) {
   const d = ev.data;
   if (d.type === "progress") {
-    setStatus(`ダウンロード中 ${d.file?.split("/").pop() ?? ""} ${d.progress?.toFixed?.(0) ?? ""}%`);
+    showProgress(d.file?.split("/").pop() ?? "", d.progress);
     return;
   }
   const p = pending.get(d.id);
@@ -118,10 +119,64 @@ function variants(task) {
   return out;
 }
 
+// ---------- ダウンロードの進み具合と、大きいモデルの確認 ----------
+
+let progressTimer = 0;
+function showProgress(file, pct) {
+  $("progress").hidden = false;
+  $("progress-bar").value = pct ?? 0;
+  $("progress-text").textContent = `モデルを取得中 ${file} ${pct != null ? pct.toFixed(0) + "%" : ""}`;
+  clearTimeout(progressTimer);
+  progressTimer = setTimeout(() => { $("progress").hidden = true; }, 1500); // 取得が終われば消える
+}
+
+// ブラウザ実行のモデルは初回に端末へダウンロードする。100MB を超えるものは、取得済みでなければ先に確かめる
+// （取得済みかどうかは、一度読み込めたモデルを localStorage に覚えておく。ブラウザのキャッシュを消すと忘れる）
+const CONFIRM_MB = 100, DL_KEY = "cvpg-downloaded";
+const downloaded = () => { try { return new Set(JSON.parse(localStorage.getItem(DL_KEY) || "[]")); } catch { return new Set(); } };
+function markDownloaded(key) {
+  try { const s = downloaded(); s.add(key); localStorage.setItem(DL_KEY, JSON.stringify([...s])); } catch { /* 保存できない環境 */ }
+}
+function confirmDownload(m) {
+  if (m.where !== "browser" || !(m.mb >= CONFIRM_MB) || downloaded().has(m.key)) return true;
+  const size = m.mb >= 1000 ? `${(m.mb / 1000).toFixed(1)}GB` : `${m.mb}MB`;
+  return confirm(`「${m.name}」を初めて使うので、この端末にモデルをダウンロードします（約${size}）。\nモバイル回線では通信量に注意してください。2回目以降はダウンロードしません。\n\n続けますか？`);
+}
+
+async function showStorage() {
+  try {
+    const { usage } = await navigator.storage.estimate();
+    $("storage").textContent = `このサイトが端末に保存している量: 約${(usage / 1e6).toFixed(0)}MB`;
+  } catch { $("storage").textContent = ""; }
+}
+async function clearDownloads() {
+  if (!confirm("ダウンロード済みのモデル（ブラウザのキャッシュ）を消します。次に使う時にまたダウンロードします。")) return;
+  stopLive();
+  for (const lib of Object.keys(workers)) restartWorker(lib);
+  try { for (const k of await caches.keys()) await caches.delete(k); } catch { /* Cache API が無い環境 */ }
+  try { localStorage.removeItem(DL_KEY); } catch { /* noop */ }
+  selectTask(state.task);
+  showStorage();
+}
+
+// タブは分類（models.json の categories）ごとにまとめ、選んだ分類のタブだけを出す
 function renderTasks() {
+  const avail = TASKS.filter((t) => variants(t.id).some((v) => !v.avoid));
+  const cats = (CATALOG.categories || []).filter((c) => avail.some((t) => t.category === c.id));
+  $("cats").innerHTML = "";
+  for (const c of cats) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = c.name;
+    b.setAttribute("role", "tab");
+    b.setAttribute("aria-selected", String(c.id === state.category));
+    b.onclick = () => selectTask(avail.find((t) => t.category === c.id).id);
+    $("cats").append(b);
+  }
+  $("cats").hidden = cats.length < 2;
   $("tasks").innerHTML = "";
-  for (const t of TASKS) {
-    if (!variants(t.id).some((v) => !v.avoid)) continue;
+  for (const t of avail) {
+    if (cats.length > 1 && t.category !== state.category) continue;
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = t.name;
@@ -135,6 +190,7 @@ function renderTasks() {
 function selectTask(id) {
   stopLive();
   state.task = id;
+  state.category = TASKS.find((x) => x.id === id).category;
   state.auto = false;
   state.result = null;
   state.points = [];
@@ -189,11 +245,13 @@ function updateModelNote() {
   const notes = [];
   notes.push(m.repo || m.onnx?.repo || m.ollama || "");
   notes.push(m.adapter === "onnx" ? "汎用 ONNX（前処理・後処理は models.json）" : `adapter: ${m.adapter}`);
-  if (m.where === "browser" && m.mb >= 500) notes.push("初回のダウンロードが大きい。モバイル回線では注意");
+  if (m.where === "browser") notes.push(downloaded().has(m.key) ? "取得済み" : m.mb >= CONFIRM_MB ? "初回のダウンロードが大きい（モバイル回線では注意）" : "");
   if (m.where === "server") notes.push("画像をサーバーに送って処理する");
+  if (m.license) notes.push(`ライセンス: ${m.license}`);
   if (m.avoid) notes.push(m.avoid);
   $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
   $("input-size-row").hidden = !m.pre?.dynamic;
+  $("advanced").hidden = $("ort-opt-row").hidden && $("input-size-row").hidden;
   $("cascade").innerHTML = (m.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
@@ -406,8 +464,11 @@ async function runOnce(m, overrides = {}) {
   const grabMs = performance.now() - tg;
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
+  if (!confirmDownload(m)) throw new Error("ダウンロードを取りやめた");
   const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
   r.w = w; r.h = h;
+  if (m.where === "browser" && !downloaded().has(m.key)) { markDownloaded(m.key); updateModelNote(); showStorage(); }
+  $("progress").hidden = true;
   if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
   await KINDS[r.kind]?.prepare?.(r);
   state.result = r;
@@ -655,6 +716,8 @@ async function init() {
     e.target.value = "";
   };
   for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
+  $("clear-cache").onclick = clearDownloads;
+  showStorage();
   $("canvas").addEventListener("click", (ev) => {
     if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;
     const [x, y] = canvasPoint(ev);

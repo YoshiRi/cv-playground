@@ -171,7 +171,10 @@ export const KINDS = {
 
   // 全体の自動分割: image = 領域ごとに色分けした画像（透明＝どの領域でもない）
   segmap: {
-    views: () => [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+    // クラス名のある塗り分け（セマンティック・パノプティック）は重ねて見るのが既定、自動分割は色分けだけが既定
+    views: (r) => (r.legend
+      ? [["overlay", "半透明で重ねる"], ["only", "色分けだけ"], ["original", "元画像"]]
+      : [["only", "色分けだけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]]),
     async prepare(r) { r.layer = await layerFrom(r.image); },
     draw(ctx, r, b, view) {
       if (view === "only") { ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h); }
@@ -179,8 +182,12 @@ export const KINDS = {
       ctx.drawImage(r.layer, 0, 0, b.w, b.h);
       ctx.globalAlpha = 1;
     },
-    panel: (r) => `<div class="sub">${r.count} 領域（${r.prompts} 点のプロンプトから、品質の良いマスクを重なりを除いて残したもの）</div>`,
-    summary: (r) => `${r.count}領域`,
+    // legend（クラスごとの色・個数・面積）がある時は凡例を出す（セマンティック・パノプティック）
+    panel: (r) => (r.legend
+      ? `<div class="chips">${r.legend.map((g) => `<span class="chip"><i style="background:${g.color}"></i>${esc(g.label)}${r.subtask === "panoptic" && g.count > 1 ? ` <b>${g.count}</b>` : ""} <small>${pct(g.area)}</small></span>`).join("")}</div>`
+        + `<div class="sub">${r.subtask === "panoptic" ? `${r.count} 個の領域（同じクラスの物は明るさを変えて別々に塗る）` : `${r.legend.length} クラス（数字は画面に占める割合）`}</div>`
+      : `<div class="sub">${r.count} 領域（${r.prompts} 点のプロンプトから、品質の良いマスクを重なりを除いて残したもの）</div>`),
+    summary: (r) => (r.legend ? `${r.legend.length}クラス` : `${r.count}領域`),
   },
 
   // 分類: items: [{label, score, abs?}]（score の大きい順）

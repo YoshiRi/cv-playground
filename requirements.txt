@@ -11,3 +11,4 @@ uvicorn[standard]>=0.54
 python-multipart
 pillow
 requests
+scipy

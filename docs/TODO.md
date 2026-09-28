@@ -12,6 +12,8 @@
 
 ## 機能
 
+- [ ] 英語の UI（今は日本語のみ。表示文言を1か所にまとめて切り替える）
+- [ ] インスタンス・セグメンテーション（YOLO26-seg、EoMT instance）
 - [ ] BoT-SORT のカメラ移動の補正（GMC）。OpenCV.js が要る（数MB）
 - [ ] SAM 3 のテキスト指定（`facebook/sam3` の利用申請が要る）
 - [ ] 動画の追跡で、SAM 系のマスクも ID ごとに追う（今は点を固定して毎フレーム切り出し直すだけ）
@@ -22,4 +24,5 @@
 ## 保守
 
 - [ ] ブラウザでの自動テスト（今は手元の puppeteer スクリプトで確認している）を GitHub Actions に載せる
-- [ ] transformers.js 4.x で壊れるモデル（SmolVLM、BiRefNet の WebGPU）が直ったら `lib: "3"` や `avoid_browser` を外す
+- [ ] BiRefNet の WebGPU（storage buffer の上限）が onnxruntime-web で直ったら `avoid_browser` を外す
+- [ ] SmolVLM を fp16 でも正しく動かす（今は fp32 で約1GB）

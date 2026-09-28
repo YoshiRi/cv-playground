@@ -10,10 +10,12 @@
 
 モデルの足し方は [ADDING_MODELS.md](ADDING_MODELS.md)。
 
-## 1. タブ（`models.json` の `tasks`）
+## 1. タブ（`models.json` の `tasks`）と分類（`categories`）
+
+タブは分類ごとにまとめて表示する（画面上部の「検出・追跡 / セグメンテーション / 深度・3D / 画像と言語」）。分類は `models.json` の `categories`（`{id, name}` の並び）で、タブの `category` がそれを指す。分類を足す時は `categories` に1件足す。タブが増えても、選んだ分類のタブだけが並ぶので設定欄は長くならない。
 
 ```json
-{ "id": "wholebody", "name": "手・目（PINTO）",
+{ "id": "wholebody", "name": "手・目（PINTO）", "category": "detect",
   "hint": "タブを選んだ時に出す説明",
   "params": ["threshold", "track", "cascade"],
   "defaults": { "threshold": 0.35 } }
@@ -22,11 +24,12 @@
 | キー | 意味 |
 | --- | --- |
 | `id` | タブの識別子。モデルの `task` でこれを指す |
+| `category` | 分類（`categories[].id`） |
 | `name` | タブの表示名 |
 | `hint` | タブの説明（設定欄の上に出る） |
 | `params` | 出す設定欄（下の表から選ぶ） |
 | `defaults` | 設定欄の既定値（`threshold` / `labels` / `prompt`） |
-| `click` | `true` なら画像のクリックで点を置いて実行する（クリックで切り出し） |
+| `click` | `true` なら画像のクリックで点を置いて実行する（プロンプト（SAM）のタブ） |
 
 タブは `tasks` の順に並ぶ。そのタブで使えるモデルが1つも無い時（例: サーバー専用のモデルしか無いのにサーバーが無い）は出ない。
 
@@ -41,7 +44,7 @@
 | `track` | 追跡（ByteTrack / BoT-SORT / BoT-SORT + ReID） | 推論には渡らず、画面側で結果の枠に ID を付ける |
 | `cascade` | 検出のあとの分類のチェック（モデルの `cascade` から作る） | 画面側で切り出して分類する |
 
-モデルによって自動で出る欄: 「実行設定」（汎用 ONNX のブラウザ実行）、「モデル入力（長辺）」（`pre.dynamic` のモデル）→ `params.input_size`。
+モデルによって自動で出る欄（「詳細設定」の中に畳んである）: 「実行設定」（汎用 ONNX のブラウザ実行）、「モデル入力（長辺）」（`pre.dynamic` のモデル）→ `params.input_size`。めったに触らない設定は「詳細設定」（`#advanced`）の中に置く。
 
 **新しい設定欄を足す手順**
 

@@ -53,7 +53,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 - onnxruntime（Python）の CoreML EP は、既定の NeuralNetwork 形式だと YOLO26 の出力が壊れる（全スコアが負になり何も検出しない）。`ModelFormat=MLProgram` なら CPU と一致し約2倍速い。BiRefNet と Depth Anything 3 は MLProgram への変換に失敗するので CPU で動かしている
 - transformers 5.17 の zero-shot-object-detection パイプラインは Grounding DINO でスコアが極端に低い。プロセッサに候補名のリストを直接渡すと正常
 - transformers.js 4.3 × Mac の Chrome（WebGPU の `maxStorageBuffersPerShaderStage` = 10）で BiRefNet が "Too many storage buffers in shader (11 > 10)"。一度失敗すると同じ Worker の以後の実行も全部失敗するので、失敗時に Worker を作り直している
-- SmolVLM は transformers.js 4.3 だと WebGPU で意味のない文字列を出す。3.8.1 なら正常なので、モデルごとにライブラリの版を選べるようにしている（models.json の `lib`）
+- SmolVLM 256M は WebGPU の fp16 だと画像によって意味のない文章になる（街の写真で「150s on the street side…」）。当初は transformers.js の版（4.3 → 3.8.1）の問題と見たが、fp32 なら 4.3 でも 3.8.1 でも正常だった（2026-09-28）ので fp32 にした（約1GB）。WASM の q8 は壊れた文字列になる。モデルごとにライブラリの版を選ぶ仕組み（models.json の `lib`）は残している
 - SigLIP2 は transformers.js のパイプラインだと "Invalid array length"。文字列を max_length 64 で埋めて直接呼べば動く
 - YOLO26 の前処理は Ultralytics 公式と同じ letterbox にしている（onnx-community の ONNX に付く設定は引き伸ばし）
 - Depth Anything 3 の ONNX は入力が (batch, 視点数, 3, H, W) の多視点前提で、深度に加えてカメラの内部・外部パラメータも返す
@@ -77,3 +77,9 @@ GPU の性能順にきれいに並ぶので、固定の手間より計算量が�
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）
 - ブラウザ（transformers.js、tiny の ONNX）: 文に候補を並べると先頭の候補しか正しいスコアにならない（猫の写真で "remote control. cat. sofa." だと cat の最大が 0.09、"cat." だけなら 0.83）。候補ごとに1回ずつ推論してまとめている（候補の数だけ時間がかかる）
+
+## セグメンテーション（セマンティック・パノプティック）
+
+- ブラウザ: transformers.js の image-segmentation パイプライン（SegFormer B0、DETR ResNet-50 panoptic）。`subtask` を明示すると 3.8.1・4.3.0 とも関数名の文字列を呼ぼうとして "x is not a function" で落ちるので、省いてモデルの後処理から自動で選ばせる。DETR panoptic の config は stuff クラスの名前が `LABEL_184` のように空なので、cocodataset/panopticapi の `panoptic_coco_categories.json` で名前を付ける（models.json の `label_map`）
+- サーバー: EoMT（DINOv3）。パノプティックはパイプラインで正しいが、セマンティックはパイプラインでもプロセッサ直呼びでも、横長の画像で塗り分けが縦につぶれる（プロセッサは長辺 512 に縮めて右下を余白で埋めた正方形にするのに、後処理は余白ごと元の大きさに引き伸ばす。transformers 5.17）。入力の大きさで塗り分けを出し、余白を切ってから戻している（黒い四角の位置で横長・縦長とも一致を確認）
+- 色はクラス名から決まる（ブラウザの `segColor` とサーバーの `seg_color` が同じ式）。パノプティックの同じクラスの物は明るさを変えて塗る

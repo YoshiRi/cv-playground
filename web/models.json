@@ -2,6 +2,24 @@
  "_doc": [
   "UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"
  ],
+ "categories": [
+  {
+   "id": "detect",
+   "name": "検出・追跡"
+  },
+  {
+   "id": "seg",
+   "name": "セグメンテーション"
+  },
+  {
+   "id": "3d",
+   "name": "深度・3D"
+  },
+  {
+   "id": "vl",
+   "name": "画像と言語"
+  }
+ ],
  "tasks": [
   {
    "id": "detect",
@@ -13,7 +31,8 @@
    ],
    "defaults": {
     "threshold": 0.4
-   }
+   },
+   "category": "detect"
   },
   {
    "id": "pose",
@@ -25,7 +44,8 @@
    ],
    "defaults": {
     "threshold": 0.4
-   }
+   },
+   "category": "detect"
   },
   {
    "id": "wholebody",
@@ -38,11 +58,12 @@
    ],
    "defaults": {
     "threshold": 0.35
-   }
+   },
+   "category": "detect"
   },
   {
    "id": "zsdetect",
-   "name": "テキスト指定検出",
+   "name": "テキスト物体検知",
    "hint": "英語の名詞をカンマ区切り（例: cat, remote control）",
    "params": [
     "labels",
@@ -52,22 +73,39 @@
    "defaults": {
     "threshold": 0.3,
     "labels": "person, bus, bag"
-   }
+   },
+   "category": "detect"
   },
   {
    "id": "segment",
-   "name": "クリックで切り出し",
-   "hint": "画像をクリックすると、その場所の物体を切り出す。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに色分けする（ブラウザのみ）",
+   "name": "プロンプト（SAM）",
+   "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）",
    "params": [
     "points"
    ],
-   "click": true
+   "click": true,
+   "category": "seg"
+  },
+  {
+   "id": "semantic",
+   "name": "セマンティック",
+   "category": "seg",
+   "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる",
+   "params": []
+  },
+  {
+   "id": "panoptic",
+   "name": "パノプティック",
+   "category": "seg",
+   "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）",
+   "params": []
   },
   {
    "id": "depth",
    "name": "深度推定",
    "hint": "赤いほど近い（相対深度）",
-   "params": []
+   "params": [],
+   "category": "3d"
   },
   {
    "id": "classify",
@@ -78,13 +116,15 @@
    ],
    "defaults": {
     "labels": "bus, truck, tram, street, office, cat"
-   }
+   },
+   "category": "vl"
   },
   {
    "id": "matting",
    "name": "背景除去",
    "hint": "前景だけを残す",
-   "params": []
+   "params": [],
+   "category": "seg"
   },
   {
    "id": "vlm",
@@ -95,7 +135,8 @@
    ],
    "defaults": {
     "prompt": "この画像を日本語で詳しく説明してください。"
-   }
+   },
+   "category": "vl"
   }
  ],
  "models": [
@@ -127,7 +168,8 @@
    "post": {
     "type": "yolo_detect",
     "classes": "coco"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26n-dyn",
@@ -158,7 +200,8 @@
    "post": {
     "type": "ultra_e2e_detect",
     "classes": "coco"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26s",
@@ -188,7 +231,8 @@
    "post": {
     "type": "yolo_detect",
     "classes": "coco"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26m",
@@ -218,7 +262,8 @@
    "post": {
     "type": "yolo_detect",
     "classes": "coco"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26x",
@@ -248,7 +293,8 @@
    "post": {
     "type": "yolo_detect",
     "classes": "coco"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "rfdetr-nano",
@@ -263,7 +309,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "q8"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "rfdetr-medium",
@@ -278,7 +325,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "q8"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "rfdetr-large",
@@ -288,7 +336,8 @@
     "server"
    ],
    "adapter": "hf-detect",
-   "repo": "Roboflow/rf-detr-large"
+   "repo": "Roboflow/rf-detr-large",
+   "license": "Apache-2.0"
   },
   {
    "key": "yolo26n-pose",
@@ -317,7 +366,8 @@
    },
    "post": {
     "type": "yolo_pose"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26n-pose-dyn",
@@ -347,7 +397,8 @@
    },
    "post": {
     "type": "ultra_e2e_pose"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "yolo26x-pose",
@@ -376,7 +427,8 @@
    },
    "post": {
     "type": "yolo_pose"
-   }
+   },
+   "license": "AGPL-3.0（Ultralytics）"
   },
   {
    "key": "gdino-tiny",
@@ -391,7 +443,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "q8"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "gdino-base",
@@ -401,7 +454,8 @@
     "server"
    ],
    "adapter": "hf-gdino",
-   "repo": "IDEA-Research/grounding-dino-base"
+   "repo": "IDEA-Research/grounding-dino-base",
+   "license": "Apache-2.0"
   },
   {
    "key": "edgetam",
@@ -416,7 +470,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "fp32"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "sam2.1-tiny",
@@ -431,7 +486,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "fp32"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "sam3-tracker",
@@ -446,7 +502,8 @@
    "dtype": {
     "webgpu": "fp16",
     "wasm": "q8"
-   }
+   },
+   "license": "SAM License（Meta）"
   },
   {
    "key": "sam2.1-large",
@@ -456,7 +513,86 @@
     "server"
    ],
    "adapter": "hf-sam2",
-   "repo": "facebook/sam2.1-hiera-large"
+   "repo": "facebook/sam2.1-hiera-large",
+   "license": "Apache-2.0"
+  },
+  {
+   "key": "segformer-b0",
+   "task": "semantic",
+   "name": "SegFormer B0（ADE20K）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-segment",
+   "subtask": "semantic",
+   "mb": 15,
+   "repo": "Xenova/segformer-b0-finetuned-ade-512-512",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "fp32"
+   },
+   "license": "NVIDIA Source Code License（非商用）"
+  },
+  {
+   "key": "eomt-ade-large",
+   "task": "semantic",
+   "name": "EoMT DINOv3 large（ADE20K）",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-segment",
+   "subtask": "semantic",
+   "repo": "tue-mps/eomt-dinov3-ade-semantic-large-512",
+   "license": "MIT（バックボーンは DINOv3 License）"
+  },
+  {
+   "key": "detr-panoptic",
+   "task": "panoptic",
+   "name": "DETR ResNet-50（COCO パノプティック）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-segment",
+   "subtask": "panoptic",
+   "mb": 172,
+   "repo": "Xenova/detr-resnet-50-panoptic",
+   "dtype": {
+    "webgpu": "fp32",
+    "wasm": "q8"
+   },
+   "license": "Apache-2.0",
+   "label_map": {
+    "184": "tree-merged",
+    "185": "fence-merged",
+    "186": "ceiling-merged",
+    "187": "sky-other-merged",
+    "188": "cabinet-merged",
+    "189": "table-merged",
+    "190": "floor-other-merged",
+    "191": "pavement-merged",
+    "192": "mountain-merged",
+    "193": "grass-merged",
+    "194": "dirt-merged",
+    "195": "paper-merged",
+    "196": "food-other-merged",
+    "197": "building-other-merged",
+    "198": "rock-merged",
+    "199": "wall-other-merged",
+    "200": "rug-merged"
+   },
+   "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"
+  },
+  {
+   "key": "eomt-coco-panoptic",
+   "task": "panoptic",
+   "name": "EoMT DINOv3 base（COCO パノプティック）",
+   "where": [
+    "server"
+   ],
+   "adapter": "hf-segment",
+   "subtask": "panoptic",
+   "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640",
+   "license": "MIT（バックボーンは DINOv3 License）"
   },
   {
    "key": "dav2-small",
@@ -471,7 +607,8 @@
    "dtype": {
     "webgpu": "fp32",
     "wasm": "q8"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "da3-small",
@@ -516,7 +653,8 @@
    },
    "server": {
     "providers": "cpu"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "dav2-large",
@@ -526,7 +664,8 @@
     "server"
    ],
    "adapter": "hf-depth",
-   "repo": "depth-anything/Depth-Anything-V2-Large-hf"
+   "repo": "depth-anything/Depth-Anything-V2-Large-hf",
+   "license": "CC BY-NC 4.0（非商用）"
   },
   {
    "key": "siglip2-base",
@@ -541,7 +680,8 @@
    "dtype": {
     "webgpu": "fp16",
     "wasm": "q8"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "birefnet-lite",
@@ -584,7 +724,8 @@
    },
    "server": {
     "providers": "cpu"
-   }
+   },
+   "license": "MIT"
   },
   {
    "key": "smolvlm-256m",
@@ -594,14 +735,15 @@
     "browser"
    ],
    "adapter": "tjs-vlm",
-   "mb": 514,
-   "lib": "3",
+   "mb": 1028,
    "repo": "HuggingFaceTB/SmolVLM-256M-Instruct",
    "dtype": {
-    "webgpu": "fp16",
-    "wasm": "q8"
+    "webgpu": "fp32",
+    "wasm": "fp32"
    },
-   "prompt": "Describe this image in detail."
+   "prompt": "Describe this image in detail.",
+   "license": "Apache-2.0",
+   "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"
   },
   {
    "key": "qwen3vl-2b",
@@ -616,7 +758,8 @@
    "dtype": {
     "webgpu": "q4f16",
     "wasm": "q4"
-   }
+   },
+   "license": "Apache-2.0"
   },
   {
    "key": "deimv2-atto192",
@@ -717,7 +860,8 @@
      "no": "",
      "seq": 4
     }
-   ]
+   ],
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
   },
   {
    "key": "deimv2-atto",
@@ -819,7 +963,8 @@
      "no": "",
      "seq": 4
     }
-   ]
+   ],
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
   },
   {
    "key": "deimv2-femto",
@@ -920,7 +1065,8 @@
      "no": "",
      "seq": 4
     }
-   ]
+   ],
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
   },
   {
    "key": "deimv2-pico",
@@ -1021,7 +1167,8 @@
      "no": "",
      "seq": 4
     }
-   ]
+   ],
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
   },
   {
    "key": "ocec-p",
@@ -1048,7 +1195,8 @@
    },
    "post": {
     "type": "embedding"
-   }
+   },
+   "license": "MIT"
   },
   {
    "key": "pgc-s",
@@ -1075,7 +1223,8 @@
    },
    "post": {
     "type": "embedding"
-   }
+   },
+   "license": "MIT"
   },
   {
    "key": "whc-4",
@@ -1102,7 +1251,8 @@
    },
    "post": {
     "type": "embedding"
-   }
+   },
+   "license": "MIT"
   },
   {
    "key": "osnet-x025",
@@ -1140,7 +1290,8 @@
    },
    "post": {
     "type": "embedding"
-   }
+   },
+   "license": "MIT（torchreid）"
   },
   {
    "key": "ollama-vlm",
@@ -1151,7 +1302,8 @@
    ],
    "adapter": "ollama-vlm",
    "ollama": "qwen3-vl:8b",
-   "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意"
+   "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意",
+   "license": "モデルによる（qwen3-vl は Apache-2.0）"
   }
  ]
 }

@@ -73,6 +73,34 @@ const ADAPTERS = {
     },
   },
 
+  // セマンティック / パノプティック（transformers.js の image-segmentation。subtask は models.json）
+  "tjs-segment": {
+    load: async (e, d, pr) => ({ pipe: await T.pipeline("image-segmentation", e.repo, tjsOpts(e, d, pr)) }),
+    async run(st, img, p, e) {
+      // subtask を明示すると transformers.js（3.8.1・4.3.0 とも）が関数名の文字列を呼ぼうとして
+      // "x is not a function" で落ちる。省くとモデルの後処理から自動で選ぶ（SegFormer は semantic、DETR は panoptic）
+      const out = await st.pipe(img);
+      const W = img.width, H = img.height, rgba = new Uint8ClampedArray(W * H * 4), seen = {}, legend = {};
+      // 大きい順に塗り、小さい物を上に。マスクは画像と同じ大きさの1チャンネル
+      const segs = out.map((o) => {
+        const m = o.mask.width === W && o.mask.height === H ? o.mask : null;
+        let area = 0;
+        if (m) for (let i = 0; i < W * H; i++) if (m.data[i * m.channels] > 0) area++;
+        // 元の config に名前の無いクラス（LABEL_184 など）は models.json の label_map で名前を付ける
+        const label = /^LABEL_\d+$/.test(o.label) ? e.label_map?.[o.label.slice(6)] ?? o.label : o.label;
+        return { label, m, area };
+      }).filter((s) => s.m).sort((a, b) => b.area - a.area);
+      for (const { label, m, area } of segs) {
+        const k = (seen[label] = (seen[label] ?? -1) + 1), [r, g, b] = segColor(label, k);
+        for (let i = 0; i < W * H; i++) if (m.data[i * m.channels] > 0) { rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = 255; }
+        const lg = (legend[label] ??= { label, color: `rgb(${segColor(label).join(",")})`, count: 0, area: 0 });
+        lg.count++; lg.area += area / (W * H);
+      }
+      return { kind: "segmap", image: await toPng(new T.RawImage(rgba, W, H, 4)), count: segs.length, subtask: e.subtask,
+               legend: Object.values(legend).sort((a, b) => b.area - a.area) };
+    },
+  },
+
   "tjs-depth": {
     load: async (e, d, pr) => ({ pipe: await T.pipeline("depth-estimation", e.repo, tjsOpts(e, d, pr)) }),
     async run(st, img) {
@@ -223,6 +251,12 @@ async function autoSegment(st, img, p) {
     for (let i = 0; i < N; i++) if (k.m[i]) { rgba[i * 4] = r; rgba[i * 4 + 1] = g; rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = 255; }
   });
   return { kind: "segmap", image: await toPng(new T.RawImage(rgba, S, S, 4)), count: kept.length, prompts: G * G };
+}
+
+// クラス名から決まる色（adapters.py の seg_color と同じ式）。同じクラスの k 番目は明るさを変える
+function segColor(label, k = 0) {
+  const h = ([...label].reduce((a, c) => a + c.charCodeAt(0), 0) * 47) % 360;
+  return hsl(h, 0.7, [0.55, 0.42, 0.68][k % 3]).map(Math.round);
 }
 
 function hsl(h, s, l) {

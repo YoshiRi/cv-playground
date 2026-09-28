@@ -249,6 +249,66 @@ class HfDetect(Adapter):
         return boxes_from_pipeline(self.pipe(im, threshold=float(p.get("threshold", 0.4))))
 
 
+def seg_color(label, k=0):
+    """クラス名から決まる色（ブラウザの worker.js の segColor と同じ式）。同じクラスの k 番目は明るさを変える"""
+    import colorsys
+    h = (sum(map(ord, label)) * 47) % 360
+    r, g, b = colorsys.hls_to_rgb(h / 360, [0.55, 0.42, 0.68][k % 3], 0.7)
+    return [round(r * 255), round(g * 255), round(b * 255)]
+
+
+def compose_segments(segs, size):
+    """[(label, 0/1 の配列)] を、色分けした RGBA 画像と凡例（ラベルごとの色・個数・面積）にする"""
+    W, H = size
+    rgba, seen, legend = np.zeros((H, W, 4), np.uint8), {}, {}
+    for label, m in sorted(segs, key=lambda x: -int((x[1] > 0).sum())):  # 大きい順に塗り、小さい物を上に
+        k = seen.get(label, 0)
+        seen[label] = k + 1
+        c = seg_color(label, k)
+        rgba[m > 0] = [*c, 255]
+        g = legend.setdefault(label, {"label": label, "color": "#%02x%02x%02x" % tuple(seg_color(label)), "count": 0, "area": 0})
+        g["count"] += 1
+        g["area"] += float((m > 0).sum()) / (W * H)
+    return png_data_url(rgba), sorted(legend.values(), key=lambda g: -g["area"])
+
+
+class HfSegment(Adapter):
+    # セマンティック / パノプティック（subtask は models.json）。パノプティックは transformers の image-segmentation パイプライン。
+    # セマンティックはプロセッサとモデルを直接呼ぶ: EoMT は横長の画像を正方形の区画に分けて推論し、区画の位置（patch_offsets）で
+    # つなぎ直すが、パイプラインはそれをモデルに渡さないので、塗り分けが上下にずれる（transformers 5.17）
+    def load(self):
+        from transformers import AutoModelForUniversalSegmentation, AutoProcessor, pipeline
+        if self.e["subtask"] == "semantic":
+            self.proc = AutoProcessor.from_pretrained(self.e["repo"])
+            self.model = AutoModelForUniversalSegmentation.from_pretrained(self.e["repo"]).to(DEVICE).eval()
+        else:
+            self.pipe = pipeline("image-segmentation", model=self.e["repo"], device=DEVICE)
+
+    @torch.inference_mode()
+    def run(self, im, p):
+        if self.e["subtask"] == "semantic":
+            inputs = self.proc(images=im, return_tensors="pt").to(DEVICE)
+            out = self.model(**inputs)
+            W, H = im.size
+            if getattr(self.proc, "do_pad", False) and not getattr(self.proc, "do_split_image", False):
+                # EoMT のプロセッサは長辺を 512 に縮めて右下を余白で埋めた正方形にするが、後処理は余白ごと元の大きさに
+                # 引き伸ばすので、横長の画像では縦がつぶれる（transformers 5.17）。入力の大きさで塗り分けを出し、
+                # 余白を切ってから元の大きさに戻す
+                side = inputs["pixel_values"].shape[-1]
+                seg = self.proc.post_process_semantic_segmentation(out, target_sizes=[(side, side)])[0].cpu().numpy()
+                r = side / max(W, H)
+                seg = seg[: round(H * r), : round(W * r)]
+                seg = np.asarray(Image.fromarray(seg.astype(np.int32)).resize((W, H), Image.NEAREST))
+            else:
+                seg = self.proc.post_process_semantic_segmentation(out, target_sizes=[(H, W)])[0].cpu().numpy()
+            id2label = self.model.config.id2label
+            segs = [(id2label[int(c)], (seg == c).astype(np.uint8)) for c in np.unique(seg)]
+        else:
+            segs = [(o["label"], np.asarray(o["mask"])) for o in self.pipe(im, subtask=self.e["subtask"])]
+        img, legend = compose_segments(segs, im.size)
+        return {"kind": "segmap", "image": img, "legend": legend, "count": len(segs), "subtask": self.e["subtask"]}
+
+
 class HfDepth(Adapter):
     def load(self):
         from transformers import pipeline
@@ -346,5 +406,5 @@ class OllamaVlm(Adapter):
         return {"kind": "text", "text": r.json()["message"]["content"]}
 
 
-ADAPTERS = {"onnx": OnnxAdapter, "hf-detect": HfDetect, "hf-depth": HfDepth, "hf-gdino": HfGdino,
+ADAPTERS = {"onnx": OnnxAdapter, "hf-segment": HfSegment, "hf-detect": HfDetect, "hf-depth": HfDepth, "hf-gdino": HfGdino,
             "hf-sam2": HfSam2, "ollama-vlm": OllamaVlm}

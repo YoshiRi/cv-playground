@@ -13,6 +13,8 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | 決めること | 選択肢 |
 | --- | --- |
 | どのタブに出すか | `task`: `models.json` の `tasks[].id`（新しいタブは [ADDING_UI.md](ADDING_UI.md)） |
+| ライセンス | `license`: 画面のモデルの説明に出す（例: `"Apache-2.0"`、`"CC BY-NC 4.0（非商用）"`）。**必ず書く** |
+| 大きさ | `mb`: ブラウザが最初に取得するおおよその MB。100MB を超えると初回に確認を出す |
 | どこで動かすか | `where`: `["browser"]` / `["server"]` / `["browser", "server"]`（両方なら同じモデルを比べられる） |
 | どう動かすか | 素の ONNX で前処理・後処理が単純 → `adapter: "onnx"`（JSON を書くだけ）。ライブラリのプロセッサが要る → 専用の adapter を書く |
 | 重みをどこから取るか | 下の「重みの置き場所」 |
@@ -102,7 +104,7 @@ ADAPTERS["hf-xxx"] = HfXxx
 | `boxes` | `items: [{label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度] × 17]}]` |
 | `mask` | `mask`（白が前景）、`score?`、`cutout?`（背景除去なら true） |
 | `depth` | `image`（明るいほど近い）、`note?` |
-| `segmap` | `image`（領域ごとに色分け、透明＝領域なし）、`count` |
+| `segmap` | `image`（領域ごとに色分け、透明＝領域なし）、`count`、`legend?`（`[{label, color, count, area}]`。あれば凡例を出す）、`subtask?`（`semantic` / `panoptic`） |
 | `labels` | `items: [{label, score, abs?}]`（score の大きい順） |
 | `text` | `text` |
 

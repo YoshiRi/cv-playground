@@ -105,8 +105,10 @@ Galaxy Z Fold6（SM-F956Q、Snapdragon 8 Gen 3 / Adreno 750、Android 16、Chrom
 
 | モデル | 標準 | graph capture | fp16 + graph capture |
 | --- | --- | --- | --- |
-| YOLO26n | 64 | 50 | 42 |
-| DEIMv2 Atto 320 | 40 | 19 | 19（fp16 版なし） |
+| YOLO26n | 64（前処理 9.1・モデル実行 55.6） | 50（12.5・37.3） | 42（12.8・29.0） |
+| DEIMv2 Atto 320 | 40（2.7・37.3） | 19（3.1・16.1） | 19（fp16 版なし） |
+
+前処理（縮小・正規化、JS）は入力の画素数にほぼ比例（640×640 で 9〜13ms、320×320 で約 3ms）。fp16 + graph capture の YOLO26n では1回 42ms の約3割が前処理。YOLO26n の前処理は後の計測ほど長い（9 → 12ms、graph capture とは関係のない同じ処理なので、発熱で CPU が遅くなった可能性）
 
 詳細計測（profiler あり、1回の平均）: YOLO26n は ONNX の実行 79ms のうち GPU の命令の合計は 30ms（畳み込み 78%）。DEIMv2 Atto は 91ms のうち 13ms（命令 624 個）。**スマホでは GPU の計算より、命令を1つずつ出す CPU 側の手間の方が大きい**ので、それをまとめる graph capture が M4 以上に効く（DEIMv2 は半分以下）。graph capture 後の YOLO26n は GPU の計算（fp32 で約 30ms、fp16 で減る）が主になる
 

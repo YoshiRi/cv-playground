@@ -54,6 +54,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 - transformers 5.17 の zero-shot-object-detection パイプラインは Grounding DINO でスコアが極端に低い。プロセッサに候補名のリストを直接渡すと正常
 - transformers.js 4.3 × Mac の Chrome（WebGPU の `maxStorageBuffersPerShaderStage` = 10）で BiRefNet が "Too many storage buffers in shader (11 > 10)"。一度失敗すると同じ Worker の以後の実行も全部失敗するので、失敗時に Worker を作り直している
 - SmolVLM 256M は WebGPU の fp16 だと画像によって意味のない文章になる（街の写真で「150s on the street side…」）。当初は transformers.js の版（4.3 → 3.8.1）の問題と見たが、fp32 なら 4.3 でも 3.8.1 でも正常だった（2026-09-28）ので fp32 にした（約1GB）。WASM の q8 は壊れた文字列になる。モデルごとにライブラリの版を選ぶ仕組み（models.json の `lib`）は残している
+- DETR ResNet-50 panoptic（transformers.js、fp32）は Galaxy Z Fold6（Adreno 750）の WebGPU で `Failed to create a WebGPU compute pipeline: [Invalid ShaderModule "Conv2dMM"] is invalid due to a previous error` になる（2026-09-29）。M4 では動くが1回 3.6 秒と重く、スマホ向きではない。Adreno 750 と onnxruntime-web 1.30 の shader の作成失敗は他でも報告がある（musetric/musetric#901）
 - SigLIP2 は transformers.js のパイプラインだと "Invalid array length"。文字列を max_length 64 で埋めて直接呼べば動く
 - YOLO26 の前処理は Ultralytics 公式と同じ letterbox にしている（onnx-community の ONNX に付く設定は引き伸ばし）
 - Depth Anything 3 の ONNX は入力が (batch, 視点数, 3, H, W) の多視点前提で、深度に加えてカメラの内部・外部パラメータも返す

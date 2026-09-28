@@ -280,6 +280,11 @@ async function toInput(image, kind) {
 
 const loaded = new Map(); // entry.key -> Promise<state>
 
+// onnxruntime の実行は1つずつ順番に（画面が次のフレームを先に送ってくる＝パイプライン化しても、同じ wasm の中で実行が重ならないように）。
+// 待ち時間は推論時間に入れない（fn の中で測る）
+let ortQueue = Promise.resolve();
+const serial = (fn) => { const p = ortQueue.then(fn, fn); ortQueue = p.catch(() => {}); return p; };
+
 // 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
 async function embed(id, e, crops) {
   try {
@@ -289,9 +294,12 @@ async function embed(id, e, crops) {
       loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
       try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
     }
-    const t0 = performance.now();
-    const feats = await onnxEmbed(ort, (await loaded.get(e.key)).session, e, crops);
-    self.postMessage({ id, type: "result", result: { feats, ms: performance.now() - t0 } });
+    const st = await loaded.get(e.key);
+    const result = await serial(async () => {
+      const t0 = performance.now();
+      return { feats: await onnxEmbed(ort, st.session, e, crops), ms: performance.now() - t0 };
+    });
+    self.postMessage({ id, type: "result", result });
   } catch (err) {
     self.postMessage({ id, type: "error", message: String(err?.message || err) });
   }
@@ -310,7 +318,7 @@ async function profile(id, e, last) {
     const st = await loaded.get(e.key);
     loaded.delete(e.key);
     if (!st?.session) throw new Error("計測中のモデルが無い");
-    const result = await onnxProfile(st.session, last);
+    const result = await serial(() => onnxProfile(st.session, last));
     st.session.release?.();
     self.postMessage({ id, type: "result", result });
   } catch (err) {
@@ -337,9 +345,13 @@ self.onmessage = async (ev) => {
     }
     const st = await loaded.get(e.key);
     const img = await toInput(image, A.image);
-    const t1 = performance.now();
-    const result = await A.run(st, img, params, e);
-    result.infer_ms = performance.now() - t1;
+    const go = async () => {
+      const t1 = performance.now();
+      const r = await A.run(st, img, params, e);
+      r.infer_ms = performance.now() - t1;
+      return r;
+    };
+    const result = self.name === "ort" ? await serial(go) : await go();
     result.load_ms = loadMs;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
     result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : e.dtype?.[device];

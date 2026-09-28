@@ -90,7 +90,7 @@ export async function onnxLoad(ort, e, device, onProgress) {
   }
   session ??= await create(opts);
   const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
-  return Object.assign(session, { cvpg: { graph: graph && !graphFallback, graphFallback, fp16, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
+  return Object.assign(session, { cvpg: { webgpu: device === "webgpu", graph: graph && !graphFallback, graphFallback, fp16, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
 }
 const noGraph = new Set(); // graph capture を作れなかったモデル（entry.key）
 
@@ -103,16 +103,14 @@ function fixedDims(e) {
   return dims;
 }
 
-// graph capture の時は入力を毎回同じ GPU バッファに書き込み、出力は GPU から読み戻す
-async function runSession(ort, session, name, tensor) {
+// graph capture の時は入力を毎回同じ GPU バッファに書き込み（GPU の前処理なら書き込み済み）、出力は GPU から読み戻す
+async function runSession(ort, session, name, feed) {
   const g = session.cvpg;
-  if (!g?.graph) return session.run({ [name]: tensor });
-  const dev = ort.env.webgpu.device;
-  if (!g.gpuInput || g.gpuInput.size !== tensor.data.byteLength) {
-    g.gpuInput = dev.createBuffer({ size: tensor.data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
-    g.feed = ort.Tensor.fromGpuBuffer(g.gpuInput, { dataType: "float32", dims: tensor.dims });
+  if (!g?.graph) return session.run({ [name]: feed });
+  if (feed.location !== "gpu-buffer") {
+    ensureInput(ort, g, feed.dims);
+    ort.env.webgpu.device.queue.writeBuffer(g.gpuInput, 0, feed.data);
   }
-  dev.queue.writeBuffer(g.gpuInput, 0, tensor.data);
   const out = await session.run({ [name]: g.feed });
   // 出力の読み戻しはまとめて待つ（1つずつ待つと GPU との往復が出力の数だけ増える。YOLO26n で 2ms ほど違う）
   const ents = Object.entries(out), datas = await Promise.all(ents.map(([, t]) => t.getData(true)));
@@ -161,49 +159,146 @@ export async function onnxProfile(session, last) {
 
 // ---------- 前処理: 画像 → 入力テンソル。meta は 入力座標 = 元座標 × (sx, sy) + (ox, oy) と内容のある範囲 (cw, ch) ----------
 
-function preprocess(ort, bitmap, pre, inputSize) {
-  const W = bitmap.width, H = bitmap.height;
-  let iw, ih, meta;
-  const c = new OffscreenCanvas(1, 1), x = c.getContext("2d", { willReadFrequently: true });
+// 入力の大きさと、画像を置く範囲（縮小した画像を (ox, oy) に cw × ch で置き、残りは pad_value で埋める）。CPU と GPU の前処理で共通
+function layout(W, H, pre, inputSize) {
   if (pre.resize === "letterbox" || pre.resize === "letterbox_rect") {
     // letterbox_rect: 長辺を S に合わせ、縦横を stride の倍数まで余白で埋めた長方形（正方形の余白の計算を省く）
     const S = pre.dynamic && inputSize ? inputSize : pre.size[0];
     const r = pre.resize === "letterbox_rect" ? S / Math.max(W, H) : Math.min(pre.size[0] / W, pre.size[1] / H);
     const cw = Math.round(W * r), ch = Math.round(H * r), st = pre.stride || 32;
-    [iw, ih] = pre.resize === "letterbox_rect" ? [Math.ceil(cw / st) * st, Math.ceil(ch / st) * st] : pre.size;
+    const [iw, ih] = pre.resize === "letterbox_rect" ? [Math.ceil(cw / st) * st, Math.ceil(ch / st) * st] : pre.size;
     const ox = Math.floor((iw - cw) / 2), oy = Math.floor((ih - ch) / 2);
-    c.width = iw; c.height = ih;
-    const g = pre.pad_value ?? 114;
-    x.fillStyle = `rgb(${g},${g},${g})`;
-    x.fillRect(0, 0, iw, ih);
-    x.drawImage(bitmap, ox, oy, cw, ch);
-    meta = { sx: r, sy: r, ox, oy, iw, ih, cw, ch };
-  } else if (pre.resize === "stretch") {
+    return { sx: r, sy: r, ox, oy, iw, ih, cw, ch };
+  }
+  let iw, ih;
+  if (pre.resize === "stretch") {
     [iw, ih] = pre.size;
-    c.width = iw; c.height = ih;
-    x.drawImage(bitmap, 0, 0, iw, ih);
-    meta = { sx: iw / W, sy: ih / H, ox: 0, oy: 0, iw, ih, cw: iw, ch: ih };
   } else if (pre.resize === "keep_aspect") {
     const m = pre.multiple || 1, r = pre.short / Math.min(W, H);
     iw = Math.max(m, Math.round((W * r) / m) * m); ih = Math.max(m, Math.round((H * r) / m) * m);
-    c.width = iw; c.height = ih;
-    x.drawImage(bitmap, 0, 0, iw, ih);
-    meta = { sx: iw / W, sy: ih / H, ox: 0, oy: 0, iw, ih, cw: iw, ch: ih };
   } else {
     throw new Error(`unknown resize ${pre.resize}`);
   }
+  return { sx: iw / W, sy: ih / H, ox: 0, oy: 0, iw, ih, cw: iw, ch: ih };
+}
+
+// (画素 × scale − mean) / std = 画素 × a + b の、チャンネルごとの a と b
+function affine(pre) {
+  const s = pre.scale ?? 1 / 255, mean = pre.mean || [0, 0, 0], std = pre.std || [1, 1, 1];
+  return [0, 1, 2].map((k) => [s / std[k], -mean[k] / std[k]]);
+}
+
+function inputDims(pre, L) {
+  const dims = [1, 3, L.ih, L.iw];
+  for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
+  return dims;
+}
+
+// CPU の前処理: OffscreenCanvas に描いて画素を読み出し、JS で正規化する
+function preprocess(ort, bitmap, pre, inputSize) {
+  const W = bitmap.width, H = bitmap.height, L = layout(W, H, pre, inputSize), { iw, ih } = L;
+  const c = new OffscreenCanvas(iw, ih), x = c.getContext("2d", { willReadFrequently: true });
+  if (L.cw !== iw || L.ch !== ih) {
+    const g = pre.pad_value ?? 114;
+    x.fillStyle = `rgb(${g},${g},${g})`;
+    x.fillRect(0, 0, iw, ih);
+  }
+  x.drawImage(bitmap, L.ox, L.oy, L.cw, L.ch);
   const px = x.getImageData(0, 0, iw, ih).data, n = iw * ih;
-  const out = new Float32Array(3 * n), s = pre.scale ?? 1 / 255;
-  const mean = pre.mean || [0, 0, 0], std = pre.std || [1, 1, 1];
-  // (画素 × scale − mean) / std = 画素 × a + b を、チャンネルごとに1回のループで。bgr なら入力の並びを B, G, R に
+  const out = new Float32Array(3 * n), ab = affine(pre);
+  // チャンネルごとに1回のループで。bgr なら入力の並びを B, G, R に
   for (let k = 0; k < 3; k++) {
-    const a = s / std[k], b = -mean[k] / std[k], o = k * n, src = pre.bgr ? 2 - k : k;
+    const [a, b] = ab[k], o = k * n, src = pre.bgr ? 2 - k : k;
     for (let i = 0; i < n; i++) out[o + i] = px[i * 4 + src] * a + b;
   }
-  const dims = [1, 3, ih, iw];
-  for (const ax of pre.add_dims || []) dims.splice(ax, 0, 1);
-  return { tensor: new ort.Tensor("float32", out, dims), meta: { ...meta, W, H } };
+  return { tensor: new ort.Tensor("float32", out, inputDims(pre, L)), meta: { ...L, W, H } };
 }
+
+// GPU の前処理: 画像を WebGPU のテクスチャに送り、縮小（双線形）・余白・正規化・チャンネルの並べ替えを compute shader で行って、
+// モデルの入力の GPU バッファに直接書く。画素の読み出し・JS のループ・入力の転送が無くなる（スマホの 640×640 で CPU だと 9〜13ms）。
+// 入力のバッファはセッションごとに1つ（graph capture は同じバッファを使い続ける必要がある）
+const PRE_WGSL = `
+struct P { iw: u32, ih: u32, ox: i32, oy: i32, cw: f32, ch: f32, bgr: u32, pad: f32, a: vec4f, b: vec4f }
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var smp: sampler;
+@group(0) @binding(2) var<storage, read_write> dst: array<f32>;
+@group(0) @binding(3) var<uniform> p: P;
+@compute @workgroup_size(16, 16)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (id.x >= p.iw || id.y >= p.ih) { return; }
+  let x = f32(i32(id.x) - p.ox) + 0.5;
+  let y = f32(i32(id.y) - p.oy) + 0.5;
+  var c = vec3f(p.pad);
+  if (x > 0.0 && y > 0.0 && x < p.cw && y < p.ch) {
+    // canvas の drawImage と同じく 8 bit に丸めてから正規化する
+    c = round(textureSampleLevel(src, smp, vec2f(x / p.cw, y / p.ch), 0.0).rgb * 255.0);
+  }
+  if (p.bgr == 1u) { c = c.bgr; }
+  let n = p.iw * p.ih;
+  let i = id.y * p.iw + id.x;
+  dst[i] = c.r * p.a.x + p.b.x;
+  dst[n + i] = c.g * p.a.y + p.b.y;
+  dst[2u * n + i] = c.b * p.a.z + p.b.z;
+}`;
+let gpuPre = null; // { device, pipeline, sampler }
+
+// モデルの入力の GPU バッファ（セッションごとに1つ。形が変わった時だけ作り直す）
+function ensureInput(ort, g, dims) {
+  const key = dims.join("x");
+  if (g.gpuInput && g.inputKey === key) return;
+  g.gpuInput?.destroy();
+  g.gpuInput = ort.env.webgpu.device.createBuffer({ size: dims.reduce((x, y) => x * y) * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST });
+  g.feed = ort.Tensor.fromGpuBuffer(g.gpuInput, { dataType: "float32", dims });
+  g.inputKey = key;
+}
+
+function gpuPreprocess(ort, session, bitmap, pre, inputSize) {
+  const dev = ort.env.webgpu.device, g = session.cvpg;
+  if (gpuPre?.device !== dev) {
+    const module = dev.createShaderModule({ code: PRE_WGSL });
+    gpuPre = {
+      device: dev,
+      pipeline: dev.createComputePipeline({ layout: "auto", compute: { module, entryPoint: "main" } }),
+      sampler: dev.createSampler({ magFilter: "linear", minFilter: "linear" }),
+    };
+  }
+  const W = bitmap.width, H = bitmap.height, L = layout(W, H, pre, inputSize), dims = inputDims(pre, L);
+  ensureInput(ort, g, dims);
+  g.uniform ??= dev.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  if (!g.tex || g.tex.width !== W || g.tex.height !== H) {
+    g.tex?.destroy();
+    g.tex = dev.createTexture({ size: [W, H], format: "rgba8unorm", usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  }
+  if (g.bindTex !== g.tex || g.bindBuf !== g.gpuInput) {
+    g.bind = dev.createBindGroup({ layout: gpuPre.pipeline.getBindGroupLayout(0), entries: [
+      { binding: 0, resource: g.tex.createView() }, { binding: 1, resource: gpuPre.sampler },
+      { binding: 2, resource: { buffer: g.gpuInput } }, { binding: 3, resource: { buffer: g.uniform } }] });
+    g.bindTex = g.tex; g.bindBuf = g.gpuInput;
+  }
+  dev.queue.copyExternalImageToTexture({ source: bitmap }, { texture: g.tex }, [W, H]);
+  const ab = affine(pre), u = new ArrayBuffer(64), dv = new DataView(u);
+  [L.iw, L.ih].forEach((v, i) => dv.setUint32(i * 4, v, true));
+  [L.ox, L.oy].forEach((v, i) => dv.setInt32(8 + i * 4, v, true));
+  dv.setFloat32(16, L.cw, true); dv.setFloat32(20, L.ch, true);
+  dv.setUint32(24, pre.bgr ? 1 : 0, true); dv.setFloat32(28, pre.pad_value ?? 114, true);
+  ab.forEach(([a, b], k) => { dv.setFloat32(32 + k * 4, a, true); dv.setFloat32(48 + k * 4, b, true); });
+  dev.queue.writeBuffer(g.uniform, 0, u);
+  const enc = dev.createCommandEncoder(), pass = enc.beginComputePass();
+  pass.setPipeline(gpuPre.pipeline);
+  pass.setBindGroup(0, g.bind);
+  pass.dispatchWorkgroups(Math.ceil(L.iw / 16), Math.ceil(L.ih / 16));
+  pass.end();
+  dev.queue.submit([enc.finish()]);
+  return { feed: g.feed, meta: { ...L, W, H } };
+}
+
+// GPU の前処理を使うか: WebGPU のセッションで、1枚ずつ入れるモデル（?cpupre=1 の時は使わない。比べる用）。
+// GPU 版が対応している指定だけのモデルに限る。pre に新しい指定や縮小方法を足したら（preprocess と adapters.py に足す）、
+// ここに足すまでは自動で CPU の前処理になる（GPU 版が黙って違う入力を作らないように）
+const GPU_PRE_KEYS = new Set(["size", "resize", "dynamic", "stride", "short", "multiple", "pad_value", "scale", "mean", "std", "bgr", "input", "add_dims"]);
+const GPU_PRE_RESIZE = new Set(["letterbox", "letterbox_rect", "stretch", "keep_aspect"]);
+const useGpuPre = (ort, session, e) => session.cvpg?.webgpu && !session.cvpg.noGpuPre && !e.cpuPre && !!ort.env.webgpu?.device
+  && GPU_PRE_RESIZE.has(e.pre.resize) && Object.keys(e.pre).every((k) => GPU_PRE_KEYS.has(k));
 
 const toOrig = (x, y, m) => [(x - m.ox) / m.sx, (y - m.oy) / m.sy];
 const sigmoid = (v) => 1 / (1 + Math.exp(-v));
@@ -340,9 +435,14 @@ export async function onnxEmbed(ort, session, e, bitmaps) {
 
 export async function onnxRun(ort, session, e, bitmap, params) {
   const t0 = performance.now();
-  const { tensor, meta } = preprocess(ort, bitmap, e.pre, params.input_size);
+  let feed, meta;
+  if (useGpuPre(ort, session, e)) {
+    try { ({ feed, meta } = gpuPreprocess(ort, session, bitmap, e.pre, params.input_size)); }
+    catch (err) { console.warn("GPU の前処理が使えない。CPU で行う", err); session.cvpg.noGpuPre = true; }
+  }
+  if (!feed) ({ tensor: feed, meta } = preprocess(ort, bitmap, e.pre, params.input_size));
   const t1 = performance.now();
-  const out = await runSession(ort, session, e.pre.input, tensor);
+  const out = await runSession(ort, session, e.pre.input, feed);
   const t2 = performance.now();
   const res = await POST[e.post.type](out, meta, e.post, params);
   // 内訳（端末ごとにどこが重いかを見る）: 前処理（縮小・正規化）/ ONNX の実行（GPU との転送を含む）/ 後処理

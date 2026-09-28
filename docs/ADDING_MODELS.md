@@ -70,6 +70,8 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 
 **部品が足りない時**は、`web/onnx_generic.js` の `POST`（前処理なら `preprocess`）と `adapters.py` の `POST`（`preprocess`）に**同じ名前で両方**足す。片方だけだと、その実行場所でしか動かない。
 
+ブラウザの WebGPU 実行では、前処理を GPU（`gpuPreprocess`）で行う。GPU 版が扱うのは上の表の指定（`batch`・`seq` を除く）だけで、`pre` に新しい指定や縮小方法を足したモデルは自動で CPU の前処理（`preprocess`）になる。GPU でも速くしたい時は `onnx_generic.js` の `GPU_PRE_KEYS` / `GPU_PRE_RESIZE` と shader に足し、CPU 版と入力が一致することを確かめる。
+
 ## 3. 専用の adapter — ライブラリのプロセッサを使うモデル
 
 SAM・Grounding DINO・VLM のように、前処理・後処理がライブラリにあるモデルは、adapter を書いて登録する。

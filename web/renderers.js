@@ -141,7 +141,16 @@ export const KINDS = {
     },
     draw(ctx, r, b, view) {
       if (view === "only") { ctx.drawImage(r.gray, 0, 0, b.w, b.h); return; }
-      if (view === "overlay") { ctx.drawImage(r.tint, 0, 0, b.w, b.h); return; }
+      if (view === "overlay") {
+        if (!r.lost) ctx.drawImage(r.tint, 0, 0, b.w, b.h); // 見失っている時のマスクは別の物なので出さない
+        // 動画で追っている時は、このフレームで使った枠（前のフレームのマスクから作ったもの）を出す
+        if (r.promptBox) {
+          const k = b.w / r.w, [x0, y0, x1, y1] = r.promptBox;
+          ctx.setLineDash([6, 4]); ctx.strokeStyle = r.lost ? "#ef4444" : "#fbbf24"; ctx.lineWidth = Math.max(2, b.w / 400);
+          ctx.strokeRect(x0 * k, y0 * k, (x1 - x0) * k, (y1 - y0) * k); ctx.setLineDash([]);
+        }
+        return;
+      }
       // 切り抜き: 前景の度合いを不透明度にした層へ、今の画像を source-in で重ねる（動画でも毎フレーム軽い）
       if (!cutCanvas || cutCanvas.width !== b.w || cutCanvas.height !== b.h) cutCanvas = new OffscreenCanvas(b.w, b.h);
       const x = cutCanvas.getContext("2d");
@@ -150,7 +159,8 @@ export const KINDS = {
       checker(ctx, b.w, b.h);
       ctx.drawImage(cutCanvas, 0, 0);
     },
-    panel: (r, { points }) => (r.score != null ? `<div class="sub">マスクの推定品質 ${pct(r.score)}（点 ${points} 個）</div>` : ""),
+    panel: (r, { points }) => (r.score != null
+      ? `<div class="sub">マスクの推定品質 ${pct(r.score)}（${r.promptBox ? `前のフレームのマスクから作った枠で追跡中${r.lost ? `。見失い ${r.lost} フレーム` : ""}` : `点 ${points} 個`}）</div>` : ""),
     summary: (r) => (r.cutout ? "背景除去" : "マスク"),
   },
 

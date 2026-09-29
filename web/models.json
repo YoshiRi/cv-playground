@@ -511,7 +511,7 @@
    "mb": 41,
    "repo": "onnx-community/EdgeTAM-ONNX",
    "dtype": {
-    "webgpu": "fp32",
+    "webgpu": "fp16",
     "wasm": "fp32"
    },
    "license": "Apache-2.0"

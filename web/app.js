@@ -500,7 +500,8 @@ function draw() {
   const view = $("view").value;
   if (r && KINDS[r.kind] && view !== "original" && !$("view-toggle").hidden) KINDS[r.kind].draw(ctx, r, b, view);
   const lw = Math.max(2, b.w / 400);
-  for (const [x, y, l] of state.points) {
+  // 動画で追っている時（前のフレームのマスクから作った枠を使っている時）は、最初にクリックした点は古いので出さない
+  for (const [x, y, l] of r?.promptBox ? [] : state.points) {
     ctx.beginPath(); ctx.arc(x, y, lw * 3, 0, Math.PI * 2);
     ctx.fillStyle = l ? "#16a34a" : "#ef4444"; ctx.fill();
     ctx.strokeStyle = "#fff"; ctx.lineWidth = lw; ctx.stroke();
@@ -790,8 +791,14 @@ async function liveLoop() {
   state.apps = createApps();
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   const overrides = tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {};
+  // SAM 系の「動画で追う」: 1フレーム目はクリックした点、2フレーム目からは前のフレームのマスクを囲む枠（少し広げる）と中の1点を
+  // プロンプトにする（EdgeTAM などの ONNX には前のフレームの記憶を使う部分が無いので、切り出し直しで追う）。
+  // マスクが消えたら同じ枠で探し続け、LOST フレーム続いたら諦めて止める
+  const samTrack = curTask().click && !state.auto && $("sam-track").checked ? { prompt: null, lost: 0 } : null;
+  const nextPrompt = () => (samTrack?.prompt ? { points: [[...samTrack.prompt.point, 1]], box: samTrack.prompt.box } : {});
   // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
   const handle = async (r) => {
+    if (samTrack) updateSamTrack(samTrack, r);
     if (tracker) {
       const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
       if (feats) r.reid_ms = feats.ms;
@@ -820,7 +827,8 @@ async function liveLoop() {
       if (frames || inflight) await (next ?? nextVideoFrame($("video")));
       next = null;
       if (!state.live) break;
-      const cur = runOnce(m, overrides, { commit: !pipe });
+      if (samTrack?.lost > SAM_LOST) { setStatus("追っていた物を見失った（点を置き直して、もう一度連続実行）", "warn"); break; }
+      const cur = runOnce(m, { ...overrides, ...nextPrompt() }, { commit: !pipe });
       if (!pipe) { await handle(await cur); continue; }
       cur.catch(() => {}); // 失敗は下で await した時に扱う
       next = nextVideoFrame($("video"));
@@ -841,6 +849,30 @@ async function liveLoop() {
   }
   state.live = false;
   updateButtons();
+}
+
+// 「動画で追う」の次のプロンプト: マスクを囲む枠を 15% 広げたもの（動いても枠の中に入るように）と、マスクの中の1点。
+// 次の時は前の枠のまま lost を数える（間違ったマスクは出さない）: マスクが無い・品質が低い、面積が急に変わった
+// （物が画面から出た後に、枠の中の壁や床を拾って乗り移るのを防ぐ）、最初のマスクの 4 倍を超えた（少しずつ広がって
+// 乗り移るのを防ぐ）、前のマスクの枠とほとんど重ならない。次の枠の大きさも 1 フレームで 1.25 倍までにする
+const SAM_LOST = 15;
+function updateSamTrack(t, r) {
+  const tr = r.track;
+  if (t.prompt) r.promptBox = t.prompt.box;
+  let ok = tr && r.score >= 0.3 && tr.area > 0.0002;
+  if (ok && t.area) ok = tr.area < t.area * 2.5 && tr.area > t.area * 0.3 && tr.area < t.area0 * 4 && boxIoU(tr.box, t.box) > 0.2;
+  if (!ok) { t.lost++; r.lost = t.lost; return; }
+  t.lost = 0; t.area = tr.area; t.area0 ??= tr.area; t.box = tr.box;
+  let [x0, y0, x1, y1] = tr.box;
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2, pw = t.prompt ? t.prompt.box[2] - t.prompt.box[0] : Infinity, ph = t.prompt ? t.prompt.box[3] - t.prompt.box[1] : Infinity;
+  const hw = Math.min((x1 - x0) * 1.15, pw * 1.25) / 2, hh = Math.min((y1 - y0) * 1.15, ph * 1.25) / 2;
+  t.prompt = { box: [Math.max(0, cx - hw), Math.max(0, cy - hh), Math.min(r.w, cx + hw), Math.min(r.h, cy + hh)], point: tr.point };
+}
+
+function boxIoU(a, b) {
+  const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1]));
+  const i = w * h;
+  return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i);
 }
 
 // 応用（apps.js）: models.json の apps のうち、タブの結果の種類（tasks[].result）を受け付けるものを「応用」欄にチェックで出す。

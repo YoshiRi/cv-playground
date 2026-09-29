@@ -164,9 +164,13 @@ const ADAPTERS = {
     }),
     async run(st, img, p) {
       if (p.auto) return autoSegment(st, img, p);
+      // プロンプト: クリックした点と、動画で追う時は前のフレームのマスクから作った枠（p.box）
       const pts = p.points || [];
-      if (!pts.length) throw new Error("画像をクリックして点を指定してください");
-      const inputs = await st.proc(img, { input_points: [[pts.map(([x, y]) => [x, y])]], input_labels: [[pts.map(([, , l]) => l)]] });
+      if (!pts.length && !p.box) throw new Error("画像をクリックして点を指定してください");
+      const prompt = {};
+      if (pts.length) Object.assign(prompt, { input_points: [[pts.map(([x, y]) => [x, y])]], input_labels: [[pts.map(([, , l]) => l)]] });
+      if (p.box) prompt.input_boxes = [[p.box]];
+      const inputs = await st.proc(img, prompt);
       // 同じ画像への2回目以降のクリックでは画像エンコーダを省く
       if (!st.emb.has(p._imageKey)) {
         st.emb.clear();
@@ -179,8 +183,25 @@ const ADAPTERS = {
       let best = 0;
       for (let i = 1; i < scores.length; i++) if (scores[i] > scores[best]) best = i;
       const m0 = masks[0], h = m0.dims.at(-2), w = m0.dims.at(-1), src = m0.data, px = new Uint8ClampedArray(w * h);
-      for (let i = 0; i < w * h; i++) px[i] = src[best * w * h + i] ? 255 : 0;
-      return { kind: "mask", mask: await toPng(new T.RawImage(px, w, h, 1)), score: scores[best] };
+      // 動画で追う時の次のプロンプト用に、マスクを囲む枠と、重心に一番近いマスクの中の点も返す
+      let x0 = w, y0 = h, x1 = -1, y1 = -1, sx = 0, sy = 0, n = 0;
+      for (let y = 0, i = 0; y < h; y++) for (let x = 0; x < w; x++, i++) {
+        if (!src[best * w * h + i]) continue;
+        px[i] = 255; n++; sx += x; sy += y;
+        if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      let track = null;
+      if (n) {
+        const cx = sx / n, cy = sy / n;
+        let bp = [cx, cy], bd = Infinity;
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+          if (!px[y * w + x]) continue;
+          const d = (x - cx) ** 2 + (y - cy) ** 2;
+          if (d < bd) { bd = d; bp = [x, y]; }
+        }
+        track = { box: [x0, y0, x1 + 1, y1 + 1], point: bp, area: n / (w * h) };
+      }
+      return { kind: "mask", mask: await toPng(new T.RawImage(px, w, h, 1)), score: scores[best], track };
     },
   },
 

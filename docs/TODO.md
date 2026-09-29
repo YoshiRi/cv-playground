@@ -18,7 +18,6 @@
 - [ ] インスタンス・セグメンテーション（YOLO26-seg、EoMT instance）
 - [ ] BoT-SORT のカメラ移動の補正（GMC）。OpenCV.js が要る（数MB）
 - [ ] SAM 3 のテキスト指定（`facebook/sam3` の利用申請が要る）
-- [ ] 動画の追跡で、SAM 系のマスクも ID ごとに追う（今は点を固定して毎フレーム切り出し直すだけ）
 - [ ] 手の関節点（RTMPose-Hand、55MB）
 - [ ] 録画（結果を重ねた動画の書き出し。`canvas.captureStream()` + MediaRecorder）
 - [ ] 各端末のベンチマークの CSV を `docs/benchmarks/` に集め、README の「端末ごとの速度」を実測で更新する
@@ -33,7 +32,7 @@
 - [ ] 深度: スマホで Depth Anything V2 small（長辺 320〜518）の連続実行の fps を測る。DA3 small の fp16 版を作る（今は fp32 のみ）。後処理（正規化と PNG にする所、M4 で 3〜14ms）を軽くする
 - [ ] 背景除去・人物の切り抜き: BiRefNet lite（1024）より軽いもの（MODNet など、512 前後でスマホ向け）
 - [ ] セグメンテーション: SegFormer B0 の入力サイズ（今は 512 固定）を選べるようにする。後処理（クラスの最大）を GPU に移す
-- [ ] SAM 系: 動画でクリックした物を追い続ける用途に、EdgeTAM の追跡（前のフレームの記憶を使う）を試す
+- [ ] SAM 系の追跡: 今は前のフレームのマスクから作った枠で切り出し直す疑似的な追跡（NOTES）。前のフレームの記憶を使う本来の追跡は、EdgeTAM の memory attention / memory encoder を ONNX に書き出す必要がある。スマホで fps を測る。複数の物を同時に追う
 
 ## 応用（組み合わせ）
 

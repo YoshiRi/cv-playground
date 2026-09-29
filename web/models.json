@@ -65,6 +65,46 @@
    "result": "boxes"
   },
   {
+   "id": "gesture",
+   "name": "しぐさ（姿勢＋PINTO）",
+   "category": "detect",
+   "result": "boxes",
+   "hint": "2つのモデルを同じフレームで回して組み合わせる。姿勢（YOLO26n-pose）の関節点と、PINTO の頭・目・手・顔の向きから、人ごとに「手を挙げた」「顔の向き」「目を閉じている」「指差し」を判定する。PINTO のモデルは「組み合わせるモデル」で選ぶ",
+   "params": [
+    "threshold",
+    "track",
+    "cascade"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   },
+   "combo": {
+    "base": "pose",
+    "with": [
+     {
+      "role": "parts",
+      "name": "組み合わせるモデル（PINTO の部位）",
+      "task": "wholebody",
+      "show": [
+       "head",
+       "eye",
+       "hand",
+       "front",
+       "right-front",
+       "right-side",
+       "right-back",
+       "back",
+       "left-back",
+       "left-side",
+       "left-front"
+      ],
+      "default": "deimv2-atto"
+     }
+    ],
+    "app": "gesture"
+   }
+  },
+  {
    "id": "zsdetect",
    "name": "テキスト物体検知",
    "hint": "英語の名詞をカンマ区切り（例: cat, remote control）",

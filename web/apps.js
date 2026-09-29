@@ -85,3 +85,53 @@ function median(a) {
   const s = [...a].sort((x, y) => x - y);
   return s[Math.floor(s.length / 2)];
 }
+
+// 組み合わせのタブ（models.json の tasks[].combo）: 2つ以上のモデルを同じフレームで回し、結果を組み合わせる。
+// combo.base のタブのモデル（画面の「モデル」）の結果が r、combo.with の役割ごとのモデルの結果が r.with[role]（boxes の items）。
+// COMBOS[combo.app] = { combine(r) → r.items を組み直す（追跡・cascade の後）, panel(r), summary(r) }
+const ORIENT = { front: "正面", "right-front": "斜め", "left-front": "斜め", "right-side": "横", "left-side": "横", "right-back": "後ろ", "left-back": "後ろ", back: "後ろ" };
+const center = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+const inBox = ([x, y], b, m = 0) => { const w = b[2] - b[0], h = b[3] - b[1]; return x >= b[0] - w * m && x <= b[2] + w * m && y >= b[1] - h * m && y <= b[3] + h * m; };
+const iou = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * h; return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
+
+export const COMBOS = {
+  // しぐさ: 姿勢（人ごとの関節点）＋ PINTO の部位（頭・目・手と、頭の向きのクラス）
+  gesture: {
+    combine(r) {
+      const persons = r.items.filter((it) => it.keypoints), parts = r.with?.parts || [];
+      const heads = parts.filter((it) => it.label === "head"), orient = parts.filter((it) => ORIENT[it.label]);
+      const eyes = parts.filter((it) => it.label === "eye"), hands = parts.filter((it) => it.label === "hand");
+      const n = { persons: persons.length, raised: 0, front: 0, closed: 0, pointing: 0 };
+      for (const p of persons) {
+        const k = p.keypoints, ok = (i) => k[i] && k[i][2] > 0.5, tags = [];
+        // 手を挙げた: 手首が肩より上（胴の長さの 1 割より上）。左右どちらか
+        const torso = ok(5) && ok(11) ? Math.abs(k[11][1] - k[5][1]) : (p.box[3] - p.box[1]) * 0.3;
+        const raised = [[9, 5], [10, 6]].some(([w, s]) => ok(w) && ok(s) && k[w][1] < k[s][1] - torso * 0.1);
+        if (raised) { tags.push("手を挙げた"); n.raised++; }
+        // 顔の向き: その人の枠の上の方にある頭の枠と、一番重なる向きのクラス
+        const head = heads.filter((h) => inBox(center(h.box), p.box) && center(h.box)[1] < (p.box[1] + p.box[3]) / 2).sort((a, b) => b.score - a.score)[0];
+        if (head) {
+          const o = orient.map((x) => [x, iou(x.box, head.box)]).filter(([, v]) => v > 0.4).sort((a, b) => b[0].score - a[0].score)[0];
+          if (o) { tags.push(ORIENT[o[0].label]); if (o[0].label === "front") n.front++; }
+          // 目: 頭の中の目の開閉（OCEC の判定がある時）
+          const es = eyes.filter((e) => inBox(center(e.box), head.box, 0.1) && /開|閉/.test(e.state || ""));
+          if (es.length && es.every((e) => /閉/.test(e.state))) { tags.push("目を閉じている"); n.closed++; }
+        }
+        // 指差し: その人の枠の近くの手（PGC の判定がある時）
+        if (hands.some((h) => inBox(center(h.box), p.box, 0.2) && /指差し/.test(h.state || ""))) { tags.push("指差し"); n.pointing++; }
+        p.state = tags.join("・");
+      }
+      r.gesture = n;
+      // 表示は人（骨格と判定）と、判定（目の開閉・指差し）が付いた目・手だけ。頭と向きのクラスの枠は判定に使うだけで出さない
+      r.items = [...persons, ...eyes.filter((e) => e.state), ...hands.filter((h) => h.state)];
+    },
+    panel: (r) => {
+      const g = r.gesture;
+      if (!g) return "";
+      const chip = (k, v) => `<span class="chip">${k} <b>${v}</b></span>`;
+      return `<div class="sub">しぐさ（${g.persons} 人）</div><div class="chips">${chip("手を挙げた", g.raised)}${chip("正面を向いている", g.front)}${chip("目を閉じている", g.closed)}${chip("指差し", g.pointing)}</div>`
+        + `<div class="sub muted">手を挙げた＝手首が肩より上（姿勢）。顔の向き・目・指差しは PINTO の頭・目・手と小さな分類（目の開閉・指差しのチェックが要る）から、その人の枠の中にあるものを数える</div>`;
+    },
+    summary: (r) => (r.gesture ? `${r.gesture.persons}人・手を挙げた ${r.gesture.raised}・正面 ${r.gesture.front}` : ""),
+  },
+};

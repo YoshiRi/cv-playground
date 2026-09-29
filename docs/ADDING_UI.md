@@ -103,7 +103,36 @@ APPS.myapp = {
 
 - 呼び出しは `web/app.js` の `createApps()` / `applyApps()`（`run()` と、連続実行の `handle()`）、`draw()` と `renderResult()` だけ。追跡の設定はモデルのタブの1か所
 - URL の `?apps=count` で最初から選んだ状態で開ける（「物体カウント」を入口にしたい時のリンク）
-- 複数のモデルを組み合わせる応用（検出＋深度で距離など）はどのタブにも属さないので、その時は専用のタブを考える
+- 複数のモデルを組み合わせるものは、次の「組み合わせのタブ」にする
+
+### 組み合わせのタブ（`tasks[].combo` と `web/apps.js` の `COMBOS`）
+
+2つ以上のモデルを同じフレームで回して、結果を組み合わせるタブ（例: しぐさ＝姿勢＋PINTO の部位）。
+
+```json
+{ "id": "gesture", "name": "しぐさ（姿勢＋PINTO）", "category": "detect", "result": "boxes",
+  "params": ["threshold", "track", "cascade"],
+  "combo": { "base": "pose", "app": "gesture",
+             "with": [{ "role": "parts", "name": "組み合わせるモデル（PINTO の部位）", "task": "wholebody", "show": ["head", "eye", "hand", "front", "…"] }] } }
+```
+
+| キー | 意味 |
+| --- | --- |
+| `combo.base` | 画面の「モデル」に並べるタブ。そのモデルの結果が `r` |
+| `combo.with` | 役割ごとの2つ目以降のモデル。`task` のタブのモデルを、`name` の選択欄で選ぶ。結果の `items` は `r.with[role]` に入る。`show` は PINTO のように表示するクラスを絞るモデルで、組み合わせに使うクラスを渡す（`params.show`） |
+| `combo.app` | 組み合わせ方（`COMBOS` の名前） |
+
+```js
+COMBOS.mycombo = {
+  combine(r) { ... },       // 追跡・cascade の後に呼ぶ。r.items（base の結果、追跡の ID つき）と r.with[role] から r.items を組み直す
+  panel: (r) => "<div>…</div>",  // 結果欄に足す HTML
+  summary: (r) => "…",      // 実行履歴の「結果」欄に足す文字
+};
+```
+
+- 同じフレームを役割ごとのモデルにも送る（`runOnce`）。同じ Worker のモデルは続けて実行されるので、1フレームの時間はほぼ足し算になる。推論時間・内訳は足し合わせて出す
+- 追跡は base の結果（`r.items`）にかかる。cascade（目の開閉など）は役割ごとのモデルの `cascade` を、そのモデルの結果にかける（`applyCombo`）。設定欄の「検出のあとの分類」も役割ごとのモデルのものが出る
+- 実行履歴はタブの名前と「base のモデル + 役割ごとのモデル」で残す。ベンチマークの候補には出さない（モデルは元のタブで測れる）
 
 ## 5. 見た目（`web/style.css`）
 

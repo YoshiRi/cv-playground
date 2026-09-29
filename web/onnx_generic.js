@@ -441,7 +441,7 @@ const POST = {
     return { kind: "boxes", items };
   },
   deim_wholebody(out, m, post, p) {
-    const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.35, show = new Set(post.show), items = [];
+    const t = Object.values(out)[0], D = t.data, [, Q, K] = t.dims, th = p.threshold ?? 0.35, show = new Set(p.show || post.show), items = [];
     for (let i = 0; i < Q; i++) {
       const r = D.subarray(i * K, i * K + K), label = post.classes[r[0] | 0];
       if (r[5] < th || !show.has(label)) continue;

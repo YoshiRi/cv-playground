@@ -212,7 +212,7 @@ def post_ultra_e2e_pose(out, m, post, p):
 
 def post_deim_wholebody(out, m, post, p):
     # PINTO の DEIMv2 Wholebody: (1, Q, 6) = クラス, x1, y1, x2, y2（入力に対する正規化）, スコア。表示するクラスは post.show
-    th, show, items = float(p.get("threshold", 0.35)), set(post["show"]), []
+    th, show, items = float(p.get("threshold", 0.35)), set(p.get("show") or post["show"]), []  # 組み合わせのタブは params.show で上書き
     for r in next(iter(out.values()))[0]:
         label = post["classes"][int(r[0])]
         if r[5] < th or label not in show:

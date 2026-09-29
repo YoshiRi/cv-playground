@@ -2,7 +2,7 @@ import { CATALOG, MODELS, TASKS } from "./catalog.js";
 import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { collectEnv, composeImage, download, resultData, safeName, shareOrDownload, stamp, stats, toCSV, toJSON, toMarkdown } from "./export.js";
 import { Tracker } from "./tracker.js";
-import { APPS } from "./apps.js";
+import { APPS, COMBOS } from "./apps.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -130,7 +130,10 @@ function setStatus(text, cls = "") {
 // onnx.server_file のモデルは server.py だけが配るので、サーバーが無い時は出さない
 // models.json の1件は where に実行できる場所を並べる。画面の選択肢は「モデル × 実行場所」ごとに1つ（値は key@where）。
 // 1ファイル版ではサーバーの選択肢を出さない
+// 組み合わせのタブ（tasks[].combo）の「モデル」は combo.base のタブのモデル
+const modelTask = (task) => TASKS.find((t) => t.id === task)?.combo?.base ?? task;
 function variants(task) {
+  task = modelTask(task);
   const out = [];
   for (const where of ["browser", "server"]) {
     for (const e of MODELS.filter((x) => x.task === task && x.where.includes(where) && (state.hasServer || !x.onnx?.server_file))) {
@@ -288,9 +291,24 @@ function selectTask(id) {
   renderApps(t);
   $("canvas-wrap").classList.toggle("clickable", !!t.click);
 
-  const sel = $("model");
+  fillModels($("model"), variants(id));
+  // 組み合わせのタブは、役割ごとに2つ目以降のモデルも選ぶ
+  $("combo-models").innerHTML = (t.combo?.with || []).map((w) => `<label class="field">${esc(w.name)}<select data-combo-role="${w.role}"></select></label>`).join("");
+  for (const w of t.combo?.with || []) {
+    const s = document.querySelector(`[data-combo-role="${w.role}"]`);
+    fillModels(s, variants(w.task));
+    if (w.default && [...s.options].some((o) => o.value === `${w.default}@browser`)) s.value = `${w.default}@browser`; // 役割ごとの既定のモデル
+    s.onchange = () => { stopLive(); clearResult(); updateModelNote(); draw(); };
+  }
+  updateModelNote();
+  updateButtons();
+  setStatus("");
+  $("result").innerHTML = "";
+  draw();
+}
+
+function fillModels(sel, vs) {
   sel.innerHTML = "";
-  const vs = variants(id);
   for (const where of ["browser", "server"]) {
     const g = document.createElement("optgroup");
     g.label = where === "browser" ? "ブラウザで実行（この端末）" : "サーバーで実行";
@@ -306,14 +324,18 @@ function selectTask(id) {
   }
   const first = vs.find((v) => !v.avoid && v.ready);
   if (first) sel.value = first.id;
-  updateModelNote();
-  updateButtons();
-  setStatus("");
-  $("result").innerHTML = "";
-  draw();
 }
 
 const curTask = () => TASKS.find((t) => t.id === state.task);
+// 組み合わせのタブの、役割ごとのモデル（{role: variant}）
+function comboModels() {
+  const t = curTask(), out = {};
+  for (const w of t.combo?.with || []) {
+    const s = document.querySelector(`[data-combo-role="${w.role}"]`);
+    out[w.role] = variants(w.task).find((v) => v.id === s?.value);
+  }
+  return out;
+}
 
 function currentModel() {
   return variants(state.task).find((v) => v.id === $("model").value);
@@ -351,7 +373,8 @@ function updateModelNote() {
   }
   lastModelId = m.id;
   $("advanced").hidden = $("ort-opt-row").hidden && $("input-size-row").hidden;
-  $("cascade").innerHTML = (m.cascade || []).map((c) =>
+  const cascadeFrom = Object.values(comboModels()).find((x) => x?.cascade) || m; // 組み合わせのタブは、部位のモデルの cascade
+  $("cascade").innerHTML = (cascadeFrom.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
   $("model-note").textContent = notes.filter(Boolean).join(" / ");
@@ -529,6 +552,7 @@ function renderResult(m, r, live) {
       + `<div class="bd-legend">${parts.map(([k, v, c]) => `<span><i style="background:${c}"></i>${k} ${fmt(v)}</span>`).join("")}</div></div>`;
   }
   const body = (KINDS[r.kind]?.panel(r, { live, points: state.points.length }) ?? "")
+    + (COMBOS[curTask().combo?.app]?.panel(r) ?? "")
     + state.apps.map((a) => APPS[a.id].panel?.(a.st) ?? "").join("");
   $("result").innerHTML = `<div class="result-head"><b>${esc(m.name)}</b><span class="badge ${m.where}">${esc(where)}</span></div>`
     + `<div class="stats">${stats}</div>${bd}${live ? `<div class="sub muted">${live.frames} フレーム</div>` : ""}<div class="result-body">${body}</div>`;
@@ -538,10 +562,12 @@ function renderResult(m, r, live) {
 
 // 1回の実行（連続実行・ベンチマークは1まとめ）を1件の記録にする。列は export.js の RUN_COLUMNS
 function makeRecord(m, r, mode, extra = {}) {
-  const task = TASKS.find((t) => t.id === m.task).name;
+  // 組み合わせのタブは、タブの名前と「モデル + 役割ごとのモデル」で記録する（ベンチは組み合わせのタブを測らない）
+  const combo = r.withModels && mode !== "bench" ? Object.values(r.withModels) : [];
+  const task = combo.length ? curTask().name : TASKS.find((t) => t.id === m.task).name;
   const bd = r.breakdown || {};
   return {
-    time: new Date().toISOString(), mode, task, model_key: m.key, model_name: m.name, where: m.where === "browser" ? "ブラウザ" : "サーバー",
+    time: new Date().toISOString(), mode, task, model_key: [m.key, ...combo.map((x) => x.key)].join("+"), model_name: [m.name, ...combo.map((x) => x.name)].join(" + "), where: m.where === "browser" ? "ブラウザ" : "サーバー",
     device: r.device, runtime: m.where === "browser" ? r.dtype || "" : "", input_size: m.pre?.dynamic ? parseInt($("input-size").value, 10) : "",
     frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind, ...extra,
@@ -601,7 +627,7 @@ const BENCH_WARMUP = 3;
 // 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
 // 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
 function benchCandidates() {
-  return TASKS.filter((t) => !t.click).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+  return TASKS.filter((t) => !t.click && !t.combo).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
 }
 
 function renderBench() {
@@ -731,8 +757,29 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
   if (!confirmDownload(m)) throw new Error("ダウンロードを取りやめた");
-  const r = m.where === "browser" ? await runInBrowser(m, image, params) : await runOnServer(m, image, params);
+  const run1 = (mm, img, pp) => (mm.where === "browser" ? runInBrowser(mm, img, pp) : runOnServer(mm, img, pp));
+  // 組み合わせのタブ: 同じフレームを役割ごとのモデルにも送る（ImageBitmap は Worker に渡すと使えなくなるので写しを作る）。
+  // 同じ Worker なら届いた順に続けて実行される
+  const t = curTask(), extra = [];
+  for (const wdef of t.combo?.with || []) {
+    const mm = comboModels()[wdef.role];
+    if (!mm) continue;
+    if (!confirmDownload(mm)) throw new Error("ダウンロードを取りやめた");
+    const img = image instanceof ImageBitmap ? await createImageBitmap(image) : image;
+    extra.push([wdef.role, mm, run1(mm, img, { ...params, show: wdef.show })]);
+  }
+  const r = await run1(m, image, params);
   r.w = w; r.h = h;
+  if (extra.length) {
+    r.with = {}; r.withModels = {};
+    for (const [role, mm, pr] of extra) {
+      const x = await pr;
+      r.with[role] = x.items || []; r.withModels[role] = mm;
+      r.infer_ms += x.infer_ms || 0;
+      if (r.roundtrip_ms != null || x.roundtrip_ms != null) r.roundtrip_ms = (r.roundtrip_ms || 0) + (x.roundtrip_ms || 0);
+      for (const k of Object.keys(x.breakdown || {})) if (r.breakdown) r.breakdown[k] = (r.breakdown[k] || 0) + x.breakdown[k];
+    }
+  }
   if (m.where === "browser" && !downloaded().has(m.key)) { markDownloaded(m.key); updateModelNote(); showStorage(); }
   $("progress").hidden = true;
   if (r.breakdown) r.breakdown = { grab: grabMs, ...r.breakdown };
@@ -752,6 +799,7 @@ async function run() {
   try {
     const r = await runOnce(m);
     await applyCascade(m, r, null);
+    await applyCombo(r, null);
     state.apps = createApps();
     applyApps(r, { tracked: false });
     renderResult(m, r);
@@ -808,6 +856,7 @@ async function liveLoop() {
     }
     state.result = r;
     await applyCascade(m, r, tracker ? seqStore : null);
+    await applyCombo(r, tracker ? seqStore : null);
     applyApps(r, { tracked: !!tracker });
     if (!first) { first = r; tStart = performance.now(); setStatus(""); }
     frames++;
@@ -906,7 +955,21 @@ function applyApps(r, ctx) {
   for (const a of state.apps) APPS[a.id].update(a.st, r, ctx);
 }
 // 実行履歴の「結果」欄: base（モデルの結果の要約や追跡の ID 数）に応用の集計を足す
-const appsSummary = (base) => ({ summary: [base, ...state.apps.map((a) => APPS[a.id].summary?.(a.st))].filter(Boolean).join(" ・ ") });
+const appsSummary = (base) => ({ summary: [base, COMBOS[curTask().combo?.app]?.summary(state.result || {}), ...state.apps.map((a) => APPS[a.id].summary?.(a.st))].filter(Boolean).join(" ・ ") });
+
+// 組み合わせのタブ: 役割ごとのモデルの結果に cascade（目の開閉・指差しなど）をかけてから、COMBOS[combo.app] で組み直す
+async function applyCombo(r, seqStore) {
+  const c = curTask().combo;
+  if (!c || !r.with) return;
+  for (const [role, items] of Object.entries(r.with)) {
+    const mm = r.withModels[role];
+    if (!mm?.cascade) continue;
+    const sub = { kind: "boxes", items };
+    await applyCascade(mm, sub, seqStore);
+    r.cascade_ms = (r.cascade_ms || 0) + (sub.cascade_ms || 0);
+  }
+  COMBOS[c.app]?.combine(r);
+}
 
 // 検出のあと、models.json の cascade に書いたクラスの枠を切り出して小さな分類モデルにかけ、枠の表示に状態を足す
 // （例: 目 → OCEC で開/閉）。seq のモデルは追跡の ID ごとに切り出しをためて、T 枚そろったら判定する
@@ -929,6 +992,7 @@ async function applyCascade(m, r, seqStore) {
     if (c.seq) {
       if (!seqStore) continue; // フレーム列は追跡の ID が無いと同じ手をつなげられない
       for (const it of targets) {
+        if (it.id == null) continue; // 追跡の ID が無い物（組み合わせのタブの部位など）は、違う物のフレームがつながるので判定しない
         const b = await crop(it);
         if (!b) continue;
         const hist = seqStore.get(`${c.id}:${it.id}`) || [];

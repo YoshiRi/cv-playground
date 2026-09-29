@@ -25,7 +25,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 ## Features
 
 - **Tasks** (grouped into four categories)
-  - Detection & tracking: object detection / human pose / hands & eyes (PINTO's ultra-light models) / text-prompted object detection
+  - Detection & tracking: object detection / human pose / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection
   - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
   - Depth & 3D: depth estimation
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)

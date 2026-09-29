@@ -823,14 +823,45 @@
    "where": [
     "browser"
    ],
-   "adapter": "tjs-depth",
-   "mb": 99,
-   "repo": "onnx-community/depth-anything-v2-small",
-   "dtype": {
-    "webgpu": "fp32",
-    "wasm": "q8"
+   "adapter": "onnx",
+   "mb": 50,
+   "onnx": {
+    "repo": "onnx-community/depth-anything-v2-small",
+    "file": "onnx/model.onnx",
+    "file_fp16": "onnx/model_fp16.onnx",
+    "sha256": {
+     "onnx/model.onnx": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c",
+     "onnx/model_fp16.onnx": "2df6223f206b5164e21f664ace61dabeb9bb6a49b8b5a3e00510b4807d0f5b04"
+    }
    },
-   "license": "Apache-2.0"
+   "pre": {
+    "size": [
+     518,
+     518
+    ],
+    "resize": "letterbox_rect",
+    "stride": 14,
+    "dynamic": true,
+    "scale": 0.00392156862745098,
+    "mean": [
+     0.485,
+     0.456,
+     0.406
+    ],
+    "std": [
+     0.229,
+     0.224,
+     0.225
+    ],
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "depth",
+    "output": "predicted_depth"
+   },
+   "license": "Apache-2.0",
+   "bench": true,
+   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める（transformers.js の既定は短辺 518）。小さくするほど速く、深度の細かさは粗くなる"
   },
   {
    "key": "da3-small",
@@ -852,9 +883,13 @@
     }
    },
    "pre": {
-    "resize": "keep_aspect",
-    "short": 518,
-    "multiple": 14,
+    "size": [
+     518,
+     518
+    ],
+    "resize": "letterbox_rect",
+    "stride": 14,
+    "dynamic": true,
     "scale": 0.00392156862745098,
     "mean": [
      0.485,
@@ -881,7 +916,8 @@
     "providers": "cpu"
    },
    "license": "Apache-2.0",
-   "bench": true
+   "bench": true,
+   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める。小さくするほど速く、深度の細かさは粗くなる"
   },
   {
    "key": "dav2-large",

@@ -62,7 +62,7 @@ const ADAPTERS = {
   onnx: {
     image: "bitmap",
     load: async (e, device, onProgress) => ({ session: await onnxLoad(ort, e, device, onProgress) }),
-    run: (st, img, p, e) => onnxRun(ort, st.session, e, img, p),
+    run: (st, img, p, e) => onnxRun(ort, st, e, img, p),
   },
 
   "tjs-detect": {

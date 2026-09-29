@@ -330,6 +330,7 @@ function runtimeLabel(m) {
   return `transformers.js ${TJS_VERSIONS[m.lib || 4]}（${m.adapter}）`;
 }
 
+let lastModelId = null; // 前に選んでいたモデル（入力サイズの既定をモデルを替えた時だけ入れる）
 function updateModelNote() {
   const m = currentModel();
   if (!m) return;
@@ -343,6 +344,12 @@ function updateModelNote() {
   if (m.avoid) notes.push(m.avoid);
   $("ort-opt-row").hidden = !(m.where === "browser" && m.adapter === "onnx");
   $("input-size-row").hidden = !m.pre?.dynamic;
+  // 入力サイズ可変のモデルを選んだ時は、そのモデルの標準の長辺（pre.size[0]。深度は 518、YOLO は 640）を既定にする
+  if (m.pre?.dynamic && m.id !== lastModelId && [...$("input-size").options].some((o) => +o.value === m.pre.size[0])) {
+    $("input-size").value = String(m.pre.size[0]);
+    $("input-size").onchange?.();
+  }
+  lastModelId = m.id;
   $("advanced").hidden = $("ort-opt-row").hidden && $("input-size-row").hidden;
   $("cascade").innerHTML = (m.cascade || []).map((c) =>
     `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
@@ -1010,8 +1017,7 @@ async function init() {
   $("view").onchange = draw;
   $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("input-size").onchange = () => {
-    // graph capture は入力の形が変わると使えないので読み直す。フレームの処理解像度もモデル入力以上にそろえる
-    if ($("ort-opt").value.includes("graph")) { stopLive(); restartWorker("ort"); }
+    // 入力の形が変わると、Worker がその形でセッションを作り直す（onnx_generic.js の onnxRun）。フレームの処理解像度もモデル入力以上にそろえる
     const s = $("input-size").value, f = $("infer-size");
     if (+f.value < +s && [...f.options].some((o) => o.value === s)) f.value = s;
   };

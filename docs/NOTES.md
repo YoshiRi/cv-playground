@@ -138,6 +138,15 @@ SegFormer B0（ADE20K）は transformers.js の image-segmentation パイプラ�
 
 Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレーム 123〜161ms（前処理 6〜7・モデル実行 116〜139・後処理 21〜23ms）、6〜8fps。transformers.js 版は1回 1695ms（読み込み済み、Chrome）だったので 10 倍以上速い。スマホではモデル実行（M4 の約 3.5 倍）が主で、次は入力を 512 より小さくする余地がある。後処理（150 クラスの最大を JS で）の 21ms は GPU に移せば縮む
 
+## 深度のリアルタイム化（2026-09-29）
+
+- Depth Anything V2 small を transformers.js から汎用 ONNX（fp16、50MB）に移し、DA3 small とそろえて入力を「長辺を『モデル入力（長辺）』に合わせ、14 の倍数まで余白で埋める」（`letterbox_rect`、`stride: 14`、`dynamic`）にした。transformers.js の既定は短辺 518 で、16:9 の動画だと 924×518 になる。長辺 518 なら 518×294（画素は約 1/3）
+- **入力の大きさが実行時に決まるモデルも形を固定する**: 最初の実行で入力の形が分かった所で、その形でセッションを作り直す（形が変わった時も。`onnx_generic.js` の `onnxRun`）。形の計算が CPU に回らなくなり、DA3 small も graph capture を使えるようになった（ベンチ 235 → 150ms、518×518）。入力サイズ可変の YOLO26 は 64bit 整数の出力の頭が残るので使えない
+- モデルを選んだ時、「モデル入力（長辺）」の既定をそのモデルの `pre.size[0]`（深度 518、YOLO 640）にする（選択肢に 518 を足した）
+- M4 の Chrome、ベンチ（正方形の画像、中央値）: Depth Anything V2 small（fp16 + graph capture）は長辺 320 で 40ms、480 で 93ms、640 で 181ms。DA3 small（fp32、fp16 版なし）は 320 で 53ms、640 で 270ms
+- 連続実行（人物の動画 640×360 を3倍速、約 36fps）: Depth Anything V2 small は長辺 320 で 32fps（動画の速さが上限）、480 で 20fps。DA3 small は短辺 518 のままだと 3fps（1フレーム 338ms）
+- DA3 の推定する水平画角は入力の大きさで変わる（街の写真で長辺 320 だと 33°、640 だと 42°）。画角を見る時は大きい入力で
+
 ## Grounding DINO の候補の扱い
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）

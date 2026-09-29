@@ -60,39 +60,54 @@ export async function onnxLoad(ort, e, device, onProgress) {
   }
   // 詳細計測（?profile=1 の時だけ）: onnxruntime の profiler で、ノードごとの時間と WebGPU の命令ごとの GPU 時間を記録する
   if (e.profile) opts.enableProfiling = true;
-  const create = (o) => ort.InferenceSession.create(model, o);
-  // 入力の大きさが決まっているモデルは、ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定する。
-  // 形の計算が CPU に回らずに済み、GPU の命令も形に合わせて作られる（DEIMv2 Atto は M4 で 18 → 11ms）。名前はモデルごとに違うので、
-  // 一度作ったセッションの inputMetadata から読む（固定するものが無ければそのセッションをそのまま使う）
-  const fixed = fixedDims(e);
-  let session = null;
-  if (fixed) {
-    session = await create(opts);
-    const shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape, fdo = {};
-    if (shape?.length === fixed.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = fixed[i]; });
-    if (Object.keys(fdo).length) { opts.freeDimensionOverrides = fdo; await session.release(); session = null; }
+  // 入力の形の固定: ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定する。形の計算が CPU に回らずに済み、
+  // GPU の命令も形に合わせて作られ、graph capture も使えるようになることが多い（DEIMv2 Atto は M4 で 18 → 11ms）。
+  // 次元の名前はモデルごとに違うので、一度作ったセッションの inputMetadata から読む。
+  // - 入力の大きさが pre.size で決まるモデル: ここで固定する
+  // - 大きさが画像や「モデル入力（長辺）」で変わるモデル（WebGPU のみ）: 実行時に形が分かった所で作り直す（onnxRun）
+  const wantGraph = opt.includes("graph"), fixed = fixedDims(e);
+  const dynamicShape = device === "webgpu" && !fixed && !e.pre.batch && !e.pre.seq;
+  let session = await ort.InferenceSession.create(model, opts);
+  const shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;
+  const fdo = fixed ? fdoFor(shape, fixed) : null;
+  let graph = false, graphFallback = false;
+  if (!dynamicShape && (fdo || wantGraph)) {
+    await session.release();
+    ({ session, graph, graphFallback } = await createSession(ort, e, model, fdo ? { ...opts, freeDimensionOverrides: fdo } : opts, wantGraph));
   }
-  // graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
-  // （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしにする。作れないと分かったモデルは覚えておき、
-  // 同じ Worker で読み直す時は試さない
-  const graph = opt.includes("graph") && !noGraph.has(e.key);
-  let graphFallback = opt.includes("graph") && noGraph.has(e.key);
-  if (graph) {
-    await session?.release();
+  const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
+  const cvpg = { webgpu: device === "webgpu", graph, graphFallback, fp16, fdo, file, gpuInput: null, dynamicShape, shapeKey: null };
+  if (dynamicShape) {
+    cvpg.rebuild = async (dims) => {
+      const f = fdoFor(shape, dims), r = await createSession(ort, e, model, f ? { ...opts, freeDimensionOverrides: f } : opts, wantGraph);
+      return Object.assign(r.session, { cvpg: { ...cvpg, graph: r.graph, graphFallback: r.graphFallback, fdo: f, gpuInput: null, tex: null, shapeKey: dims.join("x") } });
+    };
+  }
+  return Object.assign(session, { cvpg });
+}
+
+// graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
+// （CPU に回るノードがあると作れない）なので、作れない時は graph capture なしで作る。作れないと分かったモデルは覚えておき、
+// 同じ Worker で作り直す時は試さない
+async function createSession(ort, e, model, opts, wantGraph) {
+  if (wantGraph && !noGraph.has(e.key)) {
     try {
-      session = await create({ ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true });
+      return { session: await ort.InferenceSession.create(model, { ...opts, preferredOutputLocation: "gpu-buffer", enableGraphCapture: true }), graph: true, graphFallback: false };
     } catch (err) {
       if (!/graph capture/i.test(String(err?.message || err))) throw err;
       noGraph.add(e.key);
-      session = null;
-      graphFallback = true;
     }
   }
-  session ??= await create(opts);
-  const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
-  return Object.assign(session, { cvpg: { webgpu: device === "webgpu", graph: graph && !graphFallback, graphFallback, fp16, fdo: opts.freeDimensionOverrides, file, gpuInput: null } });
+  return { session: await ort.InferenceSession.create(model, opts), graph: false, graphFallback: wantGraph };
 }
 const noGraph = new Set(); // graph capture を作れなかったモデル（entry.key）
+
+// 可変の次元の名前 → 固定する値（shape は inputMetadata の形、dims は実際の入力の形）
+function fdoFor(shape, dims) {
+  const fdo = {};
+  if (shape?.length === dims.length) shape.forEach((d, i) => { if (typeof d === "string") fdo[d] = dims[i]; });
+  return Object.keys(fdo).length ? fdo : null;
+}
 
 // 入力の形が1通りに決まるモデルの入力の次元（前処理と同じ並び）。入力サイズ可変・バッチ・フレーム列のモデルは決まらないので null
 function fixedDims(e) {
@@ -482,8 +497,19 @@ export async function onnxEmbed(ort, session, e, bitmaps) {
   return feats;
 }
 
-export async function onnxRun(ort, session, e, bitmap, params) {
+// st = { session }（Worker の読み込み済みの状態）。入力の大きさが変わるモデルは、形が変わった時にセッションを作り直して st.session を替える
+export async function onnxRun(ort, st, e, bitmap, params) {
   const t0 = performance.now();
+  if (st.session.cvpg.dynamicShape) {
+    const dims = inputDims(e.pre, layout(bitmap.width, bitmap.height, e.pre, params.input_size));
+    if (st.session.cvpg.shapeKey !== dims.join("x")) {
+      const old = st.session;
+      st.session = await old.cvpg.rebuild(dims);
+      old.cvpg.gpuInput?.destroy(); old.cvpg.tex?.destroy();
+      await old.release();
+    }
+  }
+  const session = st.session;
   let feed, meta;
   if (useGpuPre(ort, session, e)) {
     try { ({ feed, meta } = gpuPreprocess(ort, session, bitmap, e.pre, params.input_size, e.preMode === "gpu" ? "gpu" : "upload")); }

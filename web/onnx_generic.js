@@ -453,10 +453,13 @@ const POST = {
     const t = out[post.output || "predicted_depth"], [h, w] = t.dims.slice(-2);
     let v = Float32Array.from(t.data);
     if (post.inverse) v = v.map((d) => 1 / Math.max(d, 1e-6)); // 「大きいほど遠い」深度を、表示用に「大きいほど近い」へ
+    // 範囲は画像の中だけで取る（letterbox の余白の部分の値は意味が無い）。range を返し、表示側で範囲を固定して塗り直せるようにする
+    const fx = w / m.iw, fy = h / m.ih, x0 = Math.round(m.ox * fx), y0 = Math.round(m.oy * fy);
+    const x1 = Math.min(w, x0 + Math.round(m.cw * fx)), y1 = Math.min(h, y0 + Math.round(m.ch * fy));
     let lo = Infinity, hi = -Infinity;
-    for (const a of v) { if (a < lo) lo = a; if (a > hi) hi = a; }
+    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const a = v[y * w + x]; if (a < lo) lo = a; if (a > hi) hi = a; }
     v = v.map((a) => (a - lo) / Math.max(hi - lo, 1e-6));
-    const res = { kind: "depth", image: await cropResizePng(v, w, h, m) };
+    const res = { kind: "depth", image: await cropResizePng(v, w, h, m), range: [lo, hi] };
     if (post.intrinsics && out[post.intrinsics]) {
       const fx = out[post.intrinsics].data[0];
       res.note = `推定した水平画角 ${((2 * Math.atan(m.cw / 2 / fx) * 180) / Math.PI).toFixed(0)}°（DA3 はカメラの内部パラメータも出す）`;

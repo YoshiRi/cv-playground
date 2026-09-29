@@ -789,6 +789,7 @@ async function liveLoop() {
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();
+  KINDS.depth.resetRange(); // 深度の「範囲を固定」は連続実行ごとに取り直す
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   const overrides = tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {};
   // SAM 系の「動画で追う」: 1フレーム目はクリックした点、2フレーム目からは前のフレームのマスクを囲む枠（少し広げる）と中の1点を
@@ -1046,7 +1047,7 @@ async function init() {
   $("pause").onclick = () => { const v = $("video"); v.paused ? v.play() : v.pause(); updateButtons(); };
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
-  $("view").onchange = draw;
+  $("view").onchange = () => { KINDS.depth.resetRange(); draw(); };
   $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("input-size").onchange = () => {
     // 入力の形が変わると、Worker がその形でセッションを作り直す（onnx_generic.js の onnxRun）。フレームの処理解像度もモデル入力以上にそろえる

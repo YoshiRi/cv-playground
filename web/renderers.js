@@ -49,6 +49,19 @@ async function layerFrom(src, fn) {
   return c;
 }
 
+// 深度の「範囲を固定」: そのフレームの 0〜255（range の最小〜最大）を、固定した範囲に置き直して塗る
+let fixedRange = null;
+function remapLayer(r, [LO, HI]) {
+  const img = r.layer, w = img.width, h = img.height, [lo, hi] = r.range;
+  const c = new OffscreenCanvas(w, h), x = c.getContext("2d"), d = x.createImageData(w, h);
+  for (let i = 0, j = 0; i < r.t8.length; i++, j += 4) {
+    const val = lo + (r.t8[i] / 255) * (hi - lo), t = clamp01((val - LO) / Math.max(HI - LO, 1e-9));
+    const [cr, cg, cb] = turbo(t); d.data[j] = cr; d.data[j + 1] = cg; d.data[j + 2] = cb; d.data[j + 3] = 255;
+  }
+  x.putImageData(d, 0, 0);
+  return c;
+}
+
 // 深度の色（turbo の近似。赤＝近い、青＝遠い）
 function turbo(t) {
   const r = 0.13572138 + t * (4.6153926 + t * (-42.66032258 + t * (132.13108234 + t * (-152.94239396 + t * 59.28637943))));
@@ -165,17 +178,31 @@ export const KINDS = {
   },
 
   // 深度: image = 明るいほど近いグレースケール
+  // 色の範囲: 既定はフレームごとに「画像の中の最小〜最大」（毎回いっぱいに使うので、値が揺れても見えない）。
+  // 「範囲を固定」は、固定を選んで最初に描いたフレームの range で塗り、範囲の外は端の色にする（時間的な安定性を見る用）。
+  // 連続実行の開始と、表示の切り替えで取り直す（resetRange）
   depth: {
-    views: () => [["only", "深度だけ"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
+    views: () => [["only", "深度だけ（毎フレームの範囲）"], ["fixed", "深度だけ（範囲を固定）"], ["overlay", "半透明で重ねる"], ["original", "元画像"]],
     async prepare(r) {
-      r.layer = await layerFrom(r.image, (d, i, t) => { const [cr, cg, cb] = turbo(t); d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = 255; });
+      const t8 = [];
+      r.layer = await layerFrom(r.image, (d, i, t) => { t8[i >> 2] = d[i]; const [cr, cg, cb] = turbo(t); d[i] = cr; d[i + 1] = cg; d[i + 2] = cb; d[i + 3] = 255; });
+      r.t8 = Uint8Array.from(t8);
     },
     draw(ctx, r, b, view) {
+      let layer = r.layer;
+      if (view === "fixed" && r.range && r.t8) {
+        fixedRange ??= r.range;
+        if (r.fixedFor !== fixedRange) { r.fixedLayer = remapLayer(r, fixedRange); r.fixedFor = fixedRange; }
+        layer = r.fixedLayer;
+      }
       ctx.globalAlpha = view === "overlay" ? 0.55 : 1;
-      ctx.drawImage(r.layer, 0, 0, b.w, b.h);
+      ctx.drawImage(layer, 0, 0, b.w, b.h);
       ctx.globalAlpha = 1;
     },
-    panel: (r) => `<div class="legend"><span>遠い</span><i style="background:${TURBO_CSS}"></i><span>近い</span></div>${r.note ? `<div class="sub">${esc(r.note)}</div>` : ""}`,
+    resetRange() { fixedRange = null; },
+    panel: (r) => `<div class="legend"><span>遠い</span><i style="background:${TURBO_CSS}"></i><span>近い</span></div>`
+      + (r.range ? `<div class="sub">色の範囲: 「深度だけ（毎フレームの範囲）」はフレームごとに最小〜最大へ合わせ直す。「範囲を固定」は最初のフレームの範囲のまま（値の揺れが見える）</div>` : "")
+      + (r.note ? `<div class="sub">${esc(r.note)}</div>` : ""),
     summary: () => "深度",
   },
 

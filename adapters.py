@@ -153,8 +153,14 @@ def post_depth(out, m, post, p):
     d = np.squeeze(out[post.get("output", "predicted_depth")]).astype(np.float32)
     if post.get("inverse"):  # 「大きいほど遠い」深度を、表示用に「大きいほど近い」へ
         d = 1 / np.maximum(d, 1e-6)
-    d = (d - d.min()) / max(float(d.max() - d.min()), 1e-6)
-    res = {"kind": "depth", "image": png_data_url(crop_resize(d * 255, m))}
+    # 範囲は画像の中だけで取る（letterbox の余白の値は意味が無い）。range は表示側で範囲を固定して塗り直すのに使う（onnx_generic.js と同じ）
+    h, w = d.shape
+    fx, fy = w / m["iw"], h / m["ih"]
+    y0, x0 = round(m["oy"] * fy), round(m["ox"] * fx)
+    c = d[y0:y0 + round(m["ch"] * fy), x0:x0 + round(m["cw"] * fx)]
+    lo, hi = float(c.min()), float(c.max())
+    d = np.clip((d - lo) / max(hi - lo, 1e-6), 0, 1)
+    res = {"kind": "depth", "image": png_data_url(crop_resize(d * 255, m)), "range": [lo, hi]}
     if post.get("intrinsics") in out:
         fx = float(np.squeeze(out[post["intrinsics"]])[0, 0])
         res["note"] = f"推定した水平画角 {math.degrees(2 * math.atan(m['cw'] / 2 / fx)):.0f}°（DA3 はカメラの内部パラメータも出す）"

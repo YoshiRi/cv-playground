@@ -430,7 +430,10 @@
     "sha256": {
      "onnx/model.onnx": "6ca5dc9681e0305708085715427f50779c761d5abfddaa0c38ac7c2d89b56085",
      "onnx/model_fp16.onnx": "6063e023c0c5c16e918b276eb4be6e4556c41723e92e1016c8da789ebe3930d7"
-    }
+    },
+    "cut": [
+     "/model.23/Transpose_2_output_0"
+    ]
    },
    "pre": {
     "size": [
@@ -443,7 +446,7 @@
     "input": "pixel_values"
    },
    "post": {
-    "type": "yolo_pose"
+    "type": "yolo_pose_raw"
    },
    "license": "AGPL-3.0（Ultralytics）",
    "bench": true
@@ -496,7 +499,10 @@
     "sha256": {
      "onnx/model.onnx": "5bff1f4d49f638ab830559fcefe0560e4e9f0e82d861ef2d929114ef48d5c37c",
      "onnx/model_fp16.onnx": "41e0d8fe8eedb9d6caa10314eeeb542e7143da3ec478a1b01ced8bdd13b17c8d"
-    }
+    },
+    "cut": [
+     "/model.23/Transpose_2_output_0"
+    ]
    },
    "pre": {
     "size": [
@@ -509,7 +515,7 @@
     "input": "pixel_values"
    },
    "post": {
-    "type": "yolo_pose"
+    "type": "yolo_pose_raw"
    },
    "license": "AGPL-3.0（Ultralytics）"
   },

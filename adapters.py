@@ -142,6 +142,21 @@ def post_yolo_pose(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
+def post_yolo_pose_raw(out, m, post, p):
+    # onnx.cut で出力の頭の手前で切った YOLO26-pose: (1, 候補数, 56) = x1 y1 x2 y2（入力のピクセル）, スコア, 17 ×（x, y, 可視度）
+    th, d = float(p.get("threshold", 0.4)), next(iter(out.values()))[0]
+    items = []
+    for i in np.argsort(-d[:, 4])[: post.get("max", 300)]:
+        r = d[i]
+        if r[4] < th:
+            break
+        x1, y1 = to_orig(r[0], r[1], m)
+        x2, y2 = to_orig(r[2], r[3], m)
+        kps = [[*map(float, to_orig(k[0], k[1], m)), float(k[2])] for k in r[5:].reshape(17, 3)]
+        items.append({"label": "person", "score": float(r[4]), "box": [float(x1), float(y1), float(x2), float(y2)], "keypoints": kps})
+    return {"kind": "boxes", "items": items}
+
+
 def post_alpha(out, m, post, p):
     a = np.squeeze(out[post.get("output")] if post.get("output") else next(iter(out.values())))
     if post.get("sigmoid"):
@@ -223,7 +238,7 @@ def post_deim_wholebody(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
-POST = {"segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+POST = {"yolo_pose_raw": post_yolo_pose_raw, "segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):
@@ -248,6 +263,16 @@ class OnnxAdapter(Adapter):
             providers, self.device = ["CPUExecutionProvider"], "cpu"
         else:
             providers, self.device = [("CoreMLExecutionProvider", {"ModelFormat": "MLProgram"}), "CPUExecutionProvider"], "coreml"
+        if o.get("cut"):  # 途中の値で切る（ブラウザの onnx_generic.js の cutOnnx と同じ。出力は cut_0, cut_1, …）
+            import onnx
+            from onnx import TensorProto, helper
+            mp = onnx.load(path)
+            sub = onnx.utils.Extractor(mp).extract_model([i.name for i in mp.graph.input], o["cut"])
+            for i, name in enumerate(o["cut"]):
+                sub.graph.node.append(helper.make_node("Cast", [name], [f"cut_{i}"], to=TensorProto.FLOAT))
+            del sub.graph.output[:]
+            sub.graph.output.extend([helper.make_tensor_value_info(f"cut_{i}", TensorProto.FLOAT, None) for i in range(len(o["cut"]))])
+            path = sub.SerializeToString()
         self.sess = ort.InferenceSession(path, providers=providers)
         self.outputs = [o.name for o in self.sess.get_outputs()]
 

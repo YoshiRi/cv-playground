@@ -49,9 +49,12 @@ export async function onnxLoad(ort, e, device, onProgress) {
   if (e.opt === "wasm") device = "wasm";
   const opt = device === "webgpu" ? e.opt || "" : "";
   const file = opt.startsWith("fp16") && e.onnx.file_fp16 ? e.onnx.file_fp16 : e.onnx.file;
-  const model = e.onnx.server_file
+  let model = e.onnx.server_file
     ? await fetchModelFile(new URL("local-models/" + e.onnx.server_file, e.webRoot).href, onProgress)
     : e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
+  // onnx.cut: 途中の値で切り、そこより後ろのノードを消す（出力の頭が CPU に回って graph capture を作れないモデル用。
+  // 重みのライセンス上、書き換えた ONNX は配らず、取得した ONNX をこの端末で書き換える）
+  if (e.onnx.cut) model = cutOnnx(model, e.onnx.cut);
   // WebGPU は { name } の形で渡す。onnxruntime-web 1.30 は文字列の "webgpu" だと enableGraphCapture を WebGPU EP に渡さず、
   // graph capture が黙って無効になる（EP の設定のログが "graph capture enable: 0" のまま）
   const opts = { executionProviders: [device === "webgpu" ? { name: "webgpu" } : "wasm"], graphOptimizationLevel: "all" };
@@ -85,6 +88,58 @@ export async function onnxLoad(ort, e, device, onProgress) {
     };
   }
   return Object.assign(session, { cvpg });
+}
+
+// ---------- ONNX を途中で切る（protobuf を直接たどる。外部のライブラリは使わない） ----------
+// ModelProto の graph（7）の中の node（1）を、outputs の値を作るのに要るものだけ残し（後ろからたどる）、出力（12）を差し替える。
+// 切った値を float に直す Cast を足す（fp16 版では値が fp16 のため。float のモデルでは何もしない）。出力は cut_0, cut_1, …
+const utf8 = new TextDecoder(), enc = new TextEncoder();
+function readVarint(b, p) {
+  let x = 0, s = 1;
+  for (;;) { const c = b[p++]; x += (c & 0x7f) * s; if (c < 0x80) return [x, p]; s *= 128; }
+}
+function pbFields(b, start, end) {
+  const out = [];
+  for (let p = start; p < end;) {
+    const s = p;
+    let key, ps, pe;
+    [key, p] = readVarint(b, p);
+    const f = Math.floor(key / 8), wt = key & 7;
+    if (wt === 0) { [, p] = readVarint(b, p); ps = s; pe = p; }
+    else if (wt === 1) { p += 8; ps = s; pe = p; }
+    else if (wt === 5) { p += 4; ps = s; pe = p; }
+    else if (wt === 2) { let len; [len, ps] = readVarint(b, p); p = ps + len; pe = p; }
+    else throw new Error(`ONNX の読み取りに失敗（wire type ${wt}）`);
+    out.push({ f, s, ps, pe });
+  }
+  return out;
+}
+const pbVarint = (n) => { const a = []; while (n >= 128) { a.push((n % 128) | 128); n = Math.floor(n / 128); } a.push(n); return a; };
+const pbCat = (parts) => { const n = parts.reduce((s, x) => s + x.length, 0), o = new Uint8Array(n); let k = 0; for (const x of parts) { o.set(x, k); k += x.length; } return o; };
+const pbLen = (f, bytes) => pbCat([Uint8Array.from([...pbVarint(f * 8 + 2), ...pbVarint(bytes.length)]), bytes]);
+const pbStr = (f, s) => pbLen(f, enc.encode(s));
+const pbInt = (f, v) => Uint8Array.from([...pbVarint(f * 8), ...pbVarint(v)]);
+
+export function cutOnnx(model, outputs) {
+  const top = pbFields(model, 0, model.length), g = top.find((x) => x.f === 7);
+  const gf = pbFields(model, g.ps, g.pe);
+  const nodes = gf.filter((x) => x.f === 1).map((x) => {
+    const nf = pbFields(model, x.ps, x.pe), s = (k) => nf.filter((y) => y.f === k).map((y) => utf8.decode(model.subarray(y.ps, y.pe)));
+    return { x, ins: s(1), outs: s(2) };
+  });
+  const need = new Set(outputs), keep = new Set();
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = nodes[i];
+    if (n.outs.some((o) => need.has(o))) { keep.add(n.x); for (const v of n.ins) if (v) need.add(v); }
+  }
+  if (!outputs.every((o) => nodes.some((n) => n.outs.includes(o)))) throw new Error(`切る場所（${outputs.join(", ")}）が ONNX に無い`);
+  const parts = gf.filter((x) => (x.f !== 1 || keep.has(x)) && x.f !== 12).map((x) => model.subarray(x.s, x.pe));
+  outputs.forEach((name, i) => {
+    const attr = pbCat([pbStr(1, "to"), pbInt(3, 1), pbInt(20, 2)]); // to = FLOAT（AttributeProto: name, i, type=INT）
+    parts.push(pbLen(1, pbCat([pbStr(1, name), pbStr(2, `cut_${i}`), pbStr(3, `cut_cast_${i}`), pbStr(4, "Cast"), pbLen(5, attr)])));
+    parts.push(pbLen(12, pbCat([pbStr(1, `cut_${i}`), pbLen(2, pbLen(1, pbInt(1, 1)))]))); // ValueInfo: name, type.tensor_type.elem_type = FLOAT
+  });
+  return pbCat(top.map((x) => (x === g ? pbLen(7, pbCat(parts)) : model.subarray(x.s, x.pe))));
 }
 
 // graph capture（2回目以降は記録した GPU の命令をまとめて流す）は入出力を GPU 上に置く。全部のノードが WebGPU で動くモデルだけ
@@ -410,6 +465,21 @@ const POST = {
       items.push({ label: "person", score: r[4], box: [...toOrig(r[0] * m.iw, r[1] * m.ih, m), ...toOrig(r[2] * m.iw, r[3] * m.ih, m)], keypoints: kps });
     }
     return { kind: "boxes", items };
+  },
+  // YOLO26-pose を onnx.cut で出力の頭の手前で切ったもの: (1, 候補数, 56) = x1 y1 x2 y2（入力のピクセル）, スコア, 17 ×（x, y, 可視度）。
+  // 1対1の頭（NMS 不要）なので、スコアの高い順に最大 300 件を取るだけ（ONNX の中の TopK と同じ）
+  yolo_pose_raw(out, m, post, p) {
+    const t = Object.values(out)[0], D = t.data, [, A, K] = t.dims, th = p.threshold ?? 0.4, idx = [];
+    for (let i = 0; i < A; i++) if (D[i * K + 4] >= th) idx.push(i);
+    idx.sort((a, b) => D[b * K + 4] - D[a * K + 4]);
+    return {
+      kind: "boxes",
+      items: idx.slice(0, post.max ?? 300).map((i) => {
+        const r = D.subarray(i * K, i * K + K), kps = [];
+        for (let k = 0; k < 17; k++) kps.push([...toOrig(r[5 + k * 3], r[6 + k * 3], m), r[7 + k * 3]]);
+        return { label: "person", score: r[4], box: [...toOrig(r[0], r[1], m), ...toOrig(r[2], r[3], m)], keypoints: kps };
+      }),
+    };
   },
   async alpha(out, m, post) {
     const t = post.output ? out[post.output] : Object.values(out)[0];

@@ -146,6 +146,7 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
 - M4 の Chrome、ベンチ（正方形の画像、中央値）: Depth Anything V2 small（fp16 + graph capture）は長辺 320 で 40ms、480 で 93ms、640 で 181ms。DA3 small（fp32、fp16 版なし、graph capture なし）は 320 で 59ms、518 で 161ms（最初に測った 320 で 53ms・640 で 270ms は graph capture で出力が壊れた状態の値）
 - 連続実行（人物の動画 640×360 を3倍速、約 36fps）: Depth Anything V2 small は長辺 320 で 32fps（動画の速さが上限）、480 で 20fps。DA3 small は短辺 518 のままだと 3fps（1フレーム 338ms）
 - Galaxy Z Fold6（Chrome 153）の連続実行（360×640 の動画）: Depth Anything V2 small は長辺 320 で 1 フレーム 81ms（中央値、p90 169ms、10fps。内訳の平均は前処理 5.5・モデル実行 142・後処理 18ms）、518 で 453ms（2.2fps）。画素は 2.6 倍なのに時間は 5.6 倍で、スマホでは ViT の attention（パッチの数の2乗近く）が効く。後処理（深度を色の画像にして PNG にする所）が 1 割強を占める
+- Galaxy Z Fold6（Chrome 153）の連続実行、graph capture を直した後（2026-09-29）: DA3 small（fp32、graph capture なし）は長辺 518 で 293ms（3.4fps）、320 で 152ms（6.1fps）。続けて測った Depth Anything V2 small（fp16 + graph capture）は 320 で 148ms（6.8fps）で、前の計測（81ms、p90 169ms）より遅い。発熱などで同じ設定でも 80〜150ms の幅がある（未確認）。スマホの長辺 320 では DA3 と DAv2 の速さはあまり変わらない
 - DA3 の推定する水平画角は入力の大きさで変わる（街の写真で長辺 320 だと 33°、640 だと 42°）。画角を見る時は大きい入力で
 
 ## EdgeTAM で動画の物を追う（2026-09-29）

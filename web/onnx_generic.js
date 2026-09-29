@@ -65,7 +65,8 @@ export async function onnxLoad(ort, e, device, onProgress) {
   // 次元の名前はモデルごとに違うので、一度作ったセッションの inputMetadata から読む。
   // - 入力の大きさが pre.size で決まるモデル: ここで固定する
   // - 大きさが画像や「モデル入力（長辺）」で変わるモデル（WebGPU のみ）: 実行時に形が分かった所で作り直す（onnxRun）
-  const wantGraph = opt.includes("graph"), fixed = fixedDims(e);
+  // onnx.graph_capture: false のモデルは graph capture を使わない（作れても出力が壊れるもの。DA3 small は深度が2値になる）
+  const wantGraph = opt.includes("graph") && e.onnx.graph_capture !== false, fixed = fixedDims(e);
   const dynamicShape = device === "webgpu" && !fixed && !e.pre.batch && !e.pre.seq;
   let session = await ort.InferenceSession.create(model, opts);
   const shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;

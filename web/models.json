@@ -880,7 +880,8 @@
     "sha256": {
      "onnx/model.onnx": "396008798244a074297fd88e450433b1357fc687f534939375c804ded86e7b2a",
      "onnx/model.onnx_data": "802bb24741e67f5bb2b369fc64d40afe11439cc895d676d658d65cfb75c9860f"
-    }
+    },
+    "graph_capture": false
    },
    "pre": {
     "size": [

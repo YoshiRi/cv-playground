@@ -5,7 +5,7 @@
 - [ ] スマホ（S25 Ultra・Pixel 6a・iPad）で「入力サイズ可変の YOLO26」を 480 / 640 / 960 で測り、実用になる組み合わせを決める
 - [ ] スマホで連続実行のパイプライン化の効き方を測る（`?nopipe=1` と比べる）。前処理は Galaxy Z Fold6 でも既定の `upload` が最速だった（`gpu` はモデル実行が 20〜30ms 遅くなる。iPhone・他の Android でも確かめる）
 - [ ] 前処理の縮小をサーバー（PIL の BILINEAR、縮小率に応じて周りも平均する）に合わせる。今は canvas も GPU も周りを平均しないので、大きく縮める時（DEIMv2 の 192 など）にサーバーと入力が少し違う
-- [ ] YOLO26n-pose・入力サイズ可変の YOLO26 で graph capture を使う: 後処理のノード（Mod・Range・Cast など）が CPU に回るので作れない。ONNX から後処理を外して JS で行う、または形の固定で消えるか確かめる
+- [ ] YOLO26n-pose・入力サイズ可変の YOLO26 で graph capture を使う: 出力の頭の 64bit 整数の計算（Mod・Div・Cast など）が CPU に回るので作れない（形の固定・大きさ固定の書き出しでは消えないことを確認済み）。ONNX から出力の頭を切り離し、JS の後処理で上位を選ぶ。スマホで入力サイズを変えても fps が変わらないのはこのため
 - [ ] バッチ固定のモデル（OSNet の 16 など）も入力の形を固定する（今は `pre.batch` のあるモデルは対象外）
 - [ ] WebNN（NPU）を onnxruntime-web の WebNN EP で試す（Chrome の実験機能）
 - [ ] 小さいモデルは WebGPU の固定の手間が支配的だった（入力の形の固定と graph capture で DEIMv2 Atto 192 は 4.7ms まで縮んだので、WASM との比べ直しから）。端末ごとに WebGPU と WASM の速い方を自動で選ぶ

@@ -20,6 +20,7 @@ onnx-community の YOLO26 の ONNX は入力が 640×640 固定なので、動�
 
 - 前処理は Ultralytics の推論と同じ長方形の letterbox（長辺を合わせ、32 の倍数まで余白で埋める）。16:9 なら 640×384 で、正方形の 640×640 より計算が約 4 割少ない。Ultralytics の `predict` と枠が ±1px で一致することを確認
 - M4 Mac の Chrome での YOLO26n-pose のモデル実行: 固定 640 が 24ms、可変 640 が 19ms、480 が 18ms、320 が 15ms、960 が 27ms（Mac の WebGPU は約 15〜20ms の下限があり差が出にくい。計算が支配的なスマホでは画素数にほぼ比例して効くはず）。960 では街の写真で信号機などの小さい物体が増える
+- **入力サイズ可変の YOLO26 は graph capture を使えない**（2026-09-29）: Ultralytics の end2end 書き出しは、出力の頭で候補の番号を 64bit 整数で計算する（Mod・Div・Cast・GatherElements など9ノード）。onnxruntime-web 1.30 の WebGPU EP は 64bit 整数を既定で扱わない（`enable int64: 0`。JS の設定項目に無く、セッションの `extra` の `ep.webgpuexecutionprovider.enableInt64` も効かない）ので CPU に回り、graph capture を作れない。入力の形の固定（`freeDimensionOverrides`）でも、大きさを固定した書き出し（`imgsz=(384, 640)`、`dynamic=False`）でも同じ。スマホでは graph capture なしだと命令を出す手間が大きく、入力を小さくしても減るのは GPU の計算の分だけなので、fps があまり変わらない（Galaxy Z Fold6 での報告）。使えるようにするには、書き出した ONNX から出力の頭（候補の選び出し）を切り離し、JS の後処理で上位を選ぶ必要がある。onnx-community の YOLO26（640 固定）は出力の頭の作りが違い、graph capture を使える
 - YOLO26 の重みは AGPL-3.0 なので、書き出した ONNX はリポジトリに入れず、このサーバーの `/local-models/` からだけ配る。1ファイル版・GitHub Pages には出ない
 
 ## 手・目（PINTO の超軽量モデル）

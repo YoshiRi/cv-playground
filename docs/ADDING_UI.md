@@ -8,6 +8,7 @@
 | タブの設定欄（閾値・候補・質問など） | 既存の部品を `tasks[].params` で選ぶ。新しい部品は `web/index.html` と `web/app.js`（下の手順） |
 | 結果の見せ方（枠・マスク・深度など） | `web/renderers.js` の `KINDS` |
 | 応用（タブの結果に後付けして集計する。例: 数える） | `models.json` の `apps` と `web/apps.js` の `APPS` |
+| インタラクト（結果で別の画面を動かす。例: キャラ） | `models.json` の `interact` と `web/interact.js` の `INTERACT` |
 
 モデルの足し方は [ADDING_MODELS.md](ADDING_MODELS.md)。
 
@@ -140,11 +141,48 @@ COMBOS.mycombo = {
 - 追跡は base の結果（`r.items`）にかかる。cascade（目の開閉など）は役割ごとのモデルの `cascade` を、そのモデルの結果にかける（`applyCombo`）。設定欄の「検出のあとの分類」も役割ごとのモデルのものが出る
 - 実行履歴はタブの名前と「base のモデル + 役割ごとのモデル」で残す。ベンチマークの候補には出さない（モデルは元のタブで測れる）
 
-## 5. 見た目（`web/style.css`）
+## 5. インタラクト（`models.json` の `interact` と `web/interact.js`）
+
+検出の結果を使って、結果とは別の画面を動かす部品（例: 一番大きく写っている人の骨格に合わせてキャラが動く）。CV の層（モデル・後処理・応用）とは分けていて、受け手はモデルを知らず、決まった形の「フレーム」だけを受け取る。
+
+```
+モデル → 結果 → 追跡・cascade・組み合わせ・応用 → toFrame（フレーム v1）→ 受け手（INTERACT[id]）→ 自分の画面
+```
+
+| 応用（`apps`） | インタラクト（`interact`） |
+| --- | --- |
+| 数や判定を出す。結果の画像に重ねて描き、結果欄に出す | 自分の画面（結果の横、狭い画面では下）を持ち、結果が来ない間も自分で動く（なめらかにつなぐ・まばたきなど） |
+| 1 つのモデルの結果を集計する | 追跡・表情・組み合わせを足したあとの最終結果を使う |
+
+**フレーム**（`toFrame` が作る。座標は画像の幅・高さで割った 0〜1）
+
+```js
+{ v: 1, t, w, h, task, model,
+  items: [{ id?, label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度]], emotion?, state? }] }
+```
+
+- `keypoints` は 17 点なら COCO の順（鼻・左目・右目・左耳・右耳・左肩・右肩・左肘・右肘・左手首・右手首・左腰・…）、5 点なら顔（右目・左目・鼻・口の右端・左端）。左右は写っている人から見た向き
+- `emotion` は顔の表情（`{ label, prob, probs, valence, arousal }`）
+
+**受け手**（`web/interact.js` の `INTERACT`）
+
+```js
+INTERACT.myid = {
+  create(el, opts) {           // el: 受け手用の空の要素（canvas などを入れる）
+    return { onFrame(frame) { ... }, destroy() { ... } };  // destroy で requestAnimationFrame などを止める
+  },
+};
+```
+
+`models.json` の `interact` に `{ "id": "myid", "name": "…", "tasks": ["pose", "face"], "hint": "…" }` を書くと、`tasks` のタブに「インタラクト」のチェックが出る。URL の `?interact=myid` で最初から選べる。人を選ぶのは `pickTarget(frame, sel, 条件)`（一番大きく写っている物。追跡の ID があれば、別の物が 1.5 倍大きくなるまで同じ物を選び続ける）。
+
+**例: キャラ（`puppet`、Live2D 風）** — Live2D と同じく、フレームを直接絵にせず「パラメータ」（頭の向き 3 軸・体の傾き・腕の角度・口・眉・目）の目標にして、画面の更新ごとにばねで目標に寄せ、パーツの絵を回す・ずらす。推論が 10fps でも表示は 60fps でなめらか。頭の左右の向きは、奥の髪・顔・手前の前髪をずらす量を変えて立体に見せる。表情（`emotion`）があれば口・眉・目を変える。結果に人がいない状態が 1.5 秒続いたら元の姿勢に戻る（静止画は最後の姿勢のまま）。
+
+## 6. 見た目（`web/style.css`）
 
 色は `:root` の変数（`--bg`, `--panel`, `--text`, `--muted`, `--line`, `--accent`, `--chip` など）で、ダークモードは `prefers-color-scheme` で切り替わる。結果欄の部品のクラス: `.stat`（数値のバッジ）、`.chip`（件数）、`.bar`（分類の棒）、`.legend`（色の凡例）、`.answer`（文章）、`.sub`（補足の文）。
 
-## 6. 足したあとの確認
+## 7. 足したあとの確認
 
 1. サーバー版（`scripts/serve.sh`）と静的版（リポジトリ直下を静的に配るか GitHub Pages）の両方で、タブと結果が出ること
 2. スマホの幅（390px 前後）で横スクロールが出ないこと

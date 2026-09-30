@@ -50,6 +50,15 @@
 - [ ] 検出＋深度で物までの距離の目安（複数のモデルの組み合わせ。専用のタブ）
 - [ ] 姿勢の応用（手を挙げた・しゃがんだなどの簡単な判定、回数を数える）
 
+## インタラクト（結果で別の画面を動かす）
+
+`models.json` の `interact` と `web/interact.js` に足す（`docs/ADDING_UI.md` の「5. インタラクト」）。
+
+- [x] キャラ（Live2D 風）: 一番大きく写っている人の骨格・顔の点で頭・体・腕、表情で顔を動かす
+- [ ] フレームを外に流す: BroadcastChannel・postMessage（別のタブ・iframe の p5.js などのページが受け取る）、WebSocket（`server.py` 経由で Unity・TouchDesigner・OSC へ）
+- [ ] 3D のキャラ（VRM を three.js ＋ three-vrm で。「3D の姿勢」の奥行きを使う）
+- [ ] 顔の細かな動き（MediaPipe の blendshape）でまばたき・口の開きを連動（上の「軽いモデル」の顔メッシュと組み合わせ）
+
 ## 保守
 
 - [ ] ブラウザでの自動テスト（今は手元の puppeteer スクリプトで確認している）を GitHub Actions に載せる

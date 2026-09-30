@@ -3,6 +3,7 @@ import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { collectEnv, composeImage, download, resultData, safeName, shareOrDownload, stamp, stats, toCSV, toJSON, toMarkdown } from "./export.js";
 import { Tracker } from "./tracker.js";
 import { APPS, COMBOS } from "./apps.js";
+import { INTERACT, toFrame } from "./interact.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -289,6 +290,7 @@ function selectTask(id) {
   if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
   if (def.labels) $("labels").value = def.labels;
   renderApps(t);
+  renderInteract(t);
   $("canvas-wrap").classList.toggle("clickable", !!t.click);
 
   fillModels($("model"), variants(id));
@@ -841,6 +843,7 @@ async function run() {
     await applyCombo(r, null);
     state.apps = createApps();
     applyApps(r, { tracked: false });
+    pushInteract(m, r);
     renderResult(m, r);
     addRun(makeRecord(m, r, "single", appsSummary(KINDS[r.kind]?.summary(r))));
     setStatus("");
@@ -899,6 +902,7 @@ async function liveLoop() {
     await applyCascade(m, r, tracker ? seqStore : null);
     await applyCombo(r, tracker ? seqStore : null);
     applyApps(r, { tracked: !!tracker });
+    pushInteract(m, r);
     if (!first) { first = r; tStart = performance.now(); if (state.live) setStatus(""); } // 止めた後に遅れて届いた結果では、止めた時の表示を消さない
     frames++;
     if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
@@ -995,6 +999,36 @@ function createApps() {
 function applyApps(r, ctx) {
   for (const a of state.apps) APPS[a.id].update(a.st, r, ctx);
 }
+// インタラクト（interact.js）: models.json の interact のうち、tasks にこのタブを含むものを「インタラクト」欄にチェックで出す。
+// 選ぶと受け手を作って結果の横（狭い画面では下）に画面を出し、結果が出るたびにフレーム（toFrame）を渡す。
+// 受け手は結果が無い間も自分で動き続ける（キャラのまばたきなど）ので、チェックを外すかタブを替えた時に片付ける。URL の ?interact=puppet で最初から選べる
+const chosenInteract = new Set((new URLSearchParams(location.search).get("interact") || "").split(",").filter(Boolean));
+const sinks = new Map(); // id → 受け手
+function renderInteract(t) {
+  const list = (CATALOG.interact || []).filter((x) => x.tasks.includes(t.id) && INTERACT[x.id]);
+  $("interact-row").hidden = !list.length;
+  $("interact-list").innerHTML = list.map((x) =>
+    `<label class="check" title="${esc(x.hint || "")}"><input type="checkbox" data-interact="${x.id}"${chosenInteract.has(x.id) ? " checked" : ""}> ${esc(x.name)}</label>`).join("");
+  syncInteract();
+}
+function syncInteract() {
+  const on = new Set([...document.querySelectorAll("[data-interact]:checked")].map((c) => c.dataset.interact));
+  for (const [id, s] of sinks) if (!on.has(id)) { s.destroy(); sinks.get(id).el.remove(); sinks.delete(id); }
+  for (const id of on) {
+    if (sinks.has(id)) continue;
+    const el = document.createElement("div");
+    $("interact").append(el);
+    sinks.set(id, Object.assign(INTERACT[id].create(el, {}), { el }));
+  }
+  $("interact").hidden = !sinks.size;
+  if (sinks.size && state.result) pushInteract(currentModel(), state.result);
+}
+function pushInteract(m, r) {
+  if (!sinks.size || r.kind !== "boxes") return;
+  const frame = toFrame(r, { task: state.task, model: m?.key });
+  for (const s of sinks.values()) s.onFrame(frame);
+}
+
 // 実行履歴の「結果」欄: base（モデルの結果の要約や追跡の ID 数）に応用の集計を足す
 const appsSummary = (base) => ({ summary: [base, COMBOS[curTask().combo?.app]?.summary(state.result || {}), ...state.apps.map((a) => APPS[a.id].summary?.(a.st))].filter(Boolean).join(" ・ ") });
 
@@ -1217,6 +1251,11 @@ async function init() {
   $("bench-profile-note").hidden = !PROFILE;
   $("bench-models").addEventListener("change", updateBenchCount);
   $("apps").addEventListener("change", onAppsChange);
+  $("interact-list").addEventListener("change", (ev) => {
+    const c = ev.target.closest("[data-interact]");
+    if (c) c.checked ? chosenInteract.add(c.dataset.interact) : chosenInteract.delete(c.dataset.interact);
+    syncInteract();
+  });
   $("local-onnx").onchange = (ev) => { const fs = [...ev.target.files]; ev.target.value = ""; if (fs.length) importLocalOnnx(fs); };
   renderLocalKnown();
   state.runs = loadRuns();

@@ -41,7 +41,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `path` + `url` | `web/` に同梱したファイル（`path` は `web/` からの相対）。読めない時（file:// など）は `url` から取る |
 | `sha256` | ファイルごとの SHA-256（`{"onnx/model.onnx": "…"}`）。`python3 tools/update_hashes.py` が Hugging Face から取って書き込む（手で書かない）。画面の「手元の ONNX を使う」で、利用者が持っているファイルと照らすのに使う |
 | `cut` | 途中の値の名前の並び。その値で ONNX を切り、後ろのノード（CPU に回って graph capture を妨げる出力の頭など）を消す。出力は float にして `cut_0`, `cut_1`, … になる。重みのライセンス上、書き換えた ONNX は配らず、取得した ONNX をブラウザ（`onnx_generic.js` の `cutOnnx`）とサーバーがそれぞれ書き換える。後処理は切った値を受け取るものにする（YOLO26-pose は `yolo_pose_raw`） |
-| `graph_capture` | `false` なら graph capture を使わない（作れても出力が壊れるモデル。DA3 small） |
+| `graph_capture` | `false` なら graph capture を使わない（作れても出力が壊れるモデル。DA3 small・YuNet。出力が多いモデルで起きやすい） |
 | `server_file` | `models/` に置いた、サーバーだけが配るファイル（ライセンス上リポジトリに入れないもの）。サーバーが無い時は画面に出ない |
 
 ### `pre`（前処理）

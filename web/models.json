@@ -166,11 +166,11 @@
    "category": "3d"
   },
   {
-   "id": "near",
-   "name": "近さ（物体検出＋深度）",
+   "id": "approach",
+   "name": "接近・後退（物体検出＋深度）",
    "category": "3d",
    "result": "boxes",
-   "hint": "物体検出と深度を組み合わせる。枠の色を近さ（赤＝近い、青＝遠い）で塗り、近い順の番号を付ける。動画・カメラで追跡を選ぶと、近づいてくる物に「接近」を付ける。深度は相対値なので距離ではなく、この画像の中での順番",
+   "hint": "物体検出と深度を組み合わせ、追跡の ID ごとに近づいているか・遠ざかっているかを判定する。枠の大きさ（ROI）と深度の変化から距離の変化の速さをカルマンフィルタで推定し、接近は赤・後退は青で塗って、クラスごとに接近した・遠ざかった数を数える。接近中はあと何秒で届くかも出す。追跡が「なし」なら ByteTrack を使う",
    "params": [
     "threshold",
     "track"
@@ -180,14 +180,15 @@
    },
    "combo": {
     "base": "detect",
-    "app": "near",
+    "app": "approach",
+    "track": "bytetrack",
     "with": [
      {
       "role": "depth",
       "name": "組み合わせる深度のモデル",
       "task": "depth",
       "every": 3,
-      "default": "dav2-small",
+      "default": "da3-small",
       "params": {
        "depth_raw": true
       }

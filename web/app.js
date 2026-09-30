@@ -866,13 +866,14 @@ async function liveLoop() {
   let frames = 0, first = null, tStart = 0, fps = 0;
   const times = []; // 1フレーム目（モデルの読み込み・初期化を含む）を除いた、フレームごとの推論時間
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
-  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value : "";
+  // 組み合わせのタブの combo.track は、追跡が前提のタブで追跡の欄が「なし」の時に使う追跡
+  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value || curTask().combo?.track || "" : "";
   const th = parseFloat($("threshold").value);
   const reid = trackType === "botsort-reid" ? MODELS.find((e) => e.task === "reid") : null;
   const tracker = trackType
     ? new Tracker(trackType.replace("-reid", ""), { track_high_thresh: th, new_track_thresh: th, with_reid: !!reid })
     : null;
-  const trackerName = $("tracker").selectedOptions[0]?.textContent;
+  const trackerName = [...$("tracker").options].find((o) => o.value === trackType)?.textContent ?? $("tracker").selectedOptions[0]?.textContent; // 組み合わせのタブで自動で使った追跡も名前で出す
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();

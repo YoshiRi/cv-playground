@@ -2,7 +2,7 @@
 // models.json の apps に {id, name, accepts: [結果の種類], params, hint} を書くと、その種類の結果を返すタブ（tasks[].result）の
 // 「応用」欄にチェックが出て、選ぶと追跡・cascade のあとに順に呼ばれる。モデルの後処理（onnx_generic.js・adapters.py、
 // models.json の post）とは別物で、モデルの結果の見せ方（renderers.js の KINDS）とも別に、集計の状態と表示だけを持つ
-import { esc, labelColor, limbColor, nearColor } from "./renderers.js";
+import { esc, labelColor, limbColor } from "./renderers.js";
 import { SKELETON } from "./catalog.js";
 
 // APPS[id] = {
@@ -101,44 +101,117 @@ function nearAt(d, x, y) {
   const gy = Math.min(d.h - 1, Math.max(0, Math.floor(((y * m.sy + m.oy) * d.h) / m.ih)));
   return (d.data[gy * d.w + gx] - d.lo) / Math.max(d.hi - d.lo, 1e-9);
 }
-// 枠の中央 6 割の 5×5 点の近さの中央値（枠の端の背景を拾いにくく）
-function nearOfBox(d, b) {
-  const v = [];
-  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) v.push(nearAt(d, b[0] + (b[2] - b[0]) * (0.2 + 0.15 * i), b[1] + (b[3] - b[1]) * (0.2 + 0.15 * j)));
-  v.sort((a, b2) => a - b2);
+// 深度の結果（depthRaw、大きいほど近い値）から、枠の中央 6 割の 5×5 点の中央値と、画像全体（余白を除く）の中央値を引く
+function rawOfBox(d, b) {
+  const m = d.m, v = [];
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
+    const x = b[0] + (b[2] - b[0]) * (0.2 + 0.15 * i), y = b[1] + (b[3] - b[1]) * (0.2 + 0.15 * j);
+    const gx = Math.min(d.w - 1, Math.max(0, Math.floor(((x * m.sx + m.ox) * d.w) / m.iw)));
+    const gy = Math.min(d.h - 1, Math.max(0, Math.floor(((y * m.sy + m.oy) * d.h) / m.ih)));
+    v.push(d.data[gy * d.w + gx]);
+  }
+  v.sort((p, q) => p - q);
   return v[12];
 }
-const NEAR_HIST = new Map(); // 追跡の ID → 近さの履歴（接近の判定用）
+function rawMedian(d) {
+  if (d.median != null) return d.median;
+  const m = d.m, x0 = Math.floor((m.ox * d.w) / m.iw), x1 = Math.ceil(((m.iw - m.ox) * d.w) / m.iw), y0 = Math.floor((m.oy * d.h) / m.ih), y1 = Math.ceil(((m.ih - m.oy) * d.h) / m.ih), v = [];
+  for (let y = y0; y < y1; y += 3) for (let x = x0; x < x1; x += 3) v.push(d.data[y * d.w + x]);
+  v.sort((p, q) => p - q);
+  return (d.median = v[v.length >> 1]);
+}
+
+// 接近・後退: 追跡の ID ごとに、距離の対数 x とその速さ v（1 秒あたり）を小さなカルマンフィルタで推定する。
+// 観測は 2 つで、どちらも「距離の対数 + その物ごとの定数」: ROI（枠の大きさの逆数 → -log √面積、毎フレーム）と、
+// 深度（その物の深度 ÷ 画像全体の深度の中央値 → log、深度を回したフレームだけ）。定数は各観測の最初の値で合わせる
+const KF = new Map(); // ID → { x, v, P, t, c: {roi, depth}, cls, streak, cand }
+const Q_ACC = 0.08; // 速さの揺らぎ（1 秒あたり。人や車は数秒はほぼ同じ速さで動く）
+const R = { roi: 0.06 ** 2, depth: 0.1 ** 2 }; // 観測の誤差（対数）
+// 距離が 1 秒に 18% 以上縮む・伸びる状態が 3 回続いたら切り替える。18% は、誤検出の揺れ（最大 16%）と、
+// 歩き去る人・走り去る車（29〜46%）の間（人物・駐車場の動画での計測）
+const V_TH = 0.18, STREAK = 3;
+function kfUpdate(k, z, kind) {
+  if (k.c[kind] == null) { k.c[kind] = z - k.x; return; } // 観測ごとの定数を最初に合わせる
+  const y = z - k.c[kind] - k.x, S = k.P[0][0] + R[kind], K0 = k.P[0][0] / S, K1 = k.P[1][0] / S;
+  k.x += K0 * y; k.v += K1 * y;
+  const [p00, p01, p10, p11] = [k.P[0][0], k.P[0][1], k.P[1][0], k.P[1][1]];
+  k.P = [[(1 - K0) * p00, (1 - K0) * p01], [p10 - K1 * p00, p11 - K1 * p01]];
+}
+function kfPredict(k, t) {
+  const dt = Math.min(1, Math.max(0, (t - k.t) / 1000));
+  k.t = t; k.x += k.v * dt;
+  const [p00, p01, p10, p11] = [k.P[0][0], k.P[0][1], k.P[1][0], k.P[1][1]];
+  k.P = [[p00 + dt * (p10 + p01) + dt * dt * p11, p01 + dt * p11], [p10 + dt * p11, p11 + Q_ACC * dt]];
+}
+const MOTION = { approach: { word: "接近", color: "#ef4444", arrow: "↓" }, recede: { word: "後退", color: "#3b82f6", arrow: "↑" }, steady: { word: "", color: "#9ca3af", arrow: "" } };
+const SEEN = { approach: new Map(), recede: new Map() }; // クラス → 一度でも接近・後退と判定した ID
 
 export const COMBOS = {
-  // 近さ（物体検出＋深度）: 枠の中の深度の中央値で近さを出し、枠を近さの色（赤＝近い、青＝遠い）で塗って近い順の番号を付ける。
-  // 追跡の ID ごとに近さの履歴を持ち、直近 1 秒ほどで近さが 0.08 以上増えた物に「接近」。深度は相対値で、フレームごとに
-  // 範囲が変わるので、近さはその画像の中での相対（距離ではない）
-  near: {
-    reset() { NEAR_HIST.clear(); },
+  // 接近・後退（物体検出＋深度）: 追跡の ID ごとに ROI（枠の大きさ）と深度の変化から距離の変化の速さを推定し、
+  // 接近（赤）・後退（青）・変化なし（灰）に分けて、クラスごとに接近した・遠ざかった ID の数（通算）を数える。
+  // 接近中は距離 ÷ 縮む速さ（あと何秒で届くか）も出す。深度は相対値（DA3 は比が保たれるので深度 ÷ 画像全体の中央値を使う）
+  approach: {
+    reset() { KF.clear(); SEEN.approach.clear(); SEEN.recede.clear(); },
     combine(r) {
-      const d = r.withResults?.depth?.depthRaw;
-      if (!d) { r.near = { error: "深度の値が無い（サーバーの深度モデルは組み合わせに使えない）" }; return; }
-      const items = r.items.map((it) => ({ it, n: nearOfBox(d, it.box) })).sort((a, b) => b.n - a.n);
-      let approaching = 0;
-      items.forEach(({ it, n }, i) => {
-        it.color = nearColor(n);
-        const tags = [i === 0 ? "一番近い" : `近さ ${i + 1}番`];
-        if (it.id != null) {
-          const h = NEAR_HIST.get(it.id) || [];
-          h.push({ t: performance.now(), n });
-          while (h.length && performance.now() - h[0].t > 1200) h.shift();
-          NEAR_HIST.set(it.id, h);
-          if (h.length >= 4 && n - h[0].n > 0.08) { tags.push("接近"); approaching++; }
+      const dr = r.withResults?.depth, d = dr?.depthRaw, t = performance.now(), live = r.items.some((it) => it.id != null);
+      const counts = { approach: 0, recede: 0 };
+      for (const it of r.items) {
+        if (it.id == null) continue;
+        let k = KF.get(it.id);
+        const zRoi = -Math.log(Math.sqrt(Math.max(1, (it.box[2] - it.box[0]) * (it.box[3] - it.box[1]))));
+        // 枠が画面の端に接している間は、物が画面から切れていて枠の大きさが距離を表さない（入ってくる時に「接近」に見える）ので、
+        // ROI の観測を使わない（深度だけ）。端から離れた最初の観測で ROI の定数を合わせ直す
+        const mx = r.w * 0.01, my = r.h * 0.01;
+        const cut = it.box[0] <= mx || it.box[1] <= my || it.box[2] >= r.w - mx || it.box[3] >= r.h - my;
+        if (!k) { k = { x: zRoi, v: 0, P: [[0.05, 0], [0, 0.5]], t, c: cut ? {} : { roi: 0 }, cls: "steady", streak: 0, cand: "steady", n: 0 }; KF.set(it.id, k); }
+        else { kfPredict(k, t); if (cut) delete k.c.roi; else kfUpdate(k, zRoi, "roi"); }
+        if (d && !dr.reused) { // 深度を回したフレームだけ（使い回した深度は同じ値なので入れない）
+          const obj = rawOfBox(d, it.box), bg = rawMedian(d);
+          if (obj > 0 && bg > 0) kfUpdate(k, Math.log(bg / obj), "depth"); // 大きいほど近い値なので、距離 ∝ 1 / 値
         }
-        it.state = tags.join("・");
-      });
-      r.near = { n: items.length, approaching, reused: !!r.withResults.depth.reused };
+        k.n++;
+        // 判定: 8 フレーム以上追えていて、速さが V_TH を超えた時だけ。
+        // 枠が画面の端に接している間（深度だけの時）は判定を変えない（端の深度は揺れやすい）
+        if (!cut) {
+          const want = k.n < 8 || Math.abs(k.v) < V_TH ? "steady" : k.v < 0 ? "approach" : "recede";
+          k.streak = want === k.cand ? k.streak + 1 : 1; k.cand = want;
+          if (k.streak >= STREAK) k.cls = want;
+        }
+        const M = MOTION[k.cls];
+        it.color = M.color;
+        if (k.cls !== "steady") {
+          counts[k.cls]++;
+          if (!SEEN[k.cls].has(it.label)) SEEN[k.cls].set(it.label, new Set());
+          SEEN[k.cls].get(it.label).add(it.id);
+          const ttc = k.cls === "approach" ? -1 / k.v : null;
+          it.state = `${M.arrow}${M.word}${ttc && ttc < 10 ? `・約${ttc.toFixed(1)}秒` : ""}`;
+        } else it.state = "";
+      }
+      const labels = [...new Set([...SEEN.approach.keys(), ...SEEN.recede.keys()])];
+      r.approach = { live, depth: !!d, counts, rows: labels.map((l) => ({ label: l, approach: SEEN.approach.get(l)?.size || 0, recede: SEEN.recede.get(l)?.size || 0 })) };
     },
-    panel: (r) => (r.near?.error ? `<div class="sub">${esc(r.near.error)}</div>`
-      : r.near ? `<div class="sub">近さ（${r.near.n} 件）: 枠の色は近さ（赤＝近い、青＝遠い）、番号は近い順。接近 <b>${r.near.approaching}</b> 件（追跡を選ぶと出る）</div>`
-        + `<div class="sub muted">深度は相対値で、近さはこの画像の中での順番（距離ではない）。深度は数フレームに1回だけ回し、間は前の深度を使う</div>` : ""),
-    summary: (r) => (r.near && !r.near.error ? `近さ ${r.near.n}件・接近 ${r.near.approaching}` : ""),
+    draw(ctx, r, b) {
+      const rows = r.approach?.rows || [];
+      if (!rows.length) return;
+      const size = Math.max(14, Math.round(b.w / 38)), pad = size * 0.5, lh = size * 1.35;
+      const lines = rows.map((x) => `${x.label}  ↓接近 ${x.approach}  ↑後退 ${x.recede}`);
+      ctx.save();
+      ctx.font = `600 ${size}px system-ui, sans-serif`;
+      const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2;
+      ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(pad, pad, w, lh * lines.length + pad);
+      ctx.fillStyle = "#fff"; ctx.textBaseline = "middle";
+      lines.forEach((l, i) => ctx.fillText(l, pad * 2, pad + pad / 2 + lh * i + lh / 2));
+      ctx.restore();
+    },
+    panel: (r) => {
+      const a = r.approach;
+      if (!a) return "";
+      const rows = a.rows.map((x) => `<span class="chip">${esc(x.label)} <b style="color:#ef4444">↓${x.approach}</b> <b style="color:#3b82f6">↑${x.recede}</b></span>`).join("");
+      return `<div class="sub">接近・後退（今: 接近 ${a.counts.approach}・後退 ${a.counts.recede}）${a.live ? "" : "。動画・カメラの連続実行で追跡しながら判定する"}</div>`
+        + (rows ? `<div class="chips">${rows}</div><div class="sub muted">数は一度でも接近・後退と判定した追跡の ID の数（通算）</div>` : "")
+        + `<div class="sub muted">枠の色: 赤＝接近、青＝後退、灰＝変化なし。ROI（枠の大きさ）と深度の変化から距離の変化の速さを推定（1 秒に 18% 以上で判定）${a.depth ? "" : "。深度の値が無いので ROI だけ"}</div>`;
+    },
+    summary: (r) => (r.approach ? r.approach.rows.map((x) => `${x.label} 接近${x.approach}・後退${x.recede}`).join(" ") : ""),
   },
 
   // 3D の姿勢（姿勢＋深度）: 関節点ごとに深度を拾って奥行きを付け、画面の右下の小窓にゆっくり回して描く。

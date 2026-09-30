@@ -124,6 +124,7 @@ APPS.myapp = {
 | `combo.with[].every` | 連続実行では N フレームに1回だけ回し、間は前の結果を使う（深度のような重いモデル用） |
 | `combo.with[].params` | そのモデルに渡す追加のパラメータ（深度は `depth_raw: true` で、画像にする前の値 `depthRaw` も返す） |
 | `combo.with[].default` | 役割のモデルの既定（`key`） |
+| `combo.track` | 追跡が前提のタブで、追跡の欄が「なし」の時に使う追跡（例: `"bytetrack"`） |
 
 ```js
 COMBOS.mycombo = {

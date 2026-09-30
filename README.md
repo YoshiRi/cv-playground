@@ -27,7 +27,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 - **Tasks** (grouped into four categories)
   - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection
   - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
-  - Depth & 3D: depth estimation / nearness (object detection + depth: colors boxes by how near they are and flags approaching tracks) / 3D pose (pose + depth: a rotating skeleton with depth)
+  - Depth & 3D: depth estimation / approaching / receding (object detection + depth: a small Kalman filter per track fuses box size and depth to classify each object as approaching or receding, colors it, estimates time to contact, and counts per class) / 3D pose (pose + depth: a rotating skeleton with depth)
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)
 - **Applications** (add-ons in any tab that returns boxes — detection, pose, hands & eyes, text-prompted detection): counting per class (current count and, with tracking, a cumulative count of track IDs). Add `?apps=count` to the URL to turn it on from the start
 - **Input**: images, video files, and live camera (switch between the back and front cameras, or pick any camera on the device). Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)

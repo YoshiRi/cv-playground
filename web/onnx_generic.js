@@ -384,6 +384,14 @@ const GPU_PRE_RESIZE = new Set(["letterbox", "letterbox_rect", "stretch", "keep_
 const useGpuPre = (ort, session, e) => session.cvpg?.webgpu && !session.cvpg.noGpuPre && e.preMode !== "cpu" && !!ort.env.webgpu?.device
   && GPU_PRE_RESIZE.has(e.pre.resize) && Object.keys(e.pre).every((k) => GPU_PRE_KEYS.has(k));
 
+// 重なった枠を除く（スコアの高い順に、IoU が iouTh を超えるものを捨てる）
+function nms(items, iouTh) {
+  const iou = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * h; return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
+  const keep = [];
+  for (const it of items.sort((a, b) => b.score - a.score)) if (keep.every((k) => iou(k.box, it.box) <= iouTh)) keep.push(it);
+  return keep;
+}
+
 const toOrig = (x, y, m) => [(x - m.ox) / m.sx, (y - m.oy) / m.sy];
 const sigmoid = (v) => 1 / (1 + Math.exp(-v));
 
@@ -465,6 +473,25 @@ const POST = {
       items.push({ label: "person", score: r[4], box: [...toOrig(r[0] * m.iw, r[1] * m.ih, m), ...toOrig(r[2] * m.iw, r[3] * m.ih, m)], keypoints: kps });
     }
     return { kind: "boxes", items };
+  },
+  // YuNet（OpenCV の顔検出）: 3 つの解像度（stride 8, 16, 32）ごとに cls・obj（スコア）、bbox（格子からのずれ・幅と高さの log）、
+  // kps（5 点）。OpenCV の FaceDetectorYN と同じく、スコア = √(cls × obj)、枠 = (格子 + ずれ) × stride と exp(log) × stride、
+  // 重なった枠を NMS で除く。keypoints は顔の5点（右目・左目・鼻・口の右端・左端）
+  yunet(out, m, post, p) {
+    const th = p.threshold ?? 0.6, cand = [];
+    for (const s of [8, 16, 32]) {
+      const cls = out[`cls_${s}`].data, obj = out[`obj_${s}`].data, bb = out[`bbox_${s}`].data, kp = out[`kps_${s}`].data, gw = Math.ceil(m.iw / s);
+      for (let i = 0; i < cls.length; i++) {
+        const score = Math.sqrt(Math.min(1, Math.max(0, cls[i])) * Math.min(1, Math.max(0, obj[i])));
+        if (score < th) continue;
+        const r = Math.floor(i / gw), c = i % gw;
+        const cx = (c + bb[i * 4]) * s, cy = (r + bb[i * 4 + 1]) * s, w = Math.exp(bb[i * 4 + 2]) * s, h = Math.exp(bb[i * 4 + 3]) * s;
+        const kps = [];
+        for (let k = 0; k < 5; k++) kps.push([...toOrig((c + kp[i * 10 + k * 2]) * s, (r + kp[i * 10 + k * 2 + 1]) * s, m), 1]);
+        cand.push({ label: "face", score, box: [...toOrig(cx - w / 2, cy - h / 2, m), ...toOrig(cx + w / 2, cy + h / 2, m)], keypoints: kps });
+      }
+    }
+    return { kind: "boxes", items: nms(cand, post.nms ?? 0.3) };
   },
   // YOLO26-pose を onnx.cut で出力の頭の手前で切ったもの: (1, 候補数, 56) = x1 y1 x2 y2（入力のピクセル）, スコア, 17 ×（x, y, 可視度）。
   // 1対1の頭（NMS 不要）なので、スコアの高い順に最大 300 件を取るだけ（ONNX の中の TopK と同じ）

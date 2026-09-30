@@ -91,6 +91,10 @@ function tag(ctx, x, y, text, color, size) {
 }
 
 function drawPose(ctx, kps, lw) {
+  if (kps.length !== 17) { // 顔の5点など、骨格の無い点は点だけ描く
+    for (const [x, y] of kps) { ctx.beginPath(); ctx.arc(x, y, lw * 1.5, 0, Math.PI * 2); ctx.fillStyle = "#fff"; ctx.fill(); ctx.lineWidth = lw * 0.7; ctx.strokeStyle = "#111"; ctx.stroke(); }
+    return;
+  }
   // 可視度が出ているモデルでは、見えていない関節（< 0.3）を描かない
   const hasVis = kps.some(([, , v]) => v > 0.05), ok = (k) => !hasVis || k[2] >= 0.3;
   ctx.lineCap = "round";

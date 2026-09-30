@@ -50,6 +50,20 @@
    "result": "boxes"
   },
   {
+   "id": "face",
+   "name": "顔",
+   "category": "detect",
+   "result": "boxes",
+   "hint": "顔の検出。動画・カメラでは追跡（ID 付け）もできる。YuNet は顔の5点（両目・鼻・口の両端）も出す。PINTO の DEIMv2 の顔のクラスとも比べられる",
+   "params": [
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.6
+   }
+  },
+  {
    "id": "wholebody",
    "name": "手・目（PINTO）",
    "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ",
@@ -1073,6 +1087,115 @@
     "wasm": "q4"
    },
    "license": "Apache-2.0"
+  },
+  {
+   "key": "yunet",
+   "task": "face",
+   "name": "YuNet（OpenCV、顔の5点つき）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 0.3,
+   "onnx": {
+    "repo": "opencv/face_detection_yunet",
+    "file": "face_detection_yunet_2023mar.onnx",
+    "sha256": {
+     "face_detection_yunet_2023mar.onnx": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+    },
+    "graph_capture": false
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "letterbox",
+    "pad_value": 0,
+    "scale": 1,
+    "bgr": true,
+    "input": "input"
+   },
+   "post": {
+    "type": "yunet",
+    "nms": 0.3
+   },
+   "note": "OpenCV の顔検出（10〜300px ほどの顔向け）。入力は BGR の 0〜255。出力の組み立てと重なりの除去（NMS）は OpenCV の FaceDetectorYN と同じ手順",
+   "license": "MIT（OpenCV Zoo、元は libfacedetection）",
+   "bench": true
+  },
+  {
+   "key": "deimv2-atto-face",
+   "task": "face",
+   "name": "DEIMv2 Atto の顔（PINTO、320×320）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 2,
+   "onnx": {
+    "url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx",
+    "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"
+   },
+   "pre": {
+    "size": [
+     320,
+     320
+    ],
+    "resize": "stretch",
+    "scale": 1,
+    "bgr": true,
+    "input": "input_bgr"
+   },
+   "post": {
+    "type": "deim_wholebody",
+    "classes": [
+     "body",
+     "adult",
+     "child",
+     "male",
+     "female",
+     "body_with_wheelchair",
+     "body_with_crutches",
+     "head",
+     "front",
+     "right-front",
+     "right-side",
+     "right-back",
+     "back",
+     "left-back",
+     "left-side",
+     "left-front",
+     "face",
+     "eye",
+     "nose",
+     "mouth",
+     "ear",
+     "collarbone",
+     "shoulder",
+     "solar_plexus",
+     "elbow",
+     "wrist",
+     "hand",
+     "hand_left",
+     "hand_right",
+     "abdomen",
+     "hip_joint",
+     "knee",
+     "ankle",
+     "foot"
+    ],
+    "show": [
+     "face"
+    ]
+   },
+   "note": "手・目（PINTO）と同じモデルの、顔のクラスだけを出す",
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）",
+   "server": {
+    "providers": "cpu"
+   }
   },
   {
    "key": "deimv2-atto192",

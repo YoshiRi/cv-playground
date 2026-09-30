@@ -182,6 +182,16 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
 - Galaxy Z Fold6（Chrome 153）の姿勢のタブの連続実行（360×640）: 1 フレーム 51ms（中央値、18fps。前処理 6・モデル実行 42ms）。しぐさ（姿勢＋PINTO）は 3 回で中央値 71〜78ms（前は 85ms）、fps 9.7〜15、p90 は 82〜140ms とばらつきが大きい（発熱などで速くなったり遅くなったりする。前処理は 2 つのモデルの合計で 12〜16ms）
 - **元の出力の可視度は壊れていた**: onnx-community の出力は枠と関節点を 640 で割って正規化するが、可視度まで割っていて 0.000〜0.002 になっていた。そのため骨格の描画の「見えていない関節を描かない」も、しぐさの「手を挙げた」（可視度 0.5 以上）も働いていなかった。切った値の可視度は 0.02〜1.0 で正しい
 
+## 顔の検出（YuNet、2026-09-30）
+
+- 「顔」のタブ（検出・追跡の中）。YuNet（OpenCV Zoo、Hugging Face の `opencv/face_detection_yunet`、MIT、230KB）と、比べる用に PINTO の DEIMv2 Atto の顔のクラスだけを出す設定。追跡・応用（数える）はそのまま使える
+- YuNet の出力は stride 8・16・32 ごとの cls・obj・bbox・kps（5 点）で、枠の組み立てと重なりの除去（NMS）は自分で書く（後処理の部品 `yunet`、ブラウザと adapters.py）。OpenCV の `FaceDetectorYN` と同じ手順で、**同じ縮小の画像を渡すと OpenCV と 54 人すべて一致**（IoU 1.0、2048×1150 の集合写真）
+- 縮小のやり方で小さい顔の結果は変わる: 同じ写真で、OpenCV の `INTER_LINEAR`（周りを平均しない）は 45 人、PIL の BILINEAR（周りも平均する。サーバーの前処理）は 54 人、ブラウザ（canvas）は 44 人。2048px を 640 に縮めると顔が数 px になるため
+- DEIMv2 Atto（320×320）の顔は、この集合写真では 1 人しか出ない（小さい顔は入力が粗すぎる）
+- 顔の 5 点（両目・鼻・口の両端）は keypoints で返し、17 点でない keypoints は骨格を描かずに点だけ描くようにした
+- M4 の Chrome で 1 回 23ms（fp32。fp16 版は無い）、動画の連続実行で 21ms 程度
+- **graph capture で YuNet の出力が壊れる**（枠が 162 個出て、正しい結果と 1 つも一致しない）。1 回目（記録する時）から一部の出力（`bbox_32` など）が違い、出力の読み戻し方（`getData` で手放すかどうか）を変えても同じなので、onnxruntime-web の graph capture 側の問題らしい。DA3（出力 4 つ）も同じく壊れ、出力が 1〜2 つのモデル（YOLO26n・DEIMv2・SegFormer・DAv2・姿勢）は無事。**出力が多いモデルは graph capture の有無で必ず比べる**。YuNet も `onnx.graph_capture: false`
+
 ## Grounding DINO の候補の扱い
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）

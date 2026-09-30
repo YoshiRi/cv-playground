@@ -142,6 +142,37 @@ def post_yolo_pose(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
+def nms(items, iou_th):
+    """重なった枠を除く（onnx_generic.js の nms と同じ）"""
+    def iou(a, b):
+        w, h = max(0, min(a[2], b[2]) - max(a[0], b[0])), max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        i = w * h
+        return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i)
+    keep = []
+    for it in sorted(items, key=lambda x: -x["score"]):
+        if all(iou(k["box"], it["box"]) <= iou_th for k in keep):
+            keep.append(it)
+    return keep
+
+
+def post_yunet(out, m, post, p):
+    # YuNet（onnx_generic.js の yunet と同じ手順）
+    th, cand = float(p.get("threshold", 0.6)), []
+    for s in (8, 16, 32):
+        cls, obj = out[f"cls_{s}"][0, :, 0], out[f"obj_{s}"][0, :, 0]
+        bb, kp, gw = out[f"bbox_{s}"][0], out[f"kps_{s}"][0], -(-m["iw"] // s)
+        score = np.sqrt(np.clip(cls, 0, 1) * np.clip(obj, 0, 1))
+        for i in np.nonzero(score >= th)[0]:
+            r, c = divmod(int(i), gw)
+            cx, cy = (c + bb[i, 0]) * s, (r + bb[i, 1]) * s
+            w, h = np.exp(bb[i, 2]) * s, np.exp(bb[i, 3]) * s
+            x1, y1 = to_orig(cx - w / 2, cy - h / 2, m)
+            x2, y2 = to_orig(cx + w / 2, cy + h / 2, m)
+            kps = [[*map(float, to_orig((c + kp[i, k * 2]) * s, (r + kp[i, k * 2 + 1]) * s, m)), 1.0] for k in range(5)]
+            cand.append({"label": "face", "score": float(score[i]), "box": [float(x1), float(y1), float(x2), float(y2)], "keypoints": kps})
+    return {"kind": "boxes", "items": nms(cand, float(post.get("nms", 0.3)))}
+
+
 def post_yolo_pose_raw(out, m, post, p):
     # onnx.cut で出力の頭の手前で切った YOLO26-pose: (1, 候補数, 56) = x1 y1 x2 y2（入力のピクセル）, スコア, 17 ×（x, y, 可視度）
     th, d = float(p.get("threshold", 0.4)), next(iter(out.values()))[0]
@@ -238,7 +269,7 @@ def post_deim_wholebody(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
-POST = {"yolo_pose_raw": post_yolo_pose_raw, "segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+POST = {"yunet": post_yunet, "yolo_pose_raw": post_yolo_pose_raw, "segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):

@@ -67,6 +67,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `yolo_pose_raw` | YOLO26-pose を `onnx.cut: ["/model.23/Transpose_2_output_0"]` で切った全候補: (1, 候補数, 56) = x1 y1 x2 y2（入力のピクセル）, スコア, 17 ×（x, y, 可視度）。スコアの高い順に最大 300 件 | boxes（keypoints つき） |
 | `ultra_e2e_detect` / `ultra_e2e_pose` | Ultralytics の end2end 書き出し: (1, 300, 6 / 57) 入力のピクセル座標 | boxes |
 | `deim_wholebody` | PINTO の DEIMv2: (1, Q, 6) = クラス, 正規化 xyxy, スコア。`classes` と表示する `show` を指定 | boxes |
+| `yunet` | OpenCV の YuNet（顔）: stride 8・16・32 ごとの `cls_*`・`obj_*`・`bbox_*`・`kps_*`。スコア = √(cls × obj)、格子からの枠に組み立て、`nms`（IoU、既定 0.3）で重なりを除く（OpenCV の FaceDetectorYN と同じ） | boxes（顔の5点を keypoints に） |
 | `alpha` | 前景の度合い（`sigmoid` で確率に） | mask（`cutout`） |
 | `segmap` | セマンティック・セグメンテーションの logits (1, クラス数, h, w)。画素ごとに最大のクラスで塗る。`labels` にクラス名の並び、`output` に出力名 | segmap（凡例つき） |
 | `depth` | 深度。`inverse`（大きいほど遠い深度を反転）、`intrinsics`（内部パラメータの出力名、あれば画角を出す） | depth |
@@ -160,7 +161,7 @@ transformers.js の adapter（`tjs-*`）にはどれもかからない（1回ず
 2. **速さ**: 「速度を測る」で 20 回以上。記録の「実行場所」に実際に使った設定（`fp16 graph 前処理GPU…`）、列に前処理・モデル実行・後処理が出る
 3. **graph capture 不可と出たら**: URL に `?profile=1` を付けて実行設定を「fp32（graph capture なし）」にして測ると、表に「CPU に回ったノード」が出る。出力の頭（Mod・Range・Cast など、候補の選び出し）なら、`onnx.cut` でその手前の値で切り、選び出しを JS の後処理で行うと使えるようになる（YOLO26-pose で実施）
 4. **どこが重いか**: 同じ `?profile=1` の表の「演算ごとの GPU 時間」。畳み込み・行列積が大半なら計算そのものが重い（入力を小さくする、fp16 版、軽いモデルに替える）。後処理の列が大きければ JS の部品を見直す
-5. **結果が合っているか**: 移す前の経路（transformers.js・サーバー）と同じ画像で、件数・クラス・面積を比べる。前処理の違いは `?pre=cpu` で CPU の前処理と比べられる。**graph capture が使えた時は、実行設定を「fp16（graph capture なし）」にした時と出力が同じか必ず見る**（DA3 small は graph capture で深度が2値に壊れた。その時は `onnx.graph_capture: false`）
+5. **結果が合っているか**: 移す前の経路（transformers.js・サーバー）と同じ画像で、件数・クラス・面積を比べる。前処理の違いは `?pre=cpu` で CPU の前処理と比べられる。**graph capture が使えた時は、実行設定を「fp16（graph capture なし）」にした時と出力が同じか必ず見る**（DA3 small・YuNet は graph capture で出力が壊れた。出力が多いモデルで起きやすい。その時は `onnx.graph_capture: false`）
 6. **スマホで**: Mac で速くてもスマホで逆になることがある（`?pre=gpu` は Galaxy Z Fold6 で遅くなった。DETR panoptic は Adreno 750 で WebGPU の shader が作れない）。記録の Markdown を貼れば比べられる
 
 ## 8. 足したあとの確認

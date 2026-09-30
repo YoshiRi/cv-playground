@@ -108,6 +108,7 @@ canvas { display: block; max-width: 100%; max-height: 70vh; width: auto; height:
 .actions .primary { align-self: stretch; }
 .view-toggle select { width: auto; }
 .video-controls select { width: auto; padding: 4px 6px; }
+#camera-select { width: auto; max-width: 100%; }
 
 .result { font-size: 14px; display: flex; flex-direction: column; gap: 10px; }
 .result:empty { display: none; }

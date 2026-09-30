@@ -419,18 +419,46 @@ function clearResult() {
 let stream = null;
 const isCamera = () => !!stream;
 
-async function startCamera() {
+// 使うカメラ: "facing:environment"（背面）/ "facing:user"（前面）/ "device:<deviceId>"（端末の一覧から）。
+// 最後に選んだものはこのブラウザに覚えておく（使えなければ背面）
+const CAMERA_KEY = "cvpg-camera";
+const savedCamera = () => { try { return localStorage.getItem(CAMERA_KEY) || "facing:environment"; } catch { return "facing:environment"; } };
+function cameraConstraints(choice) {
+  const [kind, v] = choice.split(/:(.*)/s);
+  return { video: { ...(kind === "device" ? { deviceId: { exact: v } } : { facingMode: v }), width: { ideal: 1280 } }, audio: false };
+}
+
+async function startCamera(choice = savedCamera()) {
+  const wasLive = state.live;
+  // スマホは2つのカメラを同時に開けないことが多いので、今のカメラを先に止めてから開く
+  stopVideo();
   let s;
   try {
-    s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1280 } }, audio: false });
+    s = await navigator.mediaDevices.getUserMedia(cameraConstraints(choice));
   } catch (e) {
+    if (choice !== "facing:environment") return startCamera("facing:environment"); // 覚えていたカメラが無くなった時など
     setStatus(`カメラを使えない: ${e.message}`, "err");
     return;
   }
-  stopVideo();
   stream = s;
+  try { localStorage.setItem(CAMERA_KEY, choice); } catch { /* 保存できない環境 */ }
   $("video").srcObject = stream;
   await startVideoCommon();
+  await renderCameraSelect(choice);
+  // 連続実行中に切り替えた時は止める（前の連続実行が終わりきる前に次を始めると2つ重なるので、再開はボタンで）
+  if (wasLive) setStatus("カメラを切り替えたので連続実行を止めた（▶ 連続実行で再開）");
+}
+
+// カメラの選択欄: 背面・前面と、端末のカメラの一覧（名前はカメラを許可したあとでないと取れない）
+async function renderCameraSelect(choice) {
+  const sel = $("camera-select");
+  let devices = [];
+  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput"); } catch { /* 一覧を取れない環境 */ }
+  const opts = [["facing:environment", "背面カメラ"], ["facing:user", "前面カメラ（インカメラ）"],
+    ...(devices.length > 1 ? devices.map((d, i) => [`device:${d.deviceId}`, d.label || `カメラ ${i + 1}`]) : [])];
+  sel.innerHTML = opts.map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`).join("");
+  sel.value = choice;
+  sel.hidden = false;
 }
 
 async function setVideoFile(file) {
@@ -456,6 +484,7 @@ function stopVideo() {
   stopLive();
   const v = $("video");
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  $("camera-select").hidden = true;
   if (v.getAttribute("src")) { URL.revokeObjectURL(v.src); v.removeAttribute("src"); v.load(); }
   v.srcObject = null;
   state.video = false;
@@ -858,7 +887,7 @@ async function liveLoop() {
     await applyCascade(m, r, tracker ? seqStore : null);
     await applyCombo(r, tracker ? seqStore : null);
     applyApps(r, { tracked: !!tracker });
-    if (!first) { first = r; tStart = performance.now(); setStatus(""); }
+    if (!first) { first = r; tStart = performance.now(); if (state.live) setStatus(""); } // 止めた後に遅れて届いた結果では、止めた時の表示を消さない
     frames++;
     if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
     fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
@@ -1131,7 +1160,8 @@ async function init() {
     if (state.auto && !state.video) run();
   };
   $("unload").onclick = async () => { await fetch("api/unload", { method: "POST" }); refreshServer(); };
-  $("camera-btn").onclick = startCamera;
+  $("camera-btn").onclick = () => startCamera();
+  $("camera-select").onchange = (ev) => startCamera(ev.target.value);
   $("file").onchange = (e) => {
     const f = e.target.files[0];
     if (!f) return;

@@ -30,7 +30,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
   - Depth & 3D: depth estimation
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)
 - **Applications** (add-ons in any tab that returns boxes — detection, pose, hands & eyes, text-prompted detection): counting per class (current count and, with tracking, a cumulative count of track IDs). Add `?apps=count` to the URL to turn it on from the start
-- **Input**: images, video files, and live camera. Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
+- **Input**: images, video files, and live camera (switch between the back and front cameras, or pick any camera on the device). Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
 - **Runtime options**: by default, generic ONNX models run with fp16 (when the model has an fp16 file) and WebGPU graph capture, which is dropped automatically for models that cannot use it. You can switch to fp32, no graph capture, or CPU (WASM), and pick the input long side (320–960) for models with dynamic input. Fixed-size models also get their symbolic input dimensions pinned
 - **Compare**: the same model in the browser and on the server (generic ONNX models build pre/post-processing from shared blocks, so both sides follow the same steps). Timings are kept in the run history

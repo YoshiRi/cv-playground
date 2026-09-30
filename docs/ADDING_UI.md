@@ -121,10 +121,15 @@ APPS.myapp = {
 | `combo.base` | 画面の「モデル」に並べるタブ。そのモデルの結果が `r` |
 | `combo.with` | 役割ごとの2つ目以降のモデル。`task` のタブのモデルを、`name` の選択欄で選ぶ。結果の `items` は `r.with[role]` に入る。`show` は PINTO のように表示するクラスを絞るモデルで、組み合わせに使うクラスを渡す（`params.show`） |
 | `combo.app` | 組み合わせ方（`COMBOS` の名前） |
+| `combo.with[].every` | 連続実行では N フレームに1回だけ回し、間は前の結果を使う（深度のような重いモデル用） |
+| `combo.with[].params` | そのモデルに渡す追加のパラメータ（深度は `depth_raw: true` で、画像にする前の値 `depthRaw` も返す） |
+| `combo.with[].default` | 役割のモデルの既定（`key`） |
 
 ```js
 COMBOS.mycombo = {
-  combine(r) { ... },       // 追跡・cascade の後に呼ぶ。r.items（base の結果、追跡の ID つき）と r.with[role] から r.items を組み直す
+  combine(r) { ... },       // 追跡・cascade の後に呼ぶ。r.items（base の結果、追跡の ID つき）と r.with[role]（items）・r.withResults[role]（結果そのもの）から組み直す
+  draw(ctx, r, base) { ... }, // 任意。canvas に重ねて描く（3D の姿勢の小窓など）
+  reset() { ... },          // 任意。連続実行の開始時に呼ぶ（ID ごとの履歴を捨てる）
   panel: (r) => "<div>…</div>",  // 結果欄に足す HTML
   summary: (r) => "…",      // 実行履歴の「結果」欄に足す文字
 };

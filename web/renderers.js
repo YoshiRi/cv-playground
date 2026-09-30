@@ -22,7 +22,7 @@ export const labelColor = (label) => PALETTE[[...label].reduce((a, c) => a + c.c
 export const idColor = (id) => `hsl(${(id * 137.508) % 360} 80% 55%)`;
 // 姿勢の骨格: 左半身（奇数の関節）・右半身（偶数）・体幹で色を分ける
 const LIMB = { left: "#38bdf8", right: "#fb923c", center: "#a3e635" };
-const limbColor = ([a, b]) => (a >= 5 && b >= 5 && a % 2 === 1 && b % 2 === 1 ? LIMB.left : a >= 5 && b >= 5 && a % 2 === 0 && b % 2 === 0 ? LIMB.right : LIMB.center);
+export const limbColor = ([a, b]) => (a >= 5 && b >= 5 && a % 2 === 1 && b % 2 === 1 ? LIMB.left : a >= 5 && b >= 5 && a % 2 === 0 && b % 2 === 0 ? LIMB.right : LIMB.center);
 
 // ---------- 描画の部品 ----------
 
@@ -69,6 +69,8 @@ function turbo(t) {
   const b = 0.1066733 + t * (12.64194608 + t * (-60.58204836 + t * (110.36276771 + t * (-89.90310912 + t * 27.34824973))));
   return [255 * clamp01(r), 255 * clamp01(g), 255 * clamp01(b)];
 }
+// 近さ（0＝遠い〜1＝近い）の色。深度の表示と同じ turbo
+export const nearColor = (t) => `rgb(${turbo(Math.min(1, Math.max(0, t))).map(Math.round).join(",")})`;
 export const TURBO_CSS = `linear-gradient(90deg, ${[0, 0.25, 0.5, 0.75, 1].map((t) => `rgb(${turbo(t).map(Math.round).join(",")})`).join(", ")})`;
 
 function checker(ctx, w, h) {
@@ -124,7 +126,7 @@ export const KINDS = {
       const sx = b.w / r.w, sy = b.h / r.h, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
       for (const it of r.items) {
         const [x1, y1, x2, y2] = [it.box[0] * sx, it.box[1] * sy, it.box[2] * sx, it.box[3] * sy];
-        const col = it.id != null ? idColor(it.id) : labelColor(it.label);
+        const col = it.color ?? (it.id != null ? idColor(it.id) : labelColor(it.label)); // it.color は組み合わせのタブなどで上書き
         if (it.trail?.length > 1) { // 追跡の軌跡（枠の中心の履歴）
           ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.globalAlpha = 0.8; ctx.beginPath();
           it.trail.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy)));

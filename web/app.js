@@ -559,6 +559,7 @@ function draw() {
     ctx.strokeStyle = "#fff"; ctx.lineWidth = lw; ctx.stroke();
   }
   if (r) for (const a of state.apps) APPS[a.id].draw?.(ctx, a.st, r, b);
+  if (r) COMBOS[curTask().combo?.app]?.draw?.(ctx, r, b); // 組み合わせのタブの重ね描き（3D の姿勢の小窓など）
 }
 
 // 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
@@ -791,21 +792,28 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
   const run1 = (mm, img, pp) => (mm.where === "browser" ? runInBrowser(mm, img, pp) : runOnServer(mm, img, pp));
   // 組み合わせのタブ: 同じフレームを役割ごとのモデルにも送る（ImageBitmap は Worker に渡すと使えなくなるので写しを作る）。
   // 同じ Worker なら届いた順に続けて実行される
+  // every: 連続実行では N フレームに1回だけ回し、間は前の結果を使う（深度のような重いモデル用）
   const t = curTask(), extra = [];
+  state.comboTick = (state.comboTick || 0) + 1;
   for (const wdef of t.combo?.with || []) {
     const mm = comboModels()[wdef.role];
     if (!mm) continue;
+    const every = state.live ? wdef.every || 1 : 1, cached = state.comboCache?.[wdef.role];
+    if (every > 1 && cached?.id === mm.id && state.comboTick % every !== 0) { extra.push([wdef.role, mm, Promise.resolve({ ...cached.x, reused: true })]); continue; }
     if (!confirmDownload(mm)) throw new Error("ダウンロードを取りやめた");
     const img = image instanceof ImageBitmap ? await createImageBitmap(image) : image;
-    extra.push([wdef.role, mm, run1(mm, img, { ...params, show: wdef.show })]);
+    // 入力サイズ可変の役割のモデル（深度）は、そのモデルの既定の長辺で
+    const pp = { ...params, show: wdef.show, ...(wdef.params || {}), ...(mm.pre?.dynamic ? { input_size: mm.pre.size[0] } : {}) };
+    extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => { (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x; })]);
   }
   const r = await run1(m, image, params);
   r.w = w; r.h = h;
   if (extra.length) {
-    r.with = {}; r.withModels = {};
+    r.with = {}; r.withModels = {}; r.withResults = {};
     for (const [role, mm, pr] of extra) {
       const x = await pr;
-      r.with[role] = x.items || []; r.withModels[role] = mm;
+      r.with[role] = x.items || []; r.withModels[role] = mm; r.withResults[role] = x;
+      if (x.reused) continue; // 前のフレームの結果を使った時は時間を足さない
       r.infer_ms += x.infer_ms || 0;
       if (r.roundtrip_ms != null || x.roundtrip_ms != null) r.roundtrip_ms = (r.roundtrip_ms || 0) + (x.roundtrip_ms || 0);
       for (const k of Object.keys(x.breakdown || {})) if (r.breakdown) r.breakdown[k] = (r.breakdown[k] || 0) + x.breakdown[k];
@@ -868,6 +876,7 @@ async function liveLoop() {
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();
+  state.comboCache = {}; state.comboTick = 0; COMBOS[curTask().combo?.app]?.reset?.(); // 組み合わせの前の結果・履歴を捨てる
   KINDS.depth.resetRange(); // 深度の「範囲を固定」は連続実行ごとに取り直す
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
   const overrides = tracker ? { threshold: Math.min(th, tracker.args.track_low_thresh) } : {};

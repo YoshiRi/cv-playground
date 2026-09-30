@@ -166,6 +166,66 @@
    "category": "3d"
   },
   {
+   "id": "near",
+   "name": "近さ（物体検出＋深度）",
+   "category": "3d",
+   "result": "boxes",
+   "hint": "物体検出と深度を組み合わせる。枠の色を近さ（赤＝近い、青＝遠い）で塗り、近い順の番号を付ける。動画・カメラで追跡を選ぶと、近づいてくる物に「接近」を付ける。深度は相対値なので距離ではなく、この画像の中での順番",
+   "params": [
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   },
+   "combo": {
+    "base": "detect",
+    "app": "near",
+    "with": [
+     {
+      "role": "depth",
+      "name": "組み合わせる深度のモデル",
+      "task": "depth",
+      "every": 3,
+      "default": "dav2-small",
+      "params": {
+       "depth_raw": true
+      }
+     }
+    ]
+   }
+  },
+  {
+   "id": "pose3d",
+   "name": "3D の姿勢（姿勢＋深度）",
+   "category": "3d",
+   "result": "boxes",
+   "hint": "人物の姿勢と深度を組み合わせる。関節点に深度で奥行きを付け、画面の右下の小窓に骨格を回して描く。奥行きは相対深度からの大まかなもの",
+   "params": [
+    "threshold",
+    "track"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   },
+   "combo": {
+    "base": "pose",
+    "app": "pose3d",
+    "with": [
+     {
+      "role": "depth",
+      "name": "組み合わせる深度のモデル",
+      "task": "depth",
+      "every": 2,
+      "default": "dav2-small",
+      "params": {
+       "depth_raw": true
+      }
+     }
+    ]
+   }
+  },
+  {
    "id": "classify",
    "name": "ゼロショット分類",
    "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア",

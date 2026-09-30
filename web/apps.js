@@ -2,7 +2,8 @@
 // models.json の apps に {id, name, accepts: [結果の種類], params, hint} を書くと、その種類の結果を返すタブ（tasks[].result）の
 // 「応用」欄にチェックが出て、選ぶと追跡・cascade のあとに順に呼ばれる。モデルの後処理（onnx_generic.js・adapters.py、
 // models.json の post）とは別物で、モデルの結果の見せ方（renderers.js の KINDS）とも別に、集計の状態と表示だけを持つ
-import { esc, labelColor } from "./renderers.js";
+import { esc, labelColor, limbColor, nearColor } from "./renderers.js";
+import { SKELETON } from "./catalog.js";
 
 // APPS[id] = {
 //   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（応用欄の値）
@@ -94,7 +95,109 @@ const center = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 const inBox = ([x, y], b, m = 0) => { const w = b[2] - b[0], h = b[3] - b[1]; return x >= b[0] - w * m && x <= b[2] + w * m && y >= b[1] - h * m && y <= b[3] + h * m; };
 const iou = (a, b) => { const w = Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0])), h = Math.max(0, Math.min(a[3], b[3]) - Math.max(a[1], b[1])), i = w * h; return i / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - i); };
 
+// 深度の結果（depthRaw）から、元画像の座標 (x, y) の近さ（0＝その画像で一番遠い〜1＝一番近い）を引く
+function nearAt(d, x, y) {
+  const m = d.m, gx = Math.min(d.w - 1, Math.max(0, Math.floor(((x * m.sx + m.ox) * d.w) / m.iw)));
+  const gy = Math.min(d.h - 1, Math.max(0, Math.floor(((y * m.sy + m.oy) * d.h) / m.ih)));
+  return (d.data[gy * d.w + gx] - d.lo) / Math.max(d.hi - d.lo, 1e-9);
+}
+// 枠の中央 6 割の 5×5 点の近さの中央値（枠の端の背景を拾いにくく）
+function nearOfBox(d, b) {
+  const v = [];
+  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) v.push(nearAt(d, b[0] + (b[2] - b[0]) * (0.2 + 0.15 * i), b[1] + (b[3] - b[1]) * (0.2 + 0.15 * j)));
+  v.sort((a, b2) => a - b2);
+  return v[12];
+}
+const NEAR_HIST = new Map(); // 追跡の ID → 近さの履歴（接近の判定用）
+
 export const COMBOS = {
+  // 近さ（物体検出＋深度）: 枠の中の深度の中央値で近さを出し、枠を近さの色（赤＝近い、青＝遠い）で塗って近い順の番号を付ける。
+  // 追跡の ID ごとに近さの履歴を持ち、直近 1 秒ほどで近さが 0.08 以上増えた物に「接近」。深度は相対値で、フレームごとに
+  // 範囲が変わるので、近さはその画像の中での相対（距離ではない）
+  near: {
+    reset() { NEAR_HIST.clear(); },
+    combine(r) {
+      const d = r.withResults?.depth?.depthRaw;
+      if (!d) { r.near = { error: "深度の値が無い（サーバーの深度モデルは組み合わせに使えない）" }; return; }
+      const items = r.items.map((it) => ({ it, n: nearOfBox(d, it.box) })).sort((a, b) => b.n - a.n);
+      let approaching = 0;
+      items.forEach(({ it, n }, i) => {
+        it.color = nearColor(n);
+        const tags = [i === 0 ? "一番近い" : `近さ ${i + 1}番`];
+        if (it.id != null) {
+          const h = NEAR_HIST.get(it.id) || [];
+          h.push({ t: performance.now(), n });
+          while (h.length && performance.now() - h[0].t > 1200) h.shift();
+          NEAR_HIST.set(it.id, h);
+          if (h.length >= 4 && n - h[0].n > 0.08) { tags.push("接近"); approaching++; }
+        }
+        it.state = tags.join("・");
+      });
+      r.near = { n: items.length, approaching, reused: !!r.withResults.depth.reused };
+    },
+    panel: (r) => (r.near?.error ? `<div class="sub">${esc(r.near.error)}</div>`
+      : r.near ? `<div class="sub">近さ（${r.near.n} 件）: 枠の色は近さ（赤＝近い、青＝遠い）、番号は近い順。接近 <b>${r.near.approaching}</b> 件（追跡を選ぶと出る）</div>`
+        + `<div class="sub muted">深度は相対値で、近さはこの画像の中での順番（距離ではない）。深度は数フレームに1回だけ回し、間は前の深度を使う</div>` : ""),
+    summary: (r) => (r.near && !r.near.error ? `近さ ${r.near.n}件・接近 ${r.near.approaching}` : ""),
+  },
+
+  // 3D の姿勢（姿勢＋深度）: 関節点ごとに深度を拾って奥行きを付け、画面の右下の小窓にゆっくり回して描く。
+  // 奥行きは相対深度から作った大まかなもの（形の雰囲気が分かる程度）
+  pose3d: {
+    combine(r) {
+      const d = r.withResults?.depth?.depthRaw;
+      r.pose3d = [];
+      if (!d) return;
+      const depthScale = r.w * 0.6; // 近さ 0〜1 を画面の幅の 6 割の奥行きに（見やすさのための目安）
+      for (const p of r.items.filter((it) => it.keypoints)) {
+        // 関節は細いので1点だと後ろの床や壁の深度を拾う。まわり 3×3 点の中央値を取り、その人の奥行きの中央値から
+        // 枠の高さの 35% 以上は離れないように抑える（トゲのように飛ぶのを防ぐ）
+        const r0 = Math.max(2, (p.box[3] - p.box[1]) * 0.015);
+        const zs = p.keypoints.map(([x, y]) => {
+          const v = [];
+          for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) v.push(nearAt(d, x + i * r0, y + j * r0));
+          v.sort((a, b) => a - b);
+          return (1 - v[4]) * depthScale;
+        });
+        const vis = zs.filter((_, i) => p.keypoints[i][2] > 0.3).sort((a, b) => a - b);
+        const zmid = vis.length ? vis[vis.length >> 1] : 0, lim = (p.box[3] - p.box[1]) * 0.35;
+        r.pose3d.push({ id: p.id, pts: p.keypoints.map(([x, y, v], i) => [x, y, Math.min(zmid + lim, Math.max(zmid - lim, zs[i])), v]) });
+      }
+    },
+    draw(ctx, r, b) {
+      if (!r.pose3d?.length) return;
+      const W = Math.round(b.w * 0.34), H = Math.round(b.h * 0.42), X0 = b.w - W - 8, Y0 = b.h - H - 8;
+      ctx.save();
+      ctx.fillStyle = "rgba(10,14,20,.78)"; ctx.fillRect(X0, Y0, W, H);
+      ctx.strokeStyle = "rgba(255,255,255,.25)"; ctx.strokeRect(X0, Y0, W, H);
+      const yaw = (performance.now() / 4000) % (Math.PI * 2), c = Math.cos(yaw), s = Math.sin(yaw);
+      // 全員の点を回して（縦の軸のまわり）、小窓に収まるように縮める
+      const all = r.pose3d.flatMap((p) => p.pts.filter((q) => q[3] > 0.3));
+      if (!all.length) { ctx.restore(); return; }
+      const cx = all.reduce((a, q) => a + q[0], 0) / all.length, cz = all.reduce((a, q) => a + q[2], 0) / all.length;
+      const proj = (q) => [(q[0] - cx) * c + (q[2] - cz) * s, q[1]];
+      const P = all.map(proj), xs = P.map((q) => q[0]), ys = P.map((q) => q[1]);
+      const sc = Math.min((W * 0.85) / Math.max(1, Math.max(...xs) - Math.min(...xs)), (H * 0.8) / Math.max(1, Math.max(...ys) - Math.min(...ys)));
+      const mx = (Math.max(...xs) + Math.min(...xs)) / 2, my = (Math.max(...ys) + Math.min(...ys)) / 2;
+      const to = (q) => { const [px, py] = proj(q); return [X0 + W / 2 + (px - mx) * sc, Y0 + H / 2 + 8 + (py - my) * sc]; };
+      const lw = Math.max(1.5, b.w / 500);
+      for (const p of r.pose3d) {
+        for (const pair of SKELETON) {
+          const [a, bb] = pair.map((i) => p.pts[i]);
+          if (a[3] < 0.3 || bb[3] < 0.3) continue;
+          const [x1, y1] = to(a), [x2, y2] = to(bb);
+          ctx.strokeStyle = limbColor(pair); ctx.lineWidth = lw * 1.4; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        }
+      }
+      ctx.fillStyle = "#e6e9ef"; ctx.font = `${Math.max(11, Math.round(b.w / 60))}px system-ui, sans-serif`; ctx.textBaseline = "top";
+      ctx.fillText("3D（相対深度、回転）", X0 + 6, Y0 + 5);
+      ctx.restore();
+    },
+    panel: (r) => `<div class="sub">3D の姿勢（${r.pose3d?.length ?? 0} 人）: 右下の小窓に、関節点に深度で奥行きを付けた骨格を回して描く。奥行きは相対深度からの大まかなもの</div>`
+      + (r.withResults?.depth && !r.withResults.depth.depthRaw ? `<div class="sub">深度の値が無い（サーバーの深度モデルは組み合わせに使えない）</div>` : ""),
+    summary: (r) => (r.pose3d ? `3D ${r.pose3d.length}人` : ""),
+  },
+
   // しぐさ: 姿勢（人ごとの関節点）＋ PINTO の部位（頭・目・手と、頭の向きのクラス）
   gesture: {
     combine(r) {

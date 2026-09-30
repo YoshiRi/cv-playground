@@ -546,7 +546,7 @@ const POST = {
     }
     return { kind: "boxes", items };
   },
-  async depth(out, m, post) {
+  async depth(out, m, post, p = {}) {
     const t = out[post.output || "predicted_depth"], [h, w] = t.dims.slice(-2);
     let v = Float32Array.from(t.data);
     if (post.inverse) v = v.map((d) => 1 / Math.max(d, 1e-6)); // 「大きいほど遠い」深度を、表示用に「大きいほど近い」へ
@@ -555,8 +555,11 @@ const POST = {
     const x1 = Math.min(w, x0 + Math.round(m.cw * fx)), y1 = Math.min(h, y0 + Math.round(m.ch * fy));
     let lo = Infinity, hi = -Infinity;
     for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { const a = v[y * w + x]; if (a < lo) lo = a; if (a > hi) hi = a; }
+    // 組み合わせのタブ用（params.depth_raw）: 画像にする前の値（大きいほど近い）と、元画像の座標から引くための対応
+    const raw = p.depth_raw ? { w, h, data: v, lo, hi, m: { sx: m.sx, sy: m.sy, ox: m.ox, oy: m.oy, iw: m.iw, ih: m.ih } } : null;
     v = v.map((a) => (a - lo) / Math.max(hi - lo, 1e-6));
     const res = { kind: "depth", image: await cropResizePng(v, w, h, m), range: [lo, hi] };
+    if (raw) res.depthRaw = raw;
     if (post.intrinsics && out[post.intrinsics]) {
       const fx = out[post.intrinsics].data[0];
       res.note = `推定した水平画角 ${((2 * Math.atan(m.cw / 2 / fx) * 180) / Math.PI).toFixed(0)}°（DA3 はカメラの内部パラメータも出す）`;

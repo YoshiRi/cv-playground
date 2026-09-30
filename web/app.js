@@ -689,7 +689,9 @@ async function runBench() {
   for (let i = 0; i < list.length && state.bench; i++) {
     const { t, v } = list[i];
     const def = t.defaults || {};
-    const overrides = { threshold: def.threshold ?? 0.4, labels: def.labels ?? "", prompt: v.prompt || def.prompt || "", points: [], auto: false };
+    // 入力サイズ可変のモデルは、そのモデルの既定の長辺（pre.size[0]）で測る。画面で選んでいるモデルだけは画面の値で
+    const insz = v.pre?.dynamic ? (currentModel()?.id === v.id ? parseInt($("input-size").value, 10) : v.pre.size[0]) : undefined;
+    const overrides = { threshold: def.threshold ?? 0.4, labels: def.labels ?? "", prompt: v.prompt || def.prompt || "", points: [], auto: false, ...(insz ? { input_size: insz } : {}) };
     const times = [], bd = { grab: [], pre: [], run: [], post: [] };
     let first = null, r = null;
     try {
@@ -717,7 +719,7 @@ async function runBench() {
     addRun(makeRecord(v, r, "bench", {
       load_ms: first.load_ms, infer_ms: st.mean, grab_ms: avg(bd.grab), pre_ms: avg(bd.pre), run_ms: avg(bd.run), post_ms: avg(bd.post),
       frames: st.n, fps: +(1000 / st.mean).toFixed(2), infer_mean_ms: st.mean, infer_median_ms: st.median, infer_p90_ms: st.p90, infer_p95_ms: st.p95,
-      gpu_ms: profile?.gpu_ms, ...(profile ? { profile } : {}), infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(),
+      gpu_ms: profile?.gpu_ms, ...(profile ? { profile } : {}), infer_min_ms: st.min, infer_max_ms: st.max, warmup: BENCH_WARMUP, bench_image: BENCH_IMAGE.split("/").pop(), input_size: insz ?? "",
     }));
     done.push(v.name);
     renderResult(v, r);

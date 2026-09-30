@@ -24,12 +24,15 @@
 - [ ] 同じ画像で複数のモデルを並べて比べる表示
 - [ ] 手元の ONNX で SHA-256 が一致しないもの（自前で学習・変換したモデル）: Ultralytics の書き出しのメタデータ（`task` / `imgsz` / `names`）で後処理とクラス名を自動で設定する。無ければ入出力の名前と形（`session.inputMetadata`）を既存モデルと比べて候補を出し、サンプル画像で1回試して出力の異常を見る。選んだファイルは OPFS に保存して選び直さずに済むようにする
 - [ ] 手元のファイルを transformers.js のモデル（複数ファイル）でも使う（フォルダごと選ぶ）
+- [ ] YOLO 系の後処理のクラス名が COCO 固定になっている（`web/onnx_generic.js` の `yolo_detect`・`ultra_e2e_detect`、`adapters.py` の同じ部品が `COCO[...]`）。`post.classes` に名前の配列も書けるようにする（`"coco"` は今まで通り）。追加学習したモデル（VisDrone の10クラスなど）を載せる前提
+- [ ] YOLO26 の NMS ありの経路を選べるようにする: one-to-many の生の出力（1, 84, 8400）で書き出し、JS で NMS（IoU 0.7）。群衆の俯瞰（Ultralytics の CI 動画 62 フレーム）で NMS なし 1213 件に対し 1391 件。NMS を ONNX に埋め込む書き出しは `NonMaxSuppression`・`NonZero` が WebGPU EP に無く graph capture を作れない
 
 ## 軽いモデルのラインナップ（スマホでリアルタイムに近いもの）
 
 モデルを選ぶ時は `docs/ADDING_MODELS.md` の「7. 速く動かす」を見る（`onnx/` に fp16 版があり、前処理がリサイズ＋正規化だけのものは、汎用 ONNX で書けば最適化が自動でかかる）。候補は未確認なので、配布元・ライセンス・ONNX の有無から確かめる。
 
 - [ ] 深度: 「モデル入力（長辺）」にもっと小さい選択肢（252 など）を足す（Galaxy Z Fold6 で DAv2 small は 320 で 10fps、518 で 2fps）。後処理（深度を色の画像にして PNG にする所、Fold6 で 18〜31ms）を画像のまま渡すか GPU で色付けして軽くする。DA3 small の fp16 版を作る（今は fp32 のみ）
+- [ ] 俯瞰の群衆・駐車場: [dronefreak/visdrone-yolo26n](https://huggingface.co/dronefreak/visdrone-yolo26n)（YOLO26n を VisDrone で追加学習、AGPL-3.0）を onnx-community と同じ形（`logits`・`pred_boxes`、fp16 版も）で書き出し、graph capture と Python（`.pt`）との一致を確かめる。Python の比較では、群衆 19.5 → 41.3 人/フレーム（NMS なし）、駐車場 0 → 41.5 台/フレーム、目の高さの街の写真では歩行者 1（COCO 版は 5）で俯瞰専用。配るなら自前の Hugging Face リポジトリ（AGPL、元モデルと学習データを明記。VisDrone のライセンス表記は CC-BY-SA-3.0 と CC-BY-NC-SA-3.0 で資料により食い違う）
 - [ ] 背景除去・人物の切り抜き: BiRefNet lite（1024）より軽いもの（MODNet など、512 前後でスマホ向け）
 - [ ] セグメンテーション: SegFormer B0 の入力サイズ（今は 512 固定）を選べるようにする。後処理（クラスの最大）を GPU に移す
 - [ ] SAM 系の追跡: 今は前のフレームのマスクから作った枠で切り出し直す疑似的な追跡（NOTES）。前のフレームの記憶を使う本来の追跡は、EdgeTAM の memory attention / memory encoder を ONNX に書き出す必要がある。スマホで fps を測る。複数の物を同時に追う

@@ -142,7 +142,7 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
 
 - Depth Anything V2 small を transformers.js から汎用 ONNX（fp16、50MB）に移し、DA3 small とそろえて入力を「長辺を『モデル入力（長辺）』に合わせ、14 の倍数まで余白で埋める」（`letterbox_rect`、`stride: 14`、`dynamic`）にした。transformers.js の既定は短辺 518 で、16:9 の動画だと 924×518 になる。長辺 518 なら 518×294（画素は約 1/3）
 - **入力の大きさが実行時に決まるモデルも形を固定する**: 最初の実行で入力の形が分かった所で、その形でセッションを作り直す（形が変わった時も。`onnx_generic.js` の `onnxRun`）。形の計算が CPU に回らなくなり、DA3 small はベンチ 235 → 161ms（518×518）。**DA3 small は形を固定すると graph capture を作れるが、出力が壊れる**（深度がほぼ2値になる。画素の 99.6% が黒か白）ので、models.json の `onnx.graph_capture: false` で使わない（2026-09-29 に Web UI で2値に見えると報告があり、graph capture の有無で比べて特定）。他の graph capture を使うモデル（DAv2・SegFormer・YOLO26n・DEIMv2）は、graph capture の有無で出力が完全に一致することを確かめた。入力サイズ可変の YOLO26 は 64bit 整数の出力の頭が残るので使えない
-- モデルを選んだ時、「モデル入力（長辺）」の既定をそのモデルの `pre.size[0]`（深度 518、YOLO 640）にする（選択肢に 518 を足した）
+- モデルを選んだ時、「モデル入力（長辺）」の既定をそのモデルの `pre.size[0]`（深度 518、YOLO 640）にする（選択肢に 518 を足した）。2026-09-30 に深度（DAv2・DA3）の既定を 320 にした（スマホの連続実行で DAv2 が 518 の約 2fps → 約 10fps。DA3 の画角は入力が小さいと変わるので、画角を見る時は 518 以上）
 - M4 の Chrome、ベンチ（正方形の画像、中央値）: Depth Anything V2 small（fp16 + graph capture）は長辺 320 で 40ms、480 で 93ms、640 で 181ms。DA3 small（fp32、fp16 版なし、graph capture なし）は 320 で 59ms、518 で 161ms（最初に測った 320 で 53ms・640 で 270ms は graph capture で出力が壊れた状態の値）
 - 連続実行（人物の動画 640×360 を3倍速、約 36fps）: Depth Anything V2 small は長辺 320 で 32fps（動画の速さが上限）、480 で 20fps。DA3 small は短辺 518 のままだと 3fps（1フレーム 338ms）
 - Galaxy Z Fold6（Chrome 153）の連続実行（360×640 の動画）: Depth Anything V2 small は長辺 320 で 1 フレーム 81ms（中央値、p90 169ms、10fps。内訳の平均は前処理 5.5・モデル実行 142・後処理 18ms）、518 で 453ms（2.2fps）。画素は 2.6 倍なのに時間は 5.6 倍で、スマホでは ViT の attention（パッチの数の2乗近く）が効く。後処理（深度を色の画像にして PNG にする所）が 1 割強を占める

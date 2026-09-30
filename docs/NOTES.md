@@ -211,7 +211,7 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
 - 配布元のコードは ONNX の最後の Gemm（分類の層）を外して特徴を取り、その重みで分類し直しているが、ONNX をそのまま使えば分類のスコアが出る
 - cascade に複数クラスの分類（`classes`）、valence・arousal（`va`）、切り出しの広げ（`expand`、顔は 0.1）、既定でオフ（`default: false`）を足した。追跡の ID があれば確率を ID ごとに指数移動平均（0.35）でならす
 - 確認: 配布元と同じ前処理（cv2 相当の縮小・正規化）の Python と、肖像写真 3 枚で表情の 1 位と快の値がほぼ一致（どれも無表情）。表情のラベル付きの AffectNet の抜粋（96×96、各 10 枚）で、8 種類の正解率は MobileFaceNet 60%・EfficientNet-B0 55%（公開の AffectNet-8 の成績と同程度。学習に使ったデータなので甘め）、快の平均は喜び +0.67・無表情 −0.02・悲しみ −0.32・怒り −0.42
-- 1 つの顔の分類は M4 で約 6ms（MobileFaceNet）。FER+（ONNX Model Zoo）は 35MB で白黒 64×64 の古いモデルなので使わなかった。MediaPipe の blendshape（52 の細かな顔の動き）は py-feat が PyTorch の形でしか配っておらず、ONNX に書き出す必要がある（TODO）
+- 1 つの顔の分類は M4 で約 6ms（MobileFaceNet。動画で `?nopipe=1` でも 6〜7ms）。パイプライン（既定）の時は結果欄の「切り出して分類」が 24〜33ms になるが、次のフレームの検出が Worker の列で先に回っていて、その終わりを待つ分が入るため（分類の計算が遅いわけではない）。追跡つきの動画（顔写真を動かした webm）で、ID が保たれて表情と快・覚醒度がならされて出るのを確かめた。FER+（ONNX Model Zoo）は 35MB で白黒 64×64 の古いモデルなので使わなかった。MediaPipe の blendshape（52 の細かな顔の動き）は py-feat が PyTorch の形でしか配っておらず、ONNX に書き出す必要がある（TODO）
 
 ## Grounding DINO の候補の扱い
 

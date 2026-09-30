@@ -253,7 +253,7 @@ export const KINDS = {
 
 function countBy(items) {
   const c = {};
-  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
+  for (const it of items) { const k = it.state ? `${it.label}（${it.state.replace(/ \d+%|（[^）]*）/g, "")}）` : it.label; c[k] = (c[k] || 0) + 1; }
   return Object.entries(c).sort((a, b) => b[1] - a[1]);
 }
 

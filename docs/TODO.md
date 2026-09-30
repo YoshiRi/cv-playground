@@ -37,6 +37,8 @@
 - [ ] セグメンテーション: SegFormer B0 の入力サイズ（今は 512 固定）を選べるようにする。後処理（クラスの最大）を GPU に移す
 - [ ] SAM 系の追跡: 今は前のフレームのマスクから作った枠で切り出し直す疑似的な追跡（NOTES）。前のフレームの記憶を使う本来の追跡は、EdgeTAM の memory attention / memory encoder を ONNX に書き出す必要がある。スマホで fps を測る。複数の物を同時に追う
 
+- [ ] 顔の細かな動き: MediaPipe の顔メッシュ（478 点）と blendshape（まばたき・口の開き・笑顔など 52 種類）。py-feat が PyTorch の形（`py-feat/mp_facemesh_v2`・`py-feat/mp_blendshapes`、Apache-2.0）で配っているので ONNX に書き出す。顔 → 顔メッシュ → blendshape の 3 段になる
+
 ## 応用（組み合わせ）
 
 `models.json` の `apps` と `web/apps.js` に足す（`docs/ADDING_UI.md` の「4. 応用」）。1つのモデルの結果に後付けするものは応用に、複数のモデルを組み合わせるものは専用のタブを考える。

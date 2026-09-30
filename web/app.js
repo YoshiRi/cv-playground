@@ -375,7 +375,7 @@ function updateModelNote() {
   $("advanced").hidden = $("ort-opt-row").hidden && $("input-size-row").hidden;
   const cascadeFrom = Object.values(comboModels()).find((x) => x?.cascade) || m; // 組み合わせのタブは、部位のモデルの cascade
   $("cascade").innerHTML = (cascadeFrom.cascade || []).map((c) =>
-    `<label class="check"><input type="checkbox" data-cascade="${c.id}" checked> ${esc(c.name)}</label>`).join("");
+    `<label class="check"><input type="checkbox" data-cascade="${c.id}"${c.default === false ? "" : " checked"}> ${esc(c.name)}</label>`).join("");
   if (m.note) notes.push(m.note);
   $("model-note").textContent = notes.filter(Boolean).join(" / ");
 }
@@ -998,6 +998,25 @@ function applyApps(r, ctx) {
 // 実行履歴の「結果」欄: base（モデルの結果の要約や追跡の ID 数）に応用の集計を足す
 const appsSummary = (base) => ({ summary: [base, COMBOS[curTask().combo?.app]?.summary(state.result || {}), ...state.apps.map((a) => APPS[a.id].summary?.(a.st))].filter(Boolean).join(" ・ ") });
 
+// cascade の複数クラスの分類（c.classes）: 最初の classes.length 個を softmax して一番高いクラス。c.va なら最後の 2 個を
+// valence（快 − 不快）・arousal（覚醒度）として出す（HSEmotion の va_mtl）。追跡の ID があれば確率を指数移動平均でならす
+// （フレームごとのちらつきを抑える）。結果は it.emotion にも入れる（結果データ・組み合わせで使える）
+function cascadeClasses(c, f, it, seqStore) {
+  const n = c.classes.length, mx = Math.max(...Array.from(f).slice(0, n));
+  let p = Array.from(f).slice(0, n).map((v) => Math.exp(v - mx));
+  const sum = p.reduce((a, b) => a + b, 0);
+  p = p.map((v) => v / sum);
+  let va = c.va ? [f[n], f[n + 1]] : null;
+  if (seqStore && it.id != null) {
+    const key = `ema:${c.id}:${it.id}`, prev = seqStore.get(key), a = 0.35;
+    if (prev) { p = p.map((v, k) => a * v + (1 - a) * prev.p[k]); if (va) va = va.map((v, k) => a * v + (1 - a) * prev.va[k]); }
+    seqStore.set(key, { p, va });
+  }
+  const best = p.indexOf(Math.max(...p));
+  it.emotion = { label: c.classes[best], prob: p[best], probs: Object.fromEntries(c.classes.map((l, k) => [l, +p[k].toFixed(3)])), ...(va ? { valence: +va[0].toFixed(2), arousal: +va[1].toFixed(2) } : {}) };
+  return `${c.classes[best]} ${(p[best] * 100).toFixed(0)}%${va ? `（快${va[0] >= 0 ? "+" : ""}${va[0].toFixed(1)} 覚${va[1] >= 0 ? "+" : ""}${va[1].toFixed(1)}）` : ""}`;
+}
+
 // 組み合わせのタブ: 役割ごとのモデルの結果に cascade（目の開閉・指差しなど）をかけてから、COMBOS[combo.app] で組み直す
 async function applyCombo(r, seqStore) {
   const c = curTask().combo;
@@ -1025,8 +1044,10 @@ async function applyCascade(m, r, seqStore) {
     const [w, h] = e.pre.size;
     const targets = r.items.filter((it) => it.label === c.on);
     const crop = (it) => {
-      const x1 = Math.max(0, Math.floor(it.box[0])), y1 = Math.max(0, Math.floor(it.box[1]));
-      const x2 = Math.min(src.width, Math.ceil(it.box[2])), y2 = Math.min(src.height, Math.ceil(it.box[3]));
+      // c.expand: 枠を上下左右にその割合だけ広げて切り出す（表情のモデルは顔のまわりも少し含む切り出しで学習されている）
+      const ex = (c.expand || 0) * (it.box[2] - it.box[0]), ey = (c.expand || 0) * (it.box[3] - it.box[1]);
+      const x1 = Math.max(0, Math.floor(it.box[0] - ex)), y1 = Math.max(0, Math.floor(it.box[1] - ey));
+      const x2 = Math.min(src.width, Math.ceil(it.box[2] + ex)), y2 = Math.min(src.height, Math.ceil(it.box[3] + ey));
       return x2 - x1 < 2 || y2 - y1 < 2 ? null : createImageBitmap(src, x1, y1, x2 - x1, y2 - y1, { resizeWidth: w, resizeHeight: h, resizeQuality: "medium" });
     };
     let use = [], crops = [];
@@ -1051,6 +1072,7 @@ async function applyCascade(m, r, seqStore) {
     if (!use.length) continue;
     const res = await embedInBrowser({ ...e, where: "browser" }, crops);
     use.forEach((it, i) => {
+      if (c.classes) { it.state = [it.state, cascadeClasses(c, res.feats[i], it, seqStore)].filter(Boolean).join("・"); return; }
       const prob = res.feats[i][0], word = prob >= 0.5 ? c.yes : c.no;
       if (word) it.state = [it.state, `${word} ${(prob * 100).toFixed(0)}%`].filter(Boolean).join("・");
     });

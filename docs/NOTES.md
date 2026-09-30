@@ -204,6 +204,15 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
 - M4 の連続実行（動画 12fps が上限）で、近さは 1 フレーム約 20ms、3D の姿勢は約 20ms（深度を回すフレームだけ重い）。スマホでは未確認
 - サーバーの深度モデルは値を返さないので組み合わせに使えない（結果欄にそう出す）
 
+## 顔の表情（HSEmotion、2026-09-30）
+
+- 顔のタブの YuNet に「検出のあとの分類」（cascade）として表情を付けた。HSEmotion（EmotiEffLib、Apache-2.0。学習データの AffectNet は研究用途のライセンス）の va_mtl 版で、出力 10 個 = 表情 8 種類のスコア（怒り・軽蔑・嫌悪・恐れ・喜び・無表情・悲しみ・驚き）＋ valence・arousal。既定は MobileFaceNet 版（8MB、112×112、平均・標準偏差 0.5）、精度重視の EfficientNet-B0 版（16MB、224×224、ImageNet の平均・標準偏差）は既定でオフ
+- 配布は GitHub（`sb-ai-lab/EmotiEffLib` の `models/affectnet_emotions/onnx/`）。raw ファイルは CORS が許可されているので、`onnx.url` だけで取れるようにした（Hugging Face 以外の配布元）
+- 配布元のコードは ONNX の最後の Gemm（分類の層）を外して特徴を取り、その重みで分類し直しているが、ONNX をそのまま使えば分類のスコアが出る
+- cascade に複数クラスの分類（`classes`）、valence・arousal（`va`）、切り出しの広げ（`expand`、顔は 0.1）、既定でオフ（`default: false`）を足した。追跡の ID があれば確率を ID ごとに指数移動平均（0.35）でならす
+- 確認: 配布元と同じ前処理（cv2 相当の縮小・正規化）の Python と、肖像写真 3 枚で表情の 1 位と快の値がほぼ一致（どれも無表情）。表情のラベル付きの AffectNet の抜粋（96×96、各 10 枚）で、8 種類の正解率は MobileFaceNet 60%・EfficientNet-B0 55%（公開の AffectNet-8 の成績と同程度。学習に使ったデータなので甘め）、快の平均は喜び +0.67・無表情 −0.02・悲しみ −0.32・怒り −0.42
+- 1 つの顔の分類は M4 で約 6ms（MobileFaceNet）。FER+（ONNX Model Zoo）は 35MB で白黒 64×64 の古いモデルなので使わなかった。MediaPipe の blendshape（52 の細かな顔の動き）は py-feat が PyTorch の形でしか配っておらず、ONNX に書き出す必要がある（TODO）
+
 ## Grounding DINO の候補の扱い
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）

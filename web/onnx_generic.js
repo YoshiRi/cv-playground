@@ -51,7 +51,9 @@ export async function onnxLoad(ort, e, device, onProgress) {
   const file = opt.startsWith("fp16") && e.onnx.file_fp16 ? e.onnx.file_fp16 : e.onnx.file;
   let model = e.onnx.server_file
     ? await fetchModelFile(new URL("local-models/" + e.onnx.server_file, e.webRoot).href, onProgress)
-    : e.onnx.path ? await fetchBundled(e, onProgress) : await fetchModelFile(base + file, onProgress);
+    : e.onnx.path ? await fetchBundled(e, onProgress)
+    : !e.onnx.repo && e.onnx.url ? await fetchModelFile(e.onnx.url, onProgress) // Hugging Face 以外の配布元（CORS が許可されている所）
+    : await fetchModelFile(base + file, onProgress);
   // onnx.cut: 途中の値で切り、そこより後ろのノードを消す（出力の頭が CPU に回って graph capture を作れないモデル用。
   // 重みのライセンス上、書き換えた ONNX は配らず、取得した ONNX をこの端末で書き換える）
   if (e.onnx.cut) model = cutOnnx(model, e.onnx.cut);

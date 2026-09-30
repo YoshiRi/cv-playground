@@ -36,6 +36,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | キー | 意味 |
 | --- | --- |
 | `repo` + `file` | Hugging Face のリポジトリとファイル（ブラウザは HF から直接、サーバーは `models/` に落とす） |
+| `url`（`repo` なし） | Hugging Face 以外の配布元から直接取る（CORS が許可されている所。GitHub の raw ファイルなど。例: HSEmotion） |
 | `data` | 外部データ（`.onnx_data`）がある時のファイル名 |
 | `file_fp16` | fp16 版（画面の「実行設定」で fp16 を選んだ時に使う） |
 | `path` + `url` | `web/` に同梱したファイル（`path` は `web/` からの相対）。読めない時（file:// など）は `url` から取る |
@@ -131,7 +132,16 @@ ADAPTERS["hf-xxx"] = HfXxx
 ]
 ```
 
-`seq` を付けたモデルは、追跡の ID ごとに切り出しをためて、その枚数そろったら判定する（動画で追跡を選んだ時だけ）。分類はブラウザで動く（サーバーの検出でも、切り出しと分類はブラウザ）。
+`seq` を付けたモデルは、追跡の ID ごとに切り出しをためて、その枚数そろったら判定する（動画で追跡を選んだ時だけ。追跡の ID が無い物は判定しない）。
+
+複数クラスの分類は `classes`（出力の先頭から並べたクラス名）を書く。softmax して一番高いクラスを出し、`va: true` なら出力の最後の 2 個を valence（快 − 不快）・arousal（覚醒度）として出す。追跡の ID があれば確率を ID ごとに指数移動平均でならす。`expand` は切り出す枠を広げる割合、`default: false` は設定欄のチェックを既定で外す。例: 顔（YuNet）→ 表情（HSEmotion）
+
+```json
+{ "id": "emo-mbf", "on": "face", "model": "hsemotion-mbf", "name": "表情（HSEmotion MobileFaceNet、軽い）",
+  "classes": ["怒り", "軽蔑", "嫌悪", "恐れ", "喜び", "無表情", "悲しみ", "驚き"], "va": true, "expand": 0.1 }
+```
+
+分類はブラウザで動く（サーバーの検出でも、切り出しと分類はブラウザ）。
 
 ## 6. 重みの置き場所とライセンス
 

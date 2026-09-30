@@ -25,7 +25,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 ## Features
 
 - **Tasks** (grouped into four categories)
-  - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection
+  - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks, plus facial expressions — 8 classes with valence and arousal — from HSEmotion) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection
   - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
   - Depth & 3D: depth estimation / approaching / receding (object detection + depth: a small Kalman filter per track fuses box size and depth to classify each object as approaching or receding, colors it, estimates time to contact, and counts per class) / 3D pose (pose + depth: a rotating skeleton with depth)
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)

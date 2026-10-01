@@ -18,7 +18,7 @@ from pathlib import Path
 import requests
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
@@ -119,6 +119,30 @@ def local_model(path: str):
     if not f.is_file() or (ROOT / "models").resolve() not in f.parents:
         raise HTTPException(404)
     return FileResponse(f)
+
+
+# インタラクトの出口（web/interact.js の websocket）: つないだ相手どうしに、届いたメッセージをそのまま配る。
+# 画面（送り手）が結果のフレームを送り、受け手のページや tools/ws_receiver.py・外のツールが受け取る
+WS_CLIENTS: set = set()
+
+
+@app.websocket("/ws")
+async def ws_relay(ws: WebSocket):
+    await ws.accept()
+    WS_CLIENTS.add(ws)
+    try:
+        while True:
+            msg = await ws.receive_text()
+            for c in list(WS_CLIENTS):
+                if c is not ws:
+                    try:
+                        await c.send_text(msg)
+                    except Exception:
+                        WS_CLIENTS.discard(c)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        WS_CLIENTS.discard(ws)
 
 
 @app.get("/cv-playground.html")

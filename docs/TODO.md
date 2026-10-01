@@ -55,7 +55,9 @@
 `models.json` の `interact` と `web/interact.js` に足す（`docs/ADDING_UI.md` の「5. インタラクト」）。
 
 - [x] キャラ（Live2D 風）: 一番大きく写っている人の骨格・顔の点で頭・体・腕、表情で顔を動かす
-- [ ] フレームを外に流す: BroadcastChannel・postMessage（別のタブ・iframe の p5.js などのページが受け取る）、WebSocket（`server.py` 経由で Unity・TouchDesigner・OSC へ）
+- [x] フレームを外に流す: BroadcastChannel（別のタブ）と WebSocket（`server.py` の `/ws` が中継）。確認用の受け手のページ `web/receiver.html` と Python の例 `tools/ws_receiver.py`
+- [ ] 外のツールの例: TouchDesigner・Unity・OSC への橋渡し、p5.js の受け手のページ
+- [ ] 出来事を流す: 接近・後退の切り替わり、手を挙げた、線を越えたなどを `{type: "event"}` で（受け手が毎フレーム判定しなくてよいように）
 - [ ] 3D のキャラ（VRM を three.js ＋ three-vrm で。「3D の姿勢」の奥行きを使う）
 - [ ] 顔の細かな動き（MediaPipe の blendshape）でまばたき・口の開きを連動（上の「軽いモデル」の顔メッシュと組み合わせ）
 

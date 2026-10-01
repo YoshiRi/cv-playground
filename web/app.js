@@ -1001,7 +1001,7 @@ function applyApps(r, ctx) {
 }
 // インタラクト（interact.js）: models.json の interact のうち、tasks にこのタブを含むものを「インタラクト」欄にチェックで出す。
 // 選ぶと受け手を作って結果の横（狭い画面では下）に画面を出し、結果が出るたびにフレーム（toFrame）を渡す。
-// 受け手は結果が無い間も自分で動き続ける（キャラのまばたきなど）ので、チェックを外すかタブを替えた時に片付ける。URL の ?interact=puppet で最初から選べる
+// 出口（broadcast・websocket）はフレームを外に流す。受け手は結果が無い間も自分で動き続ける（キャラのまばたきなど）ので、チェックを外すかタブを替えた時に片付ける。URL の ?interact=puppet で最初から選べる
 const chosenInteract = new Set((new URLSearchParams(location.search).get("interact") || "").split(",").filter(Boolean));
 const sinks = new Map(); // id → 受け手
 function renderInteract(t) {
@@ -1017,10 +1017,10 @@ function syncInteract() {
   for (const id of on) {
     if (sinks.has(id)) continue;
     const el = document.createElement("div");
-    $("interact").append(el);
+    $(INTERACT[id].inline ? "interact-out" : "interact").append(el); // 状態の表示だけの出口は設定欄の中、画面を持つ受け手は結果の横
     sinks.set(id, Object.assign(INTERACT[id].create(el, {}), { el }));
   }
-  $("interact").hidden = !sinks.size;
+  $("interact").hidden = ![...sinks.keys()].some((id) => !INTERACT[id].inline);
   if (sinks.size && state.result) pushInteract(currentModel(), state.result);
 }
 function pushInteract(m, r) {

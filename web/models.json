@@ -1925,8 +1925,38 @@
  ],
  "interact": [
   {
+   "id": "broadcast",
+   "name": "別のタブに流す（BroadcastChannel）",
+   "tasks": [
+    "detect",
+    "pose",
+    "face",
+    "wholebody",
+    "gesture",
+    "zsdetect",
+    "approach",
+    "pose3d"
+   ],
+   "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"
+  },
+  {
+   "id": "websocket",
+   "name": "WebSocket に流す",
+   "tasks": [
+    "detect",
+    "pose",
+    "face",
+    "wholebody",
+    "gesture",
+    "zsdetect",
+    "approach",
+    "pose3d"
+   ],
+   "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"
+  },
+  {
    "id": "puppet",
-   "name": "キャラを動かす（Live2D 風）",
+   "name": "キャラを動かす（Live2D 風。確認用）",
    "tasks": [
     "pose",
     "face",

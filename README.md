@@ -30,7 +30,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
   - Depth & 3D: depth estimation / approaching / receding (object detection + depth: a small Kalman filter per track fuses box size and depth to classify each object as approaching or receding, colors it, estimates time to contact, and counts per class) / 3D pose (pose + depth: a rotating skeleton with depth)
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)
 - **Applications** (add-ons in any tab that returns boxes — detection, pose, hands & eyes, text-prompted detection): counting per class (current count and, with tracking, a cumulative count of track IDs). Add `?apps=count` to the URL to turn it on from the start
-- **Interaction** (a separate layer that drives its own view from the results; in the pose and face tabs): a Live2D-style character that follows the largest person's head, body and arms (pose) or head and facial expression (face), smoothed with springs at display rate. `?interact=puppet` turns it on from the start
+- **Interaction** (a separate layer that streams results out in a fixed frame format, in every tab that returns boxes): to other tabs (BroadcastChannel) or over WebSocket (the server relays it at `/ws`; see `tools/ws_receiver.py`), so other tools can use the playground as a browser-based vision sensor. `web/receiver.html` shows the incoming frames, and a Live2D-style character that follows the largest person (head, body, arms, facial expression) serves as a visual check, also usable in the main page. `?interact=broadcast,websocket,puppet` turns them on from the start
 - **Input**: images, video files, and live camera (switch between the back and front cameras, or pick any camera on the device). Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
 - **Runtime options**: by default, generic ONNX models run with fp16 (when the model has an fp16 file) and WebGPU graph capture, which is dropped automatically for models that cannot use it. You can switch to fp32, no graph capture, or CPU (WASM), and pick the input long side (320–960) for models with dynamic input. Fixed-size models also get their symbolic input dimensions pinned
@@ -100,7 +100,8 @@ In most cases, adding one entry to `web/models.json` is enough (for plain ONNX m
 | `web/app.js` | UI, continuous video/camera runs, wiring for tracking and cascades, run history, benchmark |
 | `web/renderers.js` | How each result kind is shown (boxes, masks, depth, segment maps, labels, text) |
 | `web/apps.js` | Applications added on top of a tab's results (stateful aggregation across frames and its overlay, e.g. counting) |
-| `web/interact.js` | Interaction components driven by the results through a fixed frame format (e.g. the Live2D-style character) |
+| `web/interact.js` | Interaction layer: the fixed frame format, outputs (BroadcastChannel, WebSocket) and the Live2D-style character |
+| `web/receiver.html` | A receiver page that shows the streamed frames (debugging) |
 | `web/export.js` | Image saving, result data, run-record export (CSV / JSON / Markdown), device info, statistics |
 | `web/worker.js` | Browser-side adapters (Web Workers; separate workers for onnxruntime-web and transformers.js) |
 | `web/onnx_generic.js` | Browser-side generic ONNX (pre/post-processing blocks) |

@@ -4,19 +4,25 @@
 // そのタブに「インタラクト」のチェックが出て、選ぶと結果の下（広い画面では横）に受け手の画面を出す
 //
 // フレーム（v: 1）: 座標は画像の幅・高さで割った 0〜1
-//   { v, t, w, h, task, model,
+//   { v, seq, t, wall, w, h, task, model,   （seq は通し番号、t は送り手の performance.now()、wall は Date.now()。受け手は wall で遅れを測れる）
 //     items: [{ id?, label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度]], emotion?, state? }] }
 //   keypoints は 17 点なら COCO の順（鼻・左目・右目・左耳・右耳・左肩・右肩・左肘・右肘・左手首・右手首・…）、
 //   5 点なら顔（右目・左目・鼻・口の右端・左端。YuNet）。左右は写っている人から見た向き
 //
 // INTERACT[id] = {
 //   create(el, opts) → 受け手。el は受け手用の空の要素。{ onFrame(frame), destroy() } を返す
+//   inline: true     → el を結果の横ではなく設定欄の中に出す（状態の表示だけの出口など）
 // }
+//
+// 出口（broadcast・websocket）はフレームを外に流すだけの受け手。外の受け手は web/receiver.html（キャラとフレームの中身を出す
+// デバッグ用のページ）や、tools/ws_receiver.py のようなプログラム。送るメッセージは { type: "frame", frame }
+export const CHANNEL = "cv-playground"; // BroadcastChannel の名前
 
+let seq = 0;
 export function toFrame(r, meta = {}) {
   const w = r.w || 1, h = r.h || 1;
   return {
-    v: 1, t: performance.now(), w, h, ...meta,
+    v: 1, seq: ++seq, t: performance.now(), wall: Date.now(), w, h, ...meta,
     items: (r.items || []).map((it) => ({
       ...(it.id != null ? { id: it.id } : {}), label: it.label, score: it.score,
       box: [it.box[0] / w, it.box[1] / h, it.box[2] / w, it.box[3] / h],
@@ -255,6 +261,52 @@ function rrect(ctx, x, y, w, h, r) {
   ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h);
 }
 
+// ---------------------------------------------------------------- 出口
+// 同じブラウザの別のタブ・ウィンドウ（同じ配信元）へ。受け手のページを開くリンクも出す
+function broadcastOut(el) {
+  const bc = new BroadcastChannel(CHANNEL);
+  let n = 0;
+  el.innerHTML = `<div class="small muted">別のタブへ流している（BroadcastChannel「${CHANNEL}」）: <span data-n>0</span> フレーム ・ `
+    + `<a href="receiver.html" target="_blank" rel="noopener">受け手のページを開く</a></div>`;
+  const out = el.querySelector("[data-n]");
+  return {
+    onFrame(frame) { bc.postMessage({ type: "frame", frame }); out.textContent = ++n; },
+    destroy() { bc.close(); el.replaceChildren(); },
+  };
+}
+
+// WebSocket へ。既定はこのページを配っているサーバーの /ws（server.py が、つないだ相手どうしに配る）。
+// 自分のツール（TouchDesigner の WebSocket DAT など）の URL も書ける。https のページからは wss:// か ws://localhost だけ
+function websocketOut(el) {
+  const def = /^https?:$/.test(location.protocol) ? `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws` : "ws://localhost:8010/ws";
+  let saved = ""; try { saved = localStorage.getItem("cvpg-ws") || ""; } catch {}
+  el.innerHTML = `<label class="field small">WebSocket の URL <input type="text" data-url autocomplete="off" value="${saved || def}"></label>`
+    + `<div class="small muted" data-st>つないでいない</div>`;
+  const input = el.querySelector("[data-url]"), st = el.querySelector("[data-st]");
+  let ws = null, n = 0, skipped = 0, retry = 0, closed = false;
+  const connect = () => {
+    if (closed) return;
+    try { ws = new WebSocket(input.value.trim()); } catch (e) { st.textContent = `URL が使えない: ${e.message}`; return; }
+    st.textContent = "つないでいる…";
+    ws.onopen = () => { st.textContent = "つながった"; };
+    ws.onclose = () => { if (closed) return; st.textContent = "切れた（3 秒後につなぎ直す）"; retry = setTimeout(connect, 3000); };
+    ws.onerror = () => { st.textContent = "つなげない（URL とサーバーを確かめる）"; };
+  };
+  input.onchange = () => { try { localStorage.setItem("cvpg-ws", input.value.trim()); } catch {} clearTimeout(retry); if (ws) { ws.onclose = null; ws.close(); } connect(); };
+  connect();
+  return {
+    onFrame(frame) {
+      if (ws?.readyState !== WebSocket.OPEN) return;
+      if (ws.bufferedAmount > 1 << 20) { skipped++; return; } // 受け手が遅くて送りきれない時は捨てる（遅れをためない）
+      ws.send(JSON.stringify({ type: "frame", frame }));
+      st.textContent = `つながった: ${++n} フレーム送った${skipped ? `（詰まって ${skipped} 捨てた）` : ""}`;
+    },
+    destroy() { closed = true; clearTimeout(retry); if (ws) { ws.onclose = null; ws.close(); } el.replaceChildren(); },
+  };
+}
+
 export const INTERACT = {
   puppet: { create: (el) => puppet(el) },
+  broadcast: { inline: true, create: (el) => broadcastOut(el) },
+  websocket: { inline: true, create: (el) => websocketOut(el) },
 };

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CV Playground 受け手</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6' fill='none' stroke='%232f6fdf' stroke-width='2'/><circle cx='8' cy='8' r='2' fill='%232f6fdf'/></svg>">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .rx { max-width: 1100px; margin: 0 auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .rx-row { display: flex; gap: 12px; align-items: flex-start; }
+    .rx-row > * { flex: 1 1 0; min-width: 0; }
+    .rx pre { margin: 0; max-height: 60vh; overflow: auto; font-size: 12px; background: var(--chip); padding: 8px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
+    .rx table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .rx td, .rx th { border-bottom: 1px solid var(--line); padding: 2px 6px; text-align: left; }
+    @media (max-width: 700px) { .rx-row { flex-direction: column; } .rx-row > * { width: 100%; } }
+  </style>
+</head>
+<body>
+  <!-- インタラクトの出口（web/interact.js）が流すフレームを受け取って、キャラ（確認用）とフレームの中身を出すデバッグ用のページ。
+       既定は BroadcastChannel（同じブラウザの別のタブ）。?ws で同じサーバーの /ws、?ws=wss://… でその WebSocket からも受け取る -->
+  <div class="rx">
+    <h1 style="margin:0;font-size:18px">CV Playground 受け手（フレームの確認）</h1>
+    <div class="small muted" id="src"></div>
+    <div class="small" id="stat">フレームを待っている（元の画面で「インタラクト」の出口を選んで実行する）</div>
+    <div class="rx-row">
+      <div class="interact" id="view"></div>
+      <div>
+        <table id="items"></table>
+        <details><summary class="small">最後のフレーム（JSON）</summary><pre id="raw"></pre></details>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="receiver.js"></script>
+</body>
+</html>

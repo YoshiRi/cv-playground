@@ -136,7 +136,7 @@ function puppet(el) {
     if (cv.width !== Math.round(cw * dpr) || cv.height !== Math.round(ch * dpr)) { cv.width = Math.round(cw * dpr); cv.height = Math.round(ch * dpr); }
     const W = cv.width, H = cv.height, u = Math.min(W, H) / 10;
     const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, "#dbeafe"); bg.addColorStop(1, "#fce7f3");
+    bg.addColorStop(0, "#1f4e5f"); bg.addColorStop(1, "#122a33"); // 暗い背景（肌・袖の色と差を付けて、腕の形を見やすく）
     ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
     const t = (now - t0) / 1000, breath = Math.sin(t * 2.2) * 0.04;
     // まばたき: 3〜6 秒ごと、0.15 秒で閉じて開く
@@ -144,7 +144,7 @@ function puppet(el) {
     const blink = now > blinkAt ? 1 - Math.sin(Math.min(1, (now - blinkAt) / 150) * Math.PI) : 1;
     const hip = [W / 2 + P.posX * W, H * 0.98];
     ctx.save();
-    ctx.fillStyle = "rgba(0,0,0,.08)"; ctx.beginPath(); ctx.ellipse(hip[0], H * 0.985, u * 2.4, u * 0.25, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.beginPath(); ctx.ellipse(hip[0], H * 0.985, u * 2.4, u * 0.25, 0, 0, Math.PI * 2); ctx.fill();
     // 体（腰を軸に傾ける）
     ctx.translate(...hip); ctx.rotate(P.bodyZ);
     const top = -u * (4.3 + breath);
@@ -166,7 +166,7 @@ function puppet(el) {
   function head(ctx, u, blink) {
     const X = P.angX, Y = P.angY, hy = -u * 1.7; // 顔の中心（首の上から）
     const off = (depth) => [X * u * depth, Y * u * depth * 0.8]; // 手前ほど大きくずらす
-    const hairCol = "#2b2f4a";
+    const hairCol = "#6b3f2a"; // 暗い背景に溶けないよう茶色
     // 後ろの髪（奥なので逆にずらす）
     let [dx, dy] = off(-0.15);
     ctx.fillStyle = hairCol;
@@ -237,6 +237,10 @@ function puppet(el) {
     const L1 = u * 1.5, L2 = u * 1.35;
     const el = [sh[0] + Math.cos(a1) * L1, sh[1] + Math.sin(a1) * L1], hd = [el[0] + Math.cos(a2) * L2, el[1] + Math.sin(a2) * L2];
     ctx.lineCap = "round";
+    // 縁取り（腕が体の前を通っても形が分かるように）
+    ctx.strokeStyle = "#0e1a22"; ctx.lineWidth = u * 0.58; ctx.beginPath(); ctx.moveTo(...el); ctx.lineTo(...hd); ctx.stroke();
+    ctx.lineWidth = u * 0.8; ctx.beginPath(); ctx.moveTo(...sh); ctx.lineTo(...el); ctx.stroke();
+    ctx.fillStyle = "#0e1a22"; ctx.beginPath(); ctx.arc(...hd, u * 0.38, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "#ffe3d3"; ctx.lineWidth = u * 0.42; ctx.beginPath(); ctx.moveTo(...el); ctx.lineTo(...hd); ctx.stroke();
     ctx.strokeStyle = "#5b8def"; ctx.lineWidth = u * 0.62; ctx.beginPath(); ctx.moveTo(...sh); ctx.lineTo(...el); ctx.stroke();
     ctx.fillStyle = "#ffe3d3"; ctx.beginPath(); ctx.arc(...hd, u * 0.3, 0, Math.PI * 2); ctx.fill();

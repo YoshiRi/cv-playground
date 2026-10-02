@@ -75,6 +75,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `segmap` | セマンティック・セグメンテーションの logits (1, クラス数, h, w)。画素ごとに最大のクラスで塗る。`labels` にクラス名の並び、`output` に出力名 | segmap（凡例つき） |
 | `depth` | 深度。`inverse`（大きいほど遠い深度を反転）、`intrinsics`（内部パラメータの出力名、あれば画角を出す） | depth |
 | `embedding` | 特徴ベクトル・確率（ReID や cascade の分類で使う） | － |
+| `xfeat_motion` | `xfeat_match` と同じ XFeat の出力。前のフレームの点・記述子を Worker に持ち（`params.motion_seq` が変わったら捨てる）、相互最近傍と RANSAC（`params.motion_model` が `homography` ならホモグラフィ、既定は相似変換の 2 点 RANSAC）で動き（今のフレーム → 前のフレーム）を求める。補正は画面側（`web/stabilize.js`） | motion |
 | `xfeat_match` | XFeat を `onnx.cut: ["descriptors", "heatmap", "sigmoid"]` で切った出力（記述子 H/8・heatmap H・reliability H/8）。kornia の `detectAndCompute` と同じ手順で点（5×5 の極大・閾値 `threshold`・上位 `top_k`）と記述子（bicubic）を取り、テンプレートと相互最近傍（cos > `min_cossim`）で対応を取って、LO-RANSAC（`ransac_px`）でホモグラフィ。インライアが `min_inliers` 以上で凸な四角形なら「見つかった」。計算は `web/xfeat.js`（JS）と `adapters.py`（Python）で同じ。`post.gpu: true` なら WebGPU では ONNX の出力を読み戻さず、点の取り出しと対応を GPU で（`web/xfeat_gpu.js`、`?postgpu=0` で JS） | matches |
 
 **部品が足りない時**は、`web/onnx_generic.js` の `POST`（前処理なら `preprocess`）と `adapters.py` の `POST`（`preprocess`）に**同じ名前で両方**足す。片方だけだと、その実行場所でしか動かない。
@@ -122,6 +123,7 @@ ADAPTERS["hf-xxx"] = HfXxx
 | `depth` | `image`（明るいほど近い）、`note?` |
 | `segmap` | `image`（領域ごとに色分け、透明＝領域なし）、`count`、`legend?`（`[{label, color, count, area}]`。あれば凡例を出す）、`subtask?`（`semantic` / `panoptic`） |
 | `labels` | `items: [{label, score, abs?}]`（score の大きい順） |
+| `motion` | `ok`, `M`（3×3 を 9 個。今のフレームの点 → 前のフレームの点）, `model`（`similarity` / `homography`）, `inliers`, `matches`, `first`（前のフレームが無い）, `pairs: [[x前, y前, x今, y今, インライアか]]`, `post_detail`。画面側が `frame`（解析したフレーム）と `stab`（補正）を付ける |
 | `matches` | `found`, `quad: [[x, y] × 4] \| null`（テンプレートの四隅を写した四角形）, `H`（3×3 を 9 個）, `inliers`, `matches`, `kpts`, `kpts_t`, `pairs: [[xt, yt, xf, yf, インライアか]]`, `points: [[x, y, スコア]]`, `template: {w, h}`, `post_detail: {extract, match, ransac, template?}`（ms） |
 | `text` | `text` |
 

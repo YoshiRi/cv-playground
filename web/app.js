@@ -32,6 +32,7 @@ function askPersist() {
 const PROFILE = new URLSearchParams(location.search).has("profile");
 // 汎用 ONNX の WebGPU 実行の前処理（比べる用に URL で選べる）: ?pre=upload（既定。縮小は canvas、正規化などは GPU）/
 // ?pre=gpu（縮小も GPU）/ ?pre=cpu（全部 CPU。?cpupre=1 も同じ）
+const POST_GPU = new URLSearchParams(location.search).get("postgpu") !== "0"; // 後処理も GPU で行うモデル（XFeat）。?postgpu=0 で JS の後処理
 const PRE_MODE = new URLSearchParams(location.search).has("cpupre") ? "cpu" : new URLSearchParams(location.search).get("pre") || "upload";
 // ?nopipe=1: 連続実行をパイプライン化しない（1フレームずつ順番。比べる用）
 const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
@@ -107,7 +108,7 @@ function runInBrowser(model, image, params) {
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
     const profile = PROFILE && model.adapter === "onnx";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT, mirror: mirrorRoot() }, image, params }, transfer);
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, postGpu: POST_GPU, webRoot: WEB_ROOT, mirror: mirrorRoot() }, image, params }, transfer);
   });
 }
 

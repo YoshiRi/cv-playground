@@ -247,12 +247,13 @@ export function quadOk(q) {
 }
 
 // フレームの特徴とテンプレートの特徴から、結果（kind: "matches"）を作る
-export function matchTemplate(fr, tpl, post, params, w, h) {
+// matcher(tpl, fr) → {i0, i1}（既定は JS の matchMnn。GPU の後処理は xfeat_gpu.js の match を渡す）
+export async function matchTemplate(fr, tpl, post, params, w, h, matcher = (a, b) => matchMnn(a, b, post.min_cossim ?? 0.82)) {
   const t0 = performance.now();
   const res = { kind: "matches", w, h, kpts: fr.n, found: false, quad: null, H: null, inliers: 0, matches: 0, pairs: [],
     points: Array.from({ length: fr.n }, (_, i) => [fr.pts[2 * i], fr.pts[2 * i + 1], fr.scores[i]]) };
   if (!tpl) { res.note = "テンプレートが無い（枠をドラッグして切り出すか、ファイルで選ぶ）"; return res; }
-  const { i0, i1 } = matchMnn(tpl, fr, post.min_cossim ?? 0.82);
+  const { i0, i1 } = await matcher(tpl, fr);
   const t1 = performance.now();
   const n = i0.length, a = new Float64Array(2 * n), b = new Float64Array(2 * n);
   i0.forEach((ti, k) => { a[2 * k] = tpl.pts[2 * ti]; a[2 * k + 1] = tpl.pts[2 * ti + 1]; b[2 * k] = fr.pts[2 * i1[k]]; b[2 * k + 1] = fr.pts[2 * i1[k] + 1]; });

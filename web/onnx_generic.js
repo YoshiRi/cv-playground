@@ -2,7 +2,8 @@
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
 import { COCO } from "./coco.js";
-import { matchTemplate, xfeatExtract } from "./xfeat.js";
+import { matchMnn, matchTemplate, xfeatExtract } from "./xfeat.js";
+import { XFeatGpu } from "./xfeat_gpu.js";
 
 const HF = "https://huggingface.co";
 
@@ -84,6 +85,9 @@ export async function onnxLoad(ort, e, device, onProgress) {
   }
   // 詳細計測（?profile=1 の時だけ）: onnxruntime の profiler で、ノードごとの時間と WebGPU の命令ごとの GPU 時間を記録する
   if (e.profile) opts.enableProfiling = true;
+  // post.gpu: 後処理も GPU で行うモデル（XFeat）。出力を読み戻さずに GPU の上に置いたまま後処理に渡す（?postgpu=0 で JS の後処理）
+  const postGpu = device === "webgpu" && !!e.post.gpu && e.postGpu !== false;
+  if (postGpu) opts.preferredOutputLocation = "gpu-buffer";
   // 入力の形の固定: ONNX に可変（batch_size, N, H, W など）と書かれた次元を固定する。形の計算が CPU に回らずに済み、
   // GPU の命令も形に合わせて作られ、graph capture も使えるようになることが多い（DEIMv2 Atto は M4 で 18 → 11ms）。
   // 次元の名前はモデルごとに違うので、一度作ったセッションの inputMetadata から読む。
@@ -103,7 +107,7 @@ export async function onnxLoad(ort, e, device, onProgress) {
   }
   const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
   const cvpg = { webgpu: device === "webgpu", graph, graphFallback, fp16, fdo, file, gpuInput: null, dynamicShape, shapeKey: null,
-    plain: () => ort.InferenceSession.create(model, opts) }; // 形を固定しない別のセッション（テンプレートなど、大きさがまちまちな入力用）
+    postGpu, plain: () => ort.InferenceSession.create(model, { ...opts, preferredOutputLocation: "cpu" }) }; // 形を固定しない別のセッション（テンプレートなど、大きさがまちまちな入力用。出力は CPU に）
   if (dynamicShape) {
     cvpg.rebuild = async (dims) => {
       const f = fdoFor(shape, dims), r = await createSession(ort, e, model, f ? { ...opts, freeDimensionOverrides: f } : opts, wantGraph);
@@ -228,12 +232,13 @@ function fixedDims(e) {
 // graph capture の時は入力を毎回同じ GPU バッファに書き込み（GPU の前処理なら書き込み済み）、出力は GPU から読み戻す
 async function runSession(ort, session, name, feed) {
   const g = session.cvpg;
-  if (!g?.graph) return session.run({ [name]: feed });
+  if (!g?.graph) return session.run({ [name]: feed }); // post.gpu のモデルは GPU の上の出力のまま（後処理の後で解放する）
   if (feed.location !== "gpu-buffer") {
     ensureInput(ort, g, feed.dims);
     ort.env.webgpu.device.queue.writeBuffer(g.gpuInput, 0, feed.data);
   }
   const out = await session.run({ [name]: g.feed });
+  if (g.postGpu) return out; // 後処理も GPU で行うモデルは読み戻さない（graph capture の出力は onnxruntime が持っているので解放しない）
   // 出力の読み戻しはまとめて待つ（1つずつ待つと GPU との往復が出力の数だけ増える。YOLO26n で 2ms ほど違う）
   const ents = Object.entries(out), datas = await Promise.all(ents.map(([, t]) => t.getData(true)));
   return Object.fromEntries(ents.map(([k, t], i) => [k, { data: datas[i], dims: t.dims }]));
@@ -479,6 +484,8 @@ export function hsl(h, s, l) {
   return [f(0), f(8), f(4)];
 }
 
+let xgpu = null, ort_ = null; // XFeat の GPU の後処理（最初に使う時に作る）と onnxruntime（onnxRun で覚える）
+
 // 後処理の前に状態を用意する部品（POST と同じ名前）。st は Worker の読み込み済みの状態で、フレームをまたいで持てる
 const PREPARE = {
   // テンプレートマッチング: テンプレートの点・記述子は、同じテンプレート（id）と設定のあいだ st に持って使い回す。
@@ -494,6 +501,7 @@ const PREPARE = {
       st.tplSession ??= await st.session.cvpg.plain();
       const { tensor, meta } = preprocess(ort, t.image, e.pre, params.input_size);
       const out = await st.tplSession.run({ [e.pre.input]: tensor });
+      st.tpl?.gpuBuf?.destroy(); // 前のテンプレートの GPU の記述子
       st.tpl = { ...xfeatExtract(out, meta, topK, e.post.threshold ?? 0.05), key, w: t.image.width, h: t.image.height, ms: performance.now() - t0 };
       params._tplNew = true;
     }
@@ -502,13 +510,25 @@ const PREPARE = {
 };
 
 const POST = {
-  // XFeat の特徴点 → テンプレートとの対応 → ホモグラフィ（xfeat.js。サーバーの adapters.py と同じ手順）
-  xfeat_match(out, m, post, params) {
+  // XFeat の特徴点 → テンプレートとの対応 → ホモグラフィ（xfeat.js。サーバーの adapters.py と同じ手順）。
+  // 出力が GPU の上なら、点の取り出しと対応を GPU で（xfeat_gpu.js）。RANSAC はどちらも JS
+  async xfeat_match(out, m, post, params) {
+    const topK = +(params.top_k || post.top_k || 512), th = post.threshold ?? 0.05, minCos = post.min_cossim ?? 0.82, tpl = params._tpl;
     const t0 = performance.now();
-    const fr = xfeatExtract(out, m, +(params.top_k || post.top_k || 512), post.threshold ?? 0.05);
+    let fr, matcher = (a, b) => matchMnn(a, b, minCos);
+    if (out.cut_1.location === "gpu-buffer") {
+      xgpu ??= new XFeatGpu(ort_.env.webgpu.device);
+      fr = await xgpu.extract(out, m, topK, th);
+      if (tpl && tpl.gpuBuf?.dev !== xgpu) { tpl.gpuBuf?.destroy(); tpl.gpuBuf = Object.assign(xgpu.uploadTemplate(tpl), { dev: xgpu }); }
+      matcher = (a, b) => xgpu.match(a, a.gpuBuf, b, minCos);
+    } else {
+      for (const k of ["cut_0", "cut_1", "cut_2"]) if (out[k].location === "gpu-buffer") out[k] = { dims: out[k].dims, data: await out[k].getData() };
+      fr = xfeatExtract(out, m, topK, th);
+    }
     const t1 = performance.now();
-    const res = matchTemplate(fr, params._tpl, post, params, m.W, m.H);
-    res.post_detail = { extract: t1 - t0, ...res.post_detail, ...(params._tplNew ? { template: params._tpl.ms } : {}) };
+    const res = await matchTemplate(fr, tpl, post, params, m.W, m.H, matcher);
+    res.post_detail = { extract: t1 - t0, ...res.post_detail, ...(params._tplNew ? { template: tpl.ms } : {}) };
+    if (fr.cand != null) res.post_detail.candidates = fr.cand;
     return res;
   },
   // セマンティック・セグメンテーション: logits (1, クラス数, h, w) の画素ごとに最大のクラスで塗る（出力の解像度のまま。
@@ -690,6 +710,7 @@ export async function onnxEmbed(ort, session, e, bitmaps) {
 // st = { session }（Worker の読み込み済みの状態）。入力の大きさが変わるモデルは、形が変わった時にセッションを作り直して st.session を替える
 export async function onnxRun(ort, st, e, bitmap, params) {
   const t0 = performance.now();
+  ort_ = ort;
   if (st.session.cvpg.dynamicShape) {
     const dims = inputDims(e.pre, layout(bitmap.width, bitmap.height, e.pre, params.input_size));
     if (st.session.cvpg.shapeKey !== dims.join("x")) {
@@ -709,10 +730,14 @@ export async function onnxRun(ort, st, e, bitmap, params) {
   if (!feed) ({ tensor: feed, meta } = preprocess(ort, bitmap, e.pre, params.input_size));
   const t1 = performance.now();
   const out = await runSession(ort, session, e.pre.input, feed);
+  // 後処理も GPU のモデルは出力を読み戻さないので、ここで GPU の終わりを待つ（内訳の「モデル実行」を正しく出すため）
+  if (session.cvpg.postGpu) await ort.env.webgpu.device.queue.onSubmittedWorkDone();
   const t2 = performance.now();
   await PREPARE[e.post.type]?.(ort, st, e, params);
   const t3 = performance.now();
-  const res = await POST[e.post.type](out, meta, e.post, params);
+  let res;
+  try { res = await POST[e.post.type](out, meta, e.post, params); }
+  finally { if (session.cvpg.postGpu && !session.cvpg.graph) for (const t of Object.values(out)) t.dispose?.(); }
   // 内訳（端末ごとにどこが重いかを見る）: 前処理（縮小・正規化）/ ONNX の実行（GPU との転送を含む）/ 後処理
   // テンプレートなどの用意（PREPARE）の時間は後処理に入れない（post_detail.template に出す）
   res.breakdown = { pre: t1 - t0, run: t2 - t1, post: performance.now() - t3 };

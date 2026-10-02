@@ -1981,7 +1981,8 @@
     "threshold": 0.05,
     "min_cossim": 0.82,
     "min_inliers": 15,
-    "ransac_px": 3.0
+    "ransac_px": 3.0,
+    "gpu": true
    },
    "license": "Apache-2.0",
    "note": "学習ベースの軽い特徴点（CVPR 2024、verlab/accelerated_features）。kornia の ONNX（2.8MB）。後処理は kornia の detectAndCompute と相互最近傍のマッチングに合わせ、ホモグラフィは 4 点の DLT ＋ RANSAC を自前で書いた。入力は 32 の倍数に切り下げる（画素の値の倍率は効かない。中で濃淡にして正規化する）",

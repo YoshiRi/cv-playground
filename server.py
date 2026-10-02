@@ -18,8 +18,8 @@ from pathlib import Path
 import requests
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
@@ -119,6 +119,57 @@ def local_model(path: str):
     if not f.is_file() or (ROOT / "models").resolve() not in f.parents:
         raise HTTPException(404)
     return FileResponse(f)
+
+
+# モデルのファイルの写し（ブラウザの onnx_generic.js・transformers.js がサーバー版の時に使う）: /mirror/hf/<パス> は
+# https://huggingface.co/<パス>、/mirror/gh/<パス> は https://raw.githubusercontent.com/<パス>。初回はネットから取りながら
+# models/mirror/ に保存し、2 回目からはディスクから配る（X-Mirror: hit / miss）。ブラウザのキャッシュはサイトごとに分かれ、
+# スマホでは消されることもあるので、tailnet の複数の端末で同じモデルを何度もダウンロードしないで済む
+MIRROR_SITES = {"hf": "https://huggingface.co/", "gh": "https://raw.githubusercontent.com/"}
+MIRROR_DIR = ROOT / "models" / "mirror"
+
+
+@app.api_route("/mirror/{site}/{path:path}", methods=["GET", "HEAD"])
+def mirror(site: str, path: str, request: Request):
+    if site not in MIRROR_SITES:
+        raise HTTPException(404)
+    base = (MIRROR_DIR / site).resolve()
+    f = (base / path).resolve()
+    if base not in f.parents:
+        raise HTTPException(404)
+    if f.is_file():
+        return FileResponse(f, headers={"X-Mirror": "hit"})
+    url = MIRROR_SITES[site] + path
+    if request.method == "HEAD":
+        r = requests.head(url, allow_redirects=True, timeout=30)
+        return Response(status_code=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ("content-length", "content-type")})
+    r = requests.get(url, stream=True, timeout=30)
+    if r.status_code != 200:  # 無いファイル（transformers.js は省略できる設定ファイルを探す）は、そのままの状態で返して保存しない
+        r.close()
+        return Response(status_code=r.status_code)
+    headers = {"X-Mirror": "miss", "Content-Type": r.headers.get("content-type", "application/octet-stream")}
+    if r.headers.get("content-length"):
+        headers["Content-Length"] = r.headers["content-length"]
+
+    def body():
+        # 取りながら送り、最後まで取れた時だけ置く（途中で切れた半端なファイルは残さない）
+        f.parent.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f".{f.name}.{os.getpid()}.{threading.get_ident()}.part")
+        ok = False
+        try:
+            with open(tmp, "wb") as out:
+                for chunk in r.iter_content(1 << 20):
+                    out.write(chunk)
+                    yield chunk
+            ok = True
+        finally:
+            r.close()
+            if ok:
+                os.replace(tmp, f)
+            else:
+                tmp.unlink(missing_ok=True)
+
+    return StreamingResponse(body(), headers=headers)
 
 
 # インタラクトの出口（web/interact.js の websocket）: つないだ相手どうしに、届いたメッセージをそのまま配る。

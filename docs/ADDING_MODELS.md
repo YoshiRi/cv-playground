@@ -147,7 +147,7 @@ ADAPTERS["hf-xxx"] = HfXxx
 
 | 置き場所 | 使う時 | 注意 |
 | --- | --- | --- |
-| Hugging Face（`repo` + `file`） | 公開されていて CORS で取れる | 一番楽。ブラウザは各端末が直接取る |
+| Hugging Face（`repo` + `file`） | 公開されていて CORS で取れる | 一番楽。ブラウザは各端末が直接取る（サーバー版はサーバーの `/mirror/` 経由で、サーバーが `models/mirror/` に保存して配る） |
 | `web/` に同梱（`path` + `url`） | 配布元がブラウザから取れない（GitHub Releases は CORS 不可など）で、**再配布できるライセンス**（MIT、Apache-2.0 など） | 出典とライセンスを同じフォルダの README に書く（例: `web/pinto/README.md`） |
 | `models/` に置いてサーバーだけが配る（`server_file`） | 再配布したくない・できない重み（AGPL の YOLO26 など） | `models/` は `.gitignore` 済み。作り方のスクリプトを `tools/` に置く（例: `tools/export_yolo26_dynamic.py`） |
 

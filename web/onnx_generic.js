@@ -5,15 +5,30 @@ import { COCO } from "./coco.js";
 
 const HF = "https://huggingface.co";
 
-// Cache API に保存して2回目以降はダウンロードしない（file:// などで Cache API が使えない時は毎回取得）
+// Cache API に保存して2回目以降はダウンロードしない（file:// などで Cache API が使えない時は毎回取得）。
+// キャッシュは開いたサイト（配信元）ごとに分かれ、スマホでは容量が減ると消されることもある。
+// サーバー版では Hugging Face・GitHub の raw ファイルを server.py の /mirror/ 経由で取る（サーバーが Mac のディスクに保存して配るので、
+// ブラウザのキャッシュが無くても 2 回目からはネットに取りに行かない）。キャッシュの鍵は元の URL のまま
+let MIRROR = null; // 例: "https://host/mirror/"（サーバー版だけ。画面が model.mirror で渡す）
+export function setMirror(m) { MIRROR = m || null; }
+const MIRROR_SITES = [["https://huggingface.co/", "hf/"], ["https://raw.githubusercontent.com/", "gh/"]];
+export const viaMirror = (url) => {
+  const s = MIRROR && MIRROR_SITES.find(([pre]) => url.startsWith(pre));
+  return s ? MIRROR + s[1] + url.slice(s[0].length) : url;
+};
+// 読み込んだファイルの取得元（画面の「読み込み」の横に出す）。worker.js が読み込みごとに takeFetchLog で取り出す
+let fetchLog = [];
+export function takeFetchLog() { const l = fetchLog; fetchLog = []; return l; }
+
 async function fetchModelFile(url, onProgress) {
   let cache = null;
   try {
     cache = await caches.open("cvpg-onnx");
     const hit = await cache.match(url);
-    if (hit) return new Uint8Array(await hit.arrayBuffer());
+    if (hit) { const b = new Uint8Array(await hit.arrayBuffer()); fetchLog.push({ from: "cache", bytes: b.length }); return b; }
   } catch { cache = null; }
-  const res = await fetch(url);
+  const src = viaMirror(url);
+  const res = await fetch(src);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   const total = +res.headers.get("content-length") || 0;
   const reader = res.body.getReader(), chunks = [];
@@ -29,6 +44,8 @@ async function fetchModelFile(url, onProgress) {
   let o = 0;
   for (const c of chunks) { buf.set(c, o); o += c.length; }
   try { await cache?.put(url, new Response(buf)); } catch { /* 容量不足などは無視 */ }
+  // サーバーの写しは、Mac のディスクにあったか（X-Mirror: hit）、今ネットから取ったか（miss）を返す
+  fetchLog.push({ from: src === url ? "net" : res.headers.get("X-Mirror") === "hit" ? "mirror" : "mirror-net", bytes: got });
   return buf;
 }
 

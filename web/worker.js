@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor } from "./onnx_generic.js";
+import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor, setMirror, takeFetchLog } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -46,6 +46,8 @@ const toPng = (rawImage) => rawImage.toBlob("image/png"); // メインスレッ�
 // transformers.js の読み込み進捗。数十KBごとに呼ばれるので、1% 進んだ時だけ送る
 function tjsOpts(e, device, onProgress) {
   const last = {};
+  // サーバー版: transformers.js も Hugging Face の代わりにサーバーの写し（/mirror/hf/）から取る
+  T.env.remoteHost = e.mirror ? e.mirror + "hf/" : "https://huggingface.co/";
   return {
     device, dtype: e.dtype[device],
     progress_callback: (p) => {
@@ -294,10 +296,19 @@ const loaded = new Map(); // entry.key -> Promise<state>
 let ortQueue = Promise.resolve();
 const serial = (fn) => { const p = ortQueue.then(fn, fn); ortQueue = p.catch(() => {}); return p; };
 
+// 読み込んだファイルの取得元のまとめ（「読み込み」の横に出す）。transformers.js は自分のキャッシュを持つので分からない
+function fetchSummary(log, e) {
+  if (!log.length) return e.adapter === "onnx" ? null : e.mirror ? "サーバーの写し経由" : null;
+  const mb = (k) => (log.filter((x) => x.from === k).reduce((a, x) => a + x.bytes, 0) / 1e6).toFixed(0);
+  const words = { cache: "ブラウザのキャッシュ", mirror: "Mac のサーバー（保存済み）", "mirror-net": "ダウンロード（サーバーに保存）", net: "ダウンロード" };
+  return [...new Set(log.map((x) => x.from))].map((k) => `${words[k]} ${mb(k)}MB`).join("・");
+}
+
 // 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
 async function embed(id, e, crops) {
   try {
     await libReady;
+    setMirror(e.mirror);
     if (!loaded.has(e.key)) {
       const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
       loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
@@ -345,13 +356,16 @@ self.onmessage = async (ev) => {
     const A = ADAPTERS[e.adapter];
     if (!A) throw new Error(`ブラウザ側に adapter "${e.adapter}" が無い`);
     const device = await getDevice();
-    let loadMs = 0;
+    let loadMs = 0, loadFrom = null;
+    setMirror(e.mirror);
     if (!loaded.has(e.key)) {
       const t0 = performance.now();
+      takeFetchLog();
       const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
       loaded.set(e.key, A.load(e, device, onProgress));
       try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
       loadMs = performance.now() - t0;
+      loadFrom = fetchSummary(takeFetchLog(), e);
     }
     const st = await loaded.get(e.key);
     const img = await toInput(image, A.image);
@@ -363,6 +377,7 @@ self.onmessage = async (ev) => {
     };
     const result = self.name === "ort" ? await serial(go) : await go();
     result.load_ms = loadMs;
+    if (loadFrom) result.load_from = loadFrom;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
     result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : `transformers.js ${TJS_VERSION} ${e.dtype?.[device] ?? ""}`.trim();
     self.postMessage({ id, type: "result", result });

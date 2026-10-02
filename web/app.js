@@ -17,6 +17,16 @@ const STANDALONE = !!globalThis.CVPG_STANDALONE;
 const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
 // web/ の場所（同梱したモデルを読む基準）。1ファイル版は dist/ にあるので ../web/
 const WEB_ROOT = new URL(STANDALONE ? "../web/" : "./", location.href).href;
+// サーバー版ではモデルのファイルを server.py の /mirror/ 経由で取る（Mac のディスクに保存して配る）。?mirror=0 で使わない
+const NO_MIRROR = new URLSearchParams(location.search).get("mirror") === "0";
+const mirrorRoot = () => (state.hasServer && !NO_MIRROR ? new URL("mirror/", WEB_ROOT).href : null);
+// ダウンロードしたモデル（ブラウザのキャッシュ）を、容量が減っても消さないように頼む（Chrome は確認なしで決める）。1 回だけ
+let askedPersist = false;
+function askPersist() {
+  if (askedPersist) return;
+  askedPersist = true;
+  navigator.storage?.persist?.().then(() => showStorage()).catch(() => {});
+}
 // 詳細計測: URL に ?profile=1 を付けた時だけ。汎用 ONNX のブラウザ実行で onnxruntime の profiler を有効にし、ベンチに GPU の内訳を付ける
 // （計測の手間で遅くなるので通常は切る。記録は実行のたびにたまる）
 const PROFILE = new URLSearchParams(location.search).has("profile");
@@ -82,7 +92,7 @@ function embedInBrowser(model, crops) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model: { ...model, webRoot: WEB_ROOT }, crops }, crops);
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model: { ...model, webRoot: WEB_ROOT, mirror: mirrorRoot() }, crops }, crops);
   });
 }
 
@@ -94,7 +104,7 @@ function runInBrowser(model, image, params) {
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
     const profile = PROFILE && model.adapter === "onnx";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT }, image, params }, transfer);
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT, mirror: mirrorRoot() }, image, params }, transfer);
   });
 }
 
@@ -173,7 +183,11 @@ function confirmDownload(m) {
 async function showStorage() {
   try {
     const { usage } = await navigator.storage.estimate();
-    $("storage").textContent = `このサイトが端末に保存している量: 約${(usage / 1e6).toFixed(0)}MB`;
+    const kept = await navigator.storage.persisted?.().catch(() => false);
+    $("storage").textContent = `このサイトが端末に保存している量: 約${(usage / 1e6).toFixed(0)}MB`
+      + (kept ? "（消されないように保存）" : "（端末の容量が減ると消されることがある）")
+      + (mirrorRoot() ? " ・ モデルはサーバー（Mac）にも保存" : "")
+      + " ・ キャッシュは開いたサイトごとに別";
   } catch { $("storage").textContent = ""; }
 }
 async function clearDownloads() {
@@ -567,13 +581,14 @@ function draw() {
 // 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
 function renderResult(m, r, live) {
   const where = m.where === "browser" ? `ブラウザ ・ ${r.device}${r.dtype ? " ・ " + r.dtype : ""}` : `サーバー ・ ${r.device}`;
+  if (r.load_ms > 1) askPersist(); // モデルを読み込んだら、消されないように保存を頼む
   const stats = [
     ["推論", fmt(r.infer_ms)],
     r.roundtrip_ms ? ["通信込み", fmt(r.roundtrip_ms)] : null,
     // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
     live ? ["fps", live.fps.toFixed(1)] : null,
     live ? ["推論だけなら", `${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps`] : null,
-    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms)] : null,
+    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms) + (r.load_from ? `<small>（${esc(r.load_from)}）</small>` : "")] : null,
   ].filter(Boolean).map(([k, v]) => `<span class="stat"><small>${k}</small><b>${v}</b></span>`).join("");
   let bd = "";
   if (r.breakdown) {

@@ -421,22 +421,37 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
 
 return { COCO };
 })();
-const { onnxLoad, cutOnnx, onnxProfile, segColor, hsl, onnxEmbed, onnxRun } = await (async () => {
+const { setMirror, viaMirror, takeFetchLog, onnxLoad, cutOnnx, onnxProfile, segColor, hsl, onnxEmbed, onnxRun } = await (async () => {
 // 汎用 ONNX adapter のブラウザ版（onnxruntime-web を直接使う）。サーバー版は adapters.py の OnnxAdapter。
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
 
 const HF = "https://huggingface.co";
 
-// Cache API に保存して2回目以降はダウンロードしない（file:// などで Cache API が使えない時は毎回取得）
+// Cache API に保存して2回目以降はダウンロードしない（file:// などで Cache API が使えない時は毎回取得）。
+// キャッシュは開いたサイト（配信元）ごとに分かれ、スマホでは容量が減ると消されることもある。
+// サーバー版では Hugging Face・GitHub の raw ファイルを server.py の /mirror/ 経由で取る（サーバーが Mac のディスクに保存して配るので、
+// ブラウザのキャッシュが無くても 2 回目からはネットに取りに行かない）。キャッシュの鍵は元の URL のまま
+let MIRROR = null; // 例: "https://host/mirror/"（サーバー版だけ。画面が model.mirror で渡す）
+function setMirror(m) { MIRROR = m || null; }
+const MIRROR_SITES = [["https://huggingface.co/", "hf/"], ["https://raw.githubusercontent.com/", "gh/"]];
+const viaMirror = (url) => {
+  const s = MIRROR && MIRROR_SITES.find(([pre]) => url.startsWith(pre));
+  return s ? MIRROR + s[1] + url.slice(s[0].length) : url;
+};
+// 読み込んだファイルの取得元（画面の「読み込み」の横に出す）。worker.js が読み込みごとに takeFetchLog で取り出す
+let fetchLog = [];
+function takeFetchLog() { const l = fetchLog; fetchLog = []; return l; }
+
 async function fetchModelFile(url, onProgress) {
   let cache = null;
   try {
     cache = await caches.open("cvpg-onnx");
     const hit = await cache.match(url);
-    if (hit) return new Uint8Array(await hit.arrayBuffer());
+    if (hit) { const b = new Uint8Array(await hit.arrayBuffer()); fetchLog.push({ from: "cache", bytes: b.length }); return b; }
   } catch { cache = null; }
-  const res = await fetch(url);
+  const src = viaMirror(url);
+  const res = await fetch(src);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   const total = +res.headers.get("content-length") || 0;
   const reader = res.body.getReader(), chunks = [];
@@ -452,6 +467,8 @@ async function fetchModelFile(url, onProgress) {
   let o = 0;
   for (const c of chunks) { buf.set(c, o); o += c.length; }
   try { await cache?.put(url, new Response(buf)); } catch { /* 容量不足などは無視 */ }
+  // サーバーの写しは、Mac のディスクにあったか（X-Mirror: hit）、今ネットから取ったか（miss）を返す
+  fetchLog.push({ from: src === url ? "net" : res.headers.get("X-Mirror") === "hit" ? "mirror" : "mirror-net", bytes: got });
   return buf;
 }
 
@@ -1055,7 +1072,7 @@ async function onnxRun(ort, st, e, bitmap, params) {
   return res;
 }
 
-return { onnxLoad, cutOnnx, onnxProfile, segColor, hsl, onnxEmbed, onnxRun };
+return { setMirror, viaMirror, takeFetchLog, onnxLoad, cutOnnx, onnxProfile, segColor, hsl, onnxEmbed, onnxRun };
 })();
 (async () => {
 // ブラウザ内推論。重い処理で画面が固まらないように Web Worker で動かす。
@@ -1105,6 +1122,8 @@ const toPng = (rawImage) => rawImage.toBlob("image/png"); // メインスレッ�
 // transformers.js の読み込み進捗。数十KBごとに呼ばれるので、1% 進んだ時だけ送る
 function tjsOpts(e, device, onProgress) {
   const last = {};
+  // サーバー版: transformers.js も Hugging Face の代わりにサーバーの写し（/mirror/hf/）から取る
+  T.env.remoteHost = e.mirror ? e.mirror + "hf/" : "https://huggingface.co/";
   return {
     device, dtype: e.dtype[device],
     progress_callback: (p) => {
@@ -1353,10 +1372,19 @@ const loaded = new Map(); // entry.key -> Promise<state>
 let ortQueue = Promise.resolve();
 const serial = (fn) => { const p = ortQueue.then(fn, fn); ortQueue = p.catch(() => {}); return p; };
 
+// 読み込んだファイルの取得元のまとめ（「読み込み」の横に出す）。transformers.js は自分のキャッシュを持つので分からない
+function fetchSummary(log, e) {
+  if (!log.length) return e.adapter === "onnx" ? null : e.mirror ? "サーバーの写し経由" : null;
+  const mb = (k) => (log.filter((x) => x.from === k).reduce((a, x) => a + x.bytes, 0) / 1e6).toFixed(0);
+  const words = { cache: "ブラウザのキャッシュ", mirror: "Mac のサーバー（保存済み）", "mirror-net": "ダウンロード（サーバーに保存）", net: "ダウンロード" };
+  return [...new Set(log.map((x) => x.from))].map((k) => `${words[k]} ${mb(k)}MB`).join("・");
+}
+
 // 追跡の ReID 用: 切り出した画像の特徴を返す（onnx adapter のモデルだけ）
 async function embed(id, e, crops) {
   try {
     await libReady;
+    setMirror(e.mirror);
     if (!loaded.has(e.key)) {
       const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
       loaded.set(e.key, ADAPTERS.onnx.load(e, await getDevice(), onProgress));
@@ -1404,13 +1432,16 @@ self.onmessage = async (ev) => {
     const A = ADAPTERS[e.adapter];
     if (!A) throw new Error(`ブラウザ側に adapter "${e.adapter}" が無い`);
     const device = await getDevice();
-    let loadMs = 0;
+    let loadMs = 0, loadFrom = null;
+    setMirror(e.mirror);
     if (!loaded.has(e.key)) {
       const t0 = performance.now();
+      takeFetchLog();
       const onProgress = (file, progress) => self.postMessage({ type: "progress", key: e.key, file, progress });
       loaded.set(e.key, A.load(e, device, onProgress));
       try { await loaded.get(e.key); } catch (err) { loaded.delete(e.key); throw err; }
       loadMs = performance.now() - t0;
+      loadFrom = fetchSummary(takeFetchLog(), e);
     }
     const st = await loaded.get(e.key);
     const img = await toInput(image, A.image);
@@ -1422,6 +1453,7 @@ self.onmessage = async (ev) => {
     };
     const result = self.name === "ort" ? await serial(go) : await go();
     result.load_ms = loadMs;
+    if (loadFrom) result.load_from = loadFrom;
     result.device = e.adapter === "onnx" && e.opt === "wasm" ? "wasm" : device;
     result.dtype = e.adapter === "onnx" ? ortRuntime(e, st.session, device) : `transformers.js ${TJS_VERSION} ${e.dtype?.[device] ?? ""}`.trim();
     self.postMessage({ id, type: "result", result });
@@ -2881,6 +2913,16 @@ const STANDALONE = !!globalThis.CVPG_STANDALONE;
 const WORKER_URL = globalThis.CVPG_WORKER_URL ?? "worker.js";
 // web/ の場所（同梱したモデルを読む基準）。1ファイル版は dist/ にあるので ../web/
 const WEB_ROOT = new URL(STANDALONE ? "../web/" : "./", location.href).href;
+// サーバー版ではモデルのファイルを server.py の /mirror/ 経由で取る（Mac のディスクに保存して配る）。?mirror=0 で使わない
+const NO_MIRROR = new URLSearchParams(location.search).get("mirror") === "0";
+const mirrorRoot = () => (state.hasServer && !NO_MIRROR ? new URL("mirror/", WEB_ROOT).href : null);
+// ダウンロードしたモデル（ブラウザのキャッシュ）を、容量が減っても消さないように頼む（Chrome は確認なしで決める）。1 回だけ
+let askedPersist = false;
+function askPersist() {
+  if (askedPersist) return;
+  askedPersist = true;
+  navigator.storage?.persist?.().then(() => showStorage()).catch(() => {});
+}
 // 詳細計測: URL に ?profile=1 を付けた時だけ。汎用 ONNX のブラウザ実行で onnxruntime の profiler を有効にし、ベンチに GPU の内訳を付ける
 // （計測の手間で遅くなるので通常は切る。記録は実行のたびにたまる）
 const PROFILE = new URLSearchParams(location.search).has("profile");
@@ -2946,7 +2988,7 @@ function embedInBrowser(model, crops) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model: { ...model, webRoot: WEB_ROOT }, crops }, crops);
+    (workers.ort ?? startWorker("ort")).postMessage({ type: "embed", id, model: { ...model, webRoot: WEB_ROOT, mirror: mirrorRoot() }, crops }, crops);
   });
 }
 
@@ -2958,7 +3000,7 @@ function runInBrowser(model, image, params) {
     const transfer = image instanceof ImageBitmap ? [image] : [];
     const opt = model.adapter === "onnx" ? $("ort-opt").value : "";
     const profile = PROFILE && model.adapter === "onnx";
-    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT }, image, params }, transfer);
+    (workers[lib] ?? startWorker(lib)).postMessage({ id, model: { ...model, opt, profile, preMode: PRE_MODE, webRoot: WEB_ROOT, mirror: mirrorRoot() }, image, params }, transfer);
   });
 }
 
@@ -3037,7 +3079,11 @@ function confirmDownload(m) {
 async function showStorage() {
   try {
     const { usage } = await navigator.storage.estimate();
-    $("storage").textContent = `このサイトが端末に保存している量: 約${(usage / 1e6).toFixed(0)}MB`;
+    const kept = await navigator.storage.persisted?.().catch(() => false);
+    $("storage").textContent = `このサイトが端末に保存している量: 約${(usage / 1e6).toFixed(0)}MB`
+      + (kept ? "（消されないように保存）" : "（端末の容量が減ると消されることがある）")
+      + (mirrorRoot() ? " ・ モデルはサーバー（Mac）にも保存" : "")
+      + " ・ キャッシュは開いたサイトごとに別";
   } catch { $("storage").textContent = ""; }
 }
 async function clearDownloads() {
@@ -3431,13 +3477,14 @@ function draw() {
 // 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
 function renderResult(m, r, live) {
   const where = m.where === "browser" ? `ブラウザ ・ ${r.device}${r.dtype ? " ・ " + r.dtype : ""}` : `サーバー ・ ${r.device}`;
+  if (r.load_ms > 1) askPersist(); // モデルを読み込んだら、消されないように保存を頼む
   const stats = [
     ["推論", fmt(r.infer_ms)],
     r.roundtrip_ms ? ["通信込み", fmt(r.roundtrip_ms)] : null,
     // 連続実行は新しいフレームだけを処理するので、fps は動画・カメラのフレームレートが上限。推論だけの上限も並べる
     live ? ["fps", live.fps.toFixed(1)] : null,
     live ? ["推論だけなら", `${(1000 / (r.roundtrip_ms || r.infer_ms)).toFixed(0)} fps`] : null,
-    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms)] : null,
+    r.load_ms > 1 ? ["読み込み", fmt(r.load_ms) + (r.load_from ? `<small>（${esc(r.load_from)}）</small>` : "")] : null,
   ].filter(Boolean).map(([k, v]) => `<span class="stat"><small>${k}</small><b>${v}</b></span>`).join("");
   let bd = "";
   if (r.breakdown) {

@@ -1959,7 +1959,11 @@
     "squeeze": [
      "val_424",
      "val_436"
-    ]
+    ],
+    "sha256": {
+     "xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0",
+     "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"
+    }
    },
    "pre": {
     "size": [

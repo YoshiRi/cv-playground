@@ -42,6 +42,8 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `path` + `url` | `web/` に同梱したファイル（`path` は `web/` からの相対）。読めない時（file:// など）は `url` から取る |
 | `sha256` | ファイルごとの SHA-256（`{"onnx/model.onnx": "…"}`）。`python3 tools/update_hashes.py` が Hugging Face から取って書き込む（手で書かない）。画面の「手元の ONNX を使う」で、利用者が持っているファイルと照らすのに使う |
 | `cut` | 途中の値の名前の並び。その値で ONNX を切り、後ろのノード（CPU に回って graph capture を妨げる出力の頭など）を消す。出力は float にして `cut_0`, `cut_1`, … になる。重みのライセンス上、書き換えた ONNX は配らず、取得した ONNX をブラウザ（`onnx_generic.js` の `cutOnnx`）とサーバーがそれぞれ書き換える。後処理は切った値を受け取るものにする（YOLO26-pose は `yolo_pose_raw`） |
+| `squeeze` | 値の名前の並び。その値（長さ 1 の配列）を作るノードの後ろに Squeeze を挟んでスカラーにする（出力を `名前_raw` にして元の名前に戻す。形の情報 value_info は消す）。書き出しの癖で、形を固定すると形の推論が「Range の入力がスカラーでない」で落ちるモデル用（XFeat）。`cut` と同じく端末で書き換える |
+| `fix_shape` | `false` なら入力の形を固定しない（形を固定すると作れないモデルの逃げ道。graph capture も使えなくなる） |
 | `graph_capture` | `false` なら graph capture を使わない（作れても出力が壊れるモデル。DA3 small・YuNet。出力が多いモデルで起きやすい） |
 | `server_file` | `models/` に置いた、サーバーだけが配るファイル（ライセンス上リポジトリに入れないもの）。サーバーが無い時は画面に出ない |
 
@@ -49,7 +51,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 
 | キー | 意味 |
 | --- | --- |
-| `resize` | `letterbox`（縦横比を保って `pad_value` で埋めた正方形）/ `letterbox_rect`（長辺を合わせ `stride` の倍数まで埋めた長方形。Ultralytics の推論と同じ）/ `stretch`（縦横をそのまま引き伸ばす）/ `keep_aspect`（短辺を `short` にし `multiple` の倍数に丸める） |
+| `resize` | `letterbox`（縦横比を保って `pad_value` で埋めた正方形）/ `letterbox_rect`（長辺を合わせ `stride` の倍数まで埋めた長方形。Ultralytics の推論と同じ）/ `stretch`（縦横をそのまま引き伸ばす）/ `keep_aspect`（短辺を `short` にし `multiple` の倍数に丸める）/ `floor32`（長辺を `size[0]`（`dynamic` なら画面の値）以下に縮め、縦横を 32 の倍数に切り下げて引き伸ばす。XFeat） |
 | `size` | 入力の `[幅, 高さ]`（`letterbox_rect` は `size[0]` が長辺） |
 | `dynamic` | 入力サイズ可変。画面の「モデル入力（長辺）」で長辺を選べる |
 | `scale`, `mean`, `std` | 画素 × `scale` から `mean` を引いて `std` で割る（チャンネルごと） |
@@ -73,8 +75,11 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `segmap` | セマンティック・セグメンテーションの logits (1, クラス数, h, w)。画素ごとに最大のクラスで塗る。`labels` にクラス名の並び、`output` に出力名 | segmap（凡例つき） |
 | `depth` | 深度。`inverse`（大きいほど遠い深度を反転）、`intrinsics`（内部パラメータの出力名、あれば画角を出す） | depth |
 | `embedding` | 特徴ベクトル・確率（ReID や cascade の分類で使う） | － |
+| `xfeat_match` | XFeat を `onnx.cut: ["descriptors", "heatmap", "sigmoid"]` で切った出力（記述子 H/8・heatmap H・reliability H/8）。kornia の `detectAndCompute` と同じ手順で点（5×5 の極大・閾値 `threshold`・上位 `top_k`）と記述子（bicubic）を取り、テンプレートと相互最近傍（cos > `min_cossim`）で対応を取って、LO-RANSAC（`ransac_px`）でホモグラフィ。インライアが `min_inliers` 以上で凸な四角形なら「見つかった」。計算は `web/xfeat.js`（JS）と `adapters.py`（Python）で同じ | matches |
 
 **部品が足りない時**は、`web/onnx_generic.js` の `POST`（前処理なら `preprocess`）と `adapters.py` の `POST`（`preprocess`）に**同じ名前で両方**足す。片方だけだと、その実行場所でしか動かない。
+
+**フレームをまたいで状態を持つ後処理**（テンプレートの特徴など）は、`PREPARE` に同じ名前で足す（`onnx_generic.js` は `PREPARE[type](ort, st, e, params)`、`adapters.py` は `PREPARE[type](adapter, params)`）。後処理の前に呼ばれ、`st`（Worker の読み込み済みの状態）や adapter に持たせた値を `params` に入れて `POST` に渡す。テンプレートマッチングは、テンプレートの点・記述子を id ごとに持ち、テンプレートは大きさがまちまちなので形を固定しない別のセッション（`session.cvpg.plain()`）で計算する
 
 ブラウザの WebGPU 実行では、前処理の正規化などを GPU（`gpuPreprocess`）で行う。GPU 版が扱うのは上の表の指定（`batch`・`seq` を除く）だけで、`pre` に新しい指定や縮小方法を足したモデルは自動で CPU の前処理（`preprocess`）になる。GPU でも速くしたい時は `onnx_generic.js` の `GPU_PRE_KEYS` / `GPU_PRE_RESIZE` と shader に足し、CPU 版と入力が一致することを確かめる。
 
@@ -117,6 +122,7 @@ ADAPTERS["hf-xxx"] = HfXxx
 | `depth` | `image`（明るいほど近い）、`note?` |
 | `segmap` | `image`（領域ごとに色分け、透明＝領域なし）、`count`、`legend?`（`[{label, color, count, area}]`。あれば凡例を出す）、`subtask?`（`semantic` / `panoptic`） |
 | `labels` | `items: [{label, score, abs?}]`（score の大きい順） |
+| `matches` | `found`, `quad: [[x, y] × 4] \| null`（テンプレートの四隅を写した四角形）, `H`（3×3 を 9 個）, `inliers`, `matches`, `kpts`, `kpts_t`, `pairs: [[xt, yt, xf, yf, インライアか]]`, `points: [[x, y, スコア]]`, `template: {w, h}`, `post_detail: {extract, match, ransac, template?}`（ms） |
 | `text` | `text` |
 
 新しい種類の結果を返す時は、画面側の描き方も足す（[ADDING_UI.md](ADDING_UI.md) の「結果の種類」）。
@@ -169,7 +175,7 @@ transformers.js の adapter（`tjs-*`）にはどれもかからない（1回ず
 
 1. **経路**: モデルの説明欄の「実行: …」が `onnxruntime-web を直接` になっているか
 2. **速さ**: 「速度を測る」で 20 回以上。記録の「実行場所」に実際に使った設定（`fp16 graph 前処理GPU…`）、列に前処理・モデル実行・後処理が出る
-3. **graph capture 不可と出たら**: URL に `?profile=1` を付けて実行設定を「fp32（graph capture なし）」にして測ると、表に「CPU に回ったノード」が出る。出力の頭（Mod・Range・Cast など、候補の選び出し）なら、`onnx.cut` でその手前の値で切り、選び出しを JS の後処理で行うと使えるようになる（YOLO26-pose で実施）
+3. **graph capture 不可と出たら**: URL に `?profile=1` を付けて実行設定を「fp32（graph capture なし）」にして測ると、表に「CPU に回ったノード」が出る。出力の頭（Mod・Range・Cast など、候補の選び出し）なら、`onnx.cut` でその手前の値で切り、選び出しを JS の後処理で行うと使えるようになる（YOLO26-pose で実施）。形の計算（Shape・Gather・Range など）がたくさん CPU に回っているなら、入力の形が固定できていない。形を固定するとセッションが作れない時は、エラーの場所を Python の onnxruntime で調べる（XFeat は Range の上限が長さ 1 の配列で、`onnx.squeeze` で直した）
 4. **どこが重いか**: 同じ `?profile=1` の表の「演算ごとの GPU 時間」。畳み込み・行列積が大半なら計算そのものが重い（入力を小さくする、fp16 版、軽いモデルに替える）。後処理の列が大きければ JS の部品を見直す
 5. **結果が合っているか**: 移す前の経路（transformers.js・サーバー）と同じ画像で、件数・クラス・面積を比べる。前処理の違いは `?pre=cpu` で CPU の前処理と比べられる。**graph capture が使えた時は、実行設定を「fp16（graph capture なし）」にした時と出力が同じか必ず見る**（DA3 small・YuNet は graph capture で出力が壊れた。出力が多いモデルで起きやすい。その時は `onnx.graph_capture: false`）
 6. **スマホで**: Mac で速くてもスマホで逆になることがある（`?pre=gpu` は Galaxy Z Fold6 で遅くなった。DETR panoptic は Adreno 750 で WebGPU の shader が作れない）。記録の Markdown を貼れば比べられる

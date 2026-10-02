@@ -242,6 +242,47 @@ export const KINDS = {
     summary: (r) => r.items[0]?.label ?? "",
   },
 
+  // テンプレートマッチング: テンプレートの四隅を写した四角形 quad、対応 pairs: [[xt, yt, xf, yf, インライアか]]、
+  // フレームの特徴点 points: [[x, y, スコア]]。テンプレートの画像は画面側が r.templateImage に付ける（Worker からは送り返さない）
+  matches: {
+    views: (r) => [["quad", "四角形"], ["pairs", "対応点"], ["points", "特徴点"], ["original", "元画像"]].filter(([v]) => v !== "pairs" || r.templateImage),
+    draw(ctx, r, b, view) {
+      const sx = b.w / r.w, sy = b.h / r.h, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
+      if (view === "points") {
+        const smax = Math.max(1e-6, ...r.points.map((p) => p[2]));
+        for (const [x, y, sc] of r.points) {
+          ctx.fillStyle = `hsl(${120 * clamp01(sc / smax)} 90% 50%)`;
+          ctx.beginPath(); ctx.arc(x * sx, y * sy, lw * 1.2, 0, Math.PI * 2); ctx.fill();
+        }
+        tag(ctx, 4, 4, `特徴点 ${r.points.length}`, "#0ea5e9", size);
+        return;
+      }
+      if (view === "pairs") return drawPairs(ctx, r, b, lw, size);
+      // 四角形: インライアの点と、見つかった四角形（見つからない時は推定だけ点線で薄く）
+      for (const [, , xf, yf, inl] of r.pairs) {
+        ctx.fillStyle = inl ? "#22c55e" : "rgba(239,68,68,.6)";
+        ctx.beginPath(); ctx.arc(xf * sx, yf * sy, lw * (inl ? 1.4 : 1), 0, Math.PI * 2); ctx.fill();
+      }
+      const q = r.quad;
+      if (q) {
+        ctx.beginPath(); q.forEach(([x, y], i) => (i ? ctx.lineTo(x * sx, y * sy) : ctx.moveTo(x * sx, y * sy))); ctx.closePath();
+        ctx.lineWidth = lw * 2 + 2; ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.stroke();
+        ctx.lineWidth = lw * 2; ctx.strokeStyle = "#22c55e"; ctx.stroke();
+        tag(ctx, q[0][0] * sx, q[0][1] * sy, `見つかった ${r.inliers}/${r.matches}`, "#16a34a", size);
+      } else {
+        tag(ctx, 4, 4, r.template ? `見つからない（インライア ${r.inliers}/${r.matches}）` : (r.note || "テンプレートが無い"), "#64748b", size);
+      }
+    },
+    panel(r) {
+      const d = r.post_detail || {};
+      const head = r.found ? `<span class="chip"><i style="background:#22c55e"></i>見つかった</span>` : `<span class="chip"><i style="background:#94a3b8"></i>${esc(r.template ? "見つからない" : (r.note || "テンプレートが無い"))}</span>`;
+      const nums = `インライア <b>${r.inliers}</b> ・ 対応 <b>${r.matches}</b> ・ 特徴点 フレーム ${r.kpts}${r.kpts_t != null ? ` / テンプレート ${r.kpts_t}` : ""}`;
+      const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac], ["テンプレートの特徴", d.template]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
+      return `<div class="chips">${head}</div><div class="sub">${nums}</div>${times ? `<div class="sub">後処理の内訳: ${times}</div>` : ""}`;
+    },
+    summary: (r) => `${r.found ? "見つかった" : "見つからない"}（インライア ${r.inliers}/対応 ${r.matches}）`,
+  },
+
   // 文章（画像の説明・質問）
   text: {
     views: () => [],
@@ -250,6 +291,29 @@ export const KINDS = {
     summary: (r) => r.text.slice(0, 24) + "…",
   },
 };
+
+// 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用
+function drawPairs(ctx, r, b, lw, size) {
+  const T = r.templateImage, tw = r.template.w, th = r.template.h, gap = Math.round(b.w * 0.02);
+  ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h);
+  // テンプレートは幅の 35% まで・高さいっぱいまで、フレームは残りの幅に収める
+  const st = Math.min((b.w * 0.35) / tw, b.h / th), TW = tw * st, TH = th * st, ty = (b.h - TH) / 2;
+  const sf = Math.min((b.w - TW - gap) / b.w, 1), FW = b.w * sf, FH = b.h * sf, fx = TW + gap, fy = (b.h - FH) / 2;
+  ctx.drawImage(T, 0, ty, TW, TH);
+  ctx.drawImage(b.src, fx, fy, FW, FH);
+  const kx = (FW / r.w), ky = (FH / r.h);
+  ctx.lineWidth = Math.max(1, lw / 2);
+  const pairs = r.pairs.length > 400 ? r.pairs.filter((p) => p[4]) : r.pairs; // 多すぎる時はインライアだけ
+  for (const [xt, yt, xf, yf, inl] of pairs) {
+    ctx.strokeStyle = inl ? "rgba(34,197,94,.85)" : "rgba(239,68,68,.45)";
+    ctx.beginPath(); ctx.moveTo(xt * st, ty + yt * st); ctx.lineTo(fx + xf * kx, fy + yf * ky); ctx.stroke();
+  }
+  if (r.quad) {
+    ctx.beginPath(); r.quad.forEach(([x, y], i) => (i ? ctx.lineTo(fx + x * kx, fy + y * ky) : ctx.moveTo(fx + x * kx, fy + y * ky))); ctx.closePath();
+    ctx.lineWidth = lw * 1.5; ctx.strokeStyle = "#22c55e"; ctx.stroke();
+  }
+  tag(ctx, 4, 4, `対応 ${r.matches}（インライア ${r.inliers}）`, r.found ? "#16a34a" : "#64748b", size);
+}
 
 function countBy(items) {
   const c = {};

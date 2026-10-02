@@ -1,0 +1,4 @@
+# 開発用（実行時には要らない）。tools/xfeat_check.py で、ブラウザ・サーバーの XFeat の手順を kornia（PyTorch）・OpenCV と比べる
+-r requirements.txt
+kornia>=0.8.3
+opencv-python-headless

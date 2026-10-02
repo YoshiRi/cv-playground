@@ -25,7 +25,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 ## Features
 
 - **Tasks** (grouped into four categories)
-  - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks, plus facial expressions — 8 classes with valence and arousal — from HSEmotion) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection
+  - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks, plus facial expressions — 8 classes with valence and arousal — from HSEmotion) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection / template matching (drag a box or pick an image of the object, then find it in the image or video with XFeat keypoint matches and a homography; the matches can be shown as lines)
   - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
   - Depth & 3D: depth estimation / approaching / receding (object detection + depth: a small Kalman filter per track fuses box size and depth to classify each object as approaching or receding, colors it, estimates time to contact, and counts per class) / 3D pose (pose + depth: a rotating skeleton with depth)
   - Vision & language: zero-shot classification / image captioning and VQA (VLM)
@@ -110,7 +110,8 @@ In most cases, adding one entry to `web/models.json` is enough (for plain ONNX m
 | `server.py` | FastAPI. Serves `web/`, `/api/run`, `/api/status`, `/api/unload`, and `/local-models/` |
 | `build.py` | Builds the single-file version (a stale build is caught by `.github/workflows/check-dist.yml`) |
 | `web/pinto/` | Bundled models from PINTO_model_zoo (MIT) |
-| `tools/` | Tracker comparison against Ultralytics, YOLO26 export, fetching model file SHA-256 hashes |
+| `web/xfeat.js` | XFeat post-processing and template matching (keypoints, descriptors, mutual nearest neighbours, homography; same steps as `adapters.py` on the server) |
+| `tools/` | Tracker comparison against Ultralytics, YOLO26 export, fetching model file SHA-256 hashes, XFeat comparison against kornia and OpenCV (`xfeat_check.py`, needs `requirements-dev.txt`) |
 
 ## License
 

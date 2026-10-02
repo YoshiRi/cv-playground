@@ -136,6 +136,20 @@
    "result": "boxes"
   },
   {
+   "id": "template",
+   "name": "テンプレートマッチング",
+   "category": "detect",
+   "result": "matches",
+   "hint": "探す物（テンプレート）を、画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。XFeat の特徴点の対応からホモグラフィを求め、テンプレートの四隅を写した四角形を描く。表示の「対応点」でテンプレートとフレームの対応を線で見られる",
+   "params": [
+    "template",
+    "top_k"
+   ],
+   "defaults": {
+    "top_k": 512
+   }
+  },
+  {
    "id": "segment",
    "name": "プロンプト（SAM）",
    "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）",
@@ -1921,6 +1935,60 @@
    "ollama": "qwen3-vl:8b",
    "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意",
    "license": "モデルによる（qwen3-vl は Apache-2.0）"
+  },
+  {
+   "key": "xfeat",
+   "task": "template",
+   "name": "XFeat（特徴点＋対応＋RANSAC）",
+   "where": [
+    "browser",
+    "server"
+   ],
+   "adapter": "onnx",
+   "mb": 2.8,
+   "bench": true,
+   "onnx": {
+    "repo": "kornia/xfeat",
+    "file": "xfeat_backbone.onnx",
+    "data": "xfeat_backbone.onnx.data",
+    "cut": [
+     "descriptors",
+     "heatmap",
+     "sigmoid"
+    ],
+    "squeeze": [
+     "val_424",
+     "val_436"
+    ],
+    "sha256": {
+     "xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0",
+     "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"
+    }
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "floor32",
+    "dynamic": true,
+    "scale": 0.00392156862745098,
+    "input": "image"
+   },
+   "post": {
+    "type": "xfeat_match",
+    "top_k": 512,
+    "threshold": 0.05,
+    "min_cossim": 0.82,
+    "min_inliers": 15,
+    "ransac_px": 3.0,
+    "gpu": true
+   },
+   "license": "Apache-2.0",
+   "note": "学習ベースの軽い特徴点（CVPR 2024、verlab/accelerated_features）。kornia の ONNX（2.8MB）。後処理は kornia の detectAndCompute と相互最近傍のマッチングに合わせ、ホモグラフィは 4 点の DLT ＋ RANSAC を自前で書いた。入力は 32 の倍数に切り下げる（画素の値の倍率は効かない。中で濃淡にして正規化する）",
+   "server": {
+    "providers": "cpu"
+   }
   }
  ],
  "interact": [

@@ -93,13 +93,16 @@ def unload():
 
 
 @app.post("/api/run")
-def run(model: str = Form(...), params: str = Form("{}"), image: UploadFile = File(...)):
+def run(model: str = Form(...), params: str = Form("{}"), image: UploadFile = File(...), template: UploadFile | None = File(None)):
     if model not in ENTRIES:
         raise HTTPException(404, f"unknown model {model}")
     raw = image.file.read()
     im = Image.open(io.BytesIO(raw)).convert("RGB")
     p = json.loads(params)
     p["_image_key"] = hashlib.sha1(raw).hexdigest()
+    if template is not None:  # テンプレートマッチング: 探す物の画像（特徴は adapters.py が同じ画像のあいだ使い回す）
+        traw = template.file.read()
+        p["_template"], p["_template_key"] = Image.open(io.BytesIO(traw)).convert("RGB"), hashlib.sha1(traw).hexdigest()
     with lock:
         a, load_ms = get_adapter(model)
         t = time.time()

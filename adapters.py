@@ -85,6 +85,14 @@ def preprocess(im: Image.Image, pre: dict, input_size=None):
     elif mode == "stretch":
         tw, th = pre["size"]
         img, meta = im.resize((tw, th), Image.BILINEAR), dict(sx=tw / W, sy=th / H, ox=0, oy=0, iw=tw, ih=th, cw=tw, ch=th)
+    elif mode == "floor32":
+        # 長辺を S（画面の「モデル入力（長辺）」、既定は size[0]）以下に縮め、縦横を 32 の倍数に切り下げて引き伸ばす（XFeat。
+        # kornia の _preprocess_tensor と同じ切り下げ。大きい画像のまま流さないよう、先に長辺を抑える）
+        S = int(input_size) if pre.get("dynamic") and input_size else pre["size"][0]
+        r = min(1.0, S / max(W, H))
+        tw, th = max(32, int(W * r) // 32 * 32), max(32, int(H * r) // 32 * 32)
+        img = im.resize((tw, th), Image.BILINEAR) if (tw, th) != (W, H) else im
+        meta = dict(sx=tw / W, sy=th / H, ox=0, oy=0, iw=tw, ih=th, cw=tw, ch=th)
     elif mode == "keep_aspect":
         m, r = pre.get("multiple", 1), pre["short"] / min(W, H)
         tw, th = max(m, round(W * r / m) * m), max(m, round(H * r / m) * m)
@@ -269,7 +277,227 @@ def post_deim_wholebody(out, m, post, p):
     return {"kind": "boxes", "items": items}
 
 
-POST = {"yunet": post_yunet, "yolo_pose_raw": post_yolo_pose_raw, "segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
+# ---------- XFeat（特徴点）とテンプレートマッチング。ブラウザの onnx_generic.js と同じ手順 ----------
+# kornia.feature.XFeat（0.8.3）の detectAndCompute と _match_mnn に合わせる。ONNX（kornia/xfeat の xfeat_backbone.onnx）を
+# onnx.cut で [descriptors, heatmap, sigmoid] に切り、reliability を H/8 のまま受け取る（kornia はこの地図を点の位置で読む）
+
+def grid_sample_pts(fm: np.ndarray, xs: np.ndarray, ys: np.ndarray, W: int, H: int, mode: str) -> np.ndarray:
+    """torch の grid_sample(align_corners=False, padding_mode=zeros) を点ごとに。fm: (C, h, w)、点は入力画像の画素座標。
+    kornia の InterpolateSparse2d は位置を 2·x/(W−1)−1 で正規化してから align_corners=False で読む（学習時の癖をそのまま使う）"""
+    C, h, w = fm.shape
+    ix = ((2 * xs / (W - 1)) * w - 1) / 2  # = ((g + 1) · w − 1) / 2、g = 2x/(W−1) − 1
+    iy = ((2 * ys / (H - 1)) * h - 1) / 2
+
+    def tap(yy, xx):
+        ok = (xx >= 0) & (xx < w) & (yy >= 0) & (yy < h)
+        v = fm[:, np.clip(yy, 0, h - 1), np.clip(xx, 0, w - 1)]
+        return v * ok
+    if mode == "nearest":  # nearbyint（偶数への丸め）
+        return tap(np.rint(iy).astype(int), np.rint(ix).astype(int)).T
+    x0, y0 = np.floor(ix).astype(int), np.floor(iy).astype(int)
+    tx, ty = ix - x0, iy - y0
+    if mode == "bilinear":
+        return (tap(y0, x0) * (1 - tx) * (1 - ty) + tap(y0, x0 + 1) * tx * (1 - ty)
+                + tap(y0 + 1, x0) * (1 - tx) * ty + tap(y0 + 1, x0 + 1) * tx * ty).T
+    A = -0.75  # bicubic（torch と同じ係数）
+
+    def cw(t):
+        return [((A * (t + 1) - 5 * A) * (t + 1) + 8 * A) * (t + 1) - 4 * A,
+                ((A + 2) * t - (A + 3)) * t * t + 1,
+                ((A + 2) * (1 - t) - (A + 3)) * (1 - t) * (1 - t) + 1,
+                ((A * (2 - t) - 5 * A) * (2 - t) + 8 * A) * (2 - t) - 4 * A]
+    wx, wy = cw(tx), cw(ty)
+    out = 0
+    for j in range(4):
+        row = 0
+        for i in range(4):
+            row = row + tap(y0 - 1 + j, x0 - 1 + i) * wx[i]
+        out = out + row * wy[j]
+    return out.T
+
+
+def xfeat_extract(out: dict, m: dict, top_k: int, th: float = 0.05):
+    """ONNX の出力 → 点（元画像の座標）・スコア・記述子 (N, 64)。kornia の detectAndCompute と同じ"""
+    desc, heat, rel = out["cut_0"][0], out["cut_1"][0, 0], out["cut_2"][0]
+    H, W = heat.shape
+    c = heat[2:-2, 2:-2]
+    mask = c > th
+    for dy in range(-2, 3):  # 5×5 の周り 24 点すべてより真に大きい（端の 2 画素は使わない。kornia の nms2d）
+        for dx in range(-2, 3):
+            if dy or dx:
+                mask &= c > heat[2 + dy:H - 2 + dy, 2 + dx:W - 2 + dx]
+    ys, xs = np.nonzero(mask)
+    xs, ys = (xs + 2).astype(np.float64), (ys + 2).astype(np.float64)
+    sc = grid_sample_pts(heat[None], xs, ys, W, H, "nearest")[:, 0] * grid_sample_pts(rel, xs, ys, W, H, "bilinear")[:, 0]
+    order = np.argsort(-sc, kind="stable")[:top_k]
+    order = order[sc[order] > 0]
+    xs, ys, sc = xs[order], ys[order], sc[order]
+    f = grid_sample_pts(desc, xs, ys, W, H, "bicubic")
+    f = f / np.maximum(np.linalg.norm(f, axis=1, keepdims=True), 1e-12)
+    pts = np.stack([xs / m["sx"], ys / m["sy"]], 1)
+    return pts, sc, f.astype(np.float32)
+
+
+def match_mnn(f1: np.ndarray, f2: np.ndarray, min_cossim: float = 0.82):
+    """相互最近傍かつコサイン類似度 > min_cossim（kornia の _match_mnn）。f1 がテンプレート、f2 がフレーム"""
+    if not len(f1) or not len(f2):
+        return np.zeros(0, int), np.zeros(0, int)
+    s = f1 @ f2.T
+    m12, m21 = s.argmax(1), s.argmax(0)
+    i0 = np.arange(len(f1))
+    good = (m21[m12] == i0) & (s.max(1) > min_cossim)
+    return i0[good], m12[good]
+
+
+class Mulberry32:
+    """JS と同じ並びの乱数（RANSAC の結果をブラウザとそろえて比べるため）"""
+    def __init__(self, seed):
+        self.a = seed & 0xFFFFFFFF
+
+    def __call__(self):
+        self.a = (self.a + 0x6D2B79F5) & 0xFFFFFFFF
+        t = self.a
+        t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
+        t ^= (t + (((t ^ (t >> 7)) * (t | 61)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296
+
+
+def _norm_T(p):
+    c = p.mean(0)
+    d = np.sqrt(((p - c) ** 2).sum(1)).mean() or 1.0
+    s = math.sqrt(2) / d
+    return np.array([[s, 0, -s * c[0]], [0, s, -s * c[1]], [0, 0, 1]])
+
+
+def homography_dlt(a, b):
+    """a → b のホモグラフィ（点を正規化した DLT。4 点でも N 点でも）。SVD の最小特異値のベクトル"""
+    Ta, Tb = _norm_T(a), _norm_T(b)
+    pa = (Ta @ np.c_[a, np.ones(len(a))].T).T
+    pb = (Tb @ np.c_[b, np.ones(len(b))].T).T
+    A = []
+    for (x, y, _), (u, v, _) in zip(pa, pb):
+        A.append([-x, -y, -1, 0, 0, 0, u * x, u * y, u])
+        A.append([0, 0, 0, -x, -y, -1, v * x, v * y, v])
+    h = np.linalg.svd(np.array(A))[2][-1].reshape(3, 3)
+    Hm = np.linalg.inv(Tb) @ h @ Ta
+    return Hm / Hm[2, 2] if abs(Hm[2, 2]) > 1e-12 else None
+
+
+def project(Hm, p):
+    q = np.c_[p, np.ones(len(p))] @ Hm.T
+    return q[:, :2] / q[:, 2:3]
+
+
+def _collinear(p, eps=1e-3):
+    for i in range(4):
+        for j in range(i + 1, 4):
+            for k in range(j + 1, 4):
+                if abs((p[j, 0] - p[i, 0]) * (p[k, 1] - p[i, 1]) - (p[j, 1] - p[i, 1]) * (p[k, 0] - p[i, 0])) < eps:
+                    return True
+    return False
+
+
+def ransac_homography(a, b, th=3.0, iters=1000, conf=0.995, seed=1):
+    """4 点の DLT で仮説を立て、再投影の誤差 th 以下の数が一番多いものを選び、そのインライア全部で解き直す"""
+    n = len(a)
+    if n < 4:
+        return None, np.zeros(n, bool)
+    rnd, best, best_in, k, it = Mulberry32(seed), None, np.zeros(n, bool), iters, 0
+    while it < k:
+        it += 1
+        idx = []
+        while len(idx) < 4:
+            i = int(rnd() * n)
+            if i not in idx:
+                idx.append(i)
+        if _collinear(a[idx]) or _collinear(b[idx]):
+            continue
+        Hm = homography_dlt(a[idx], b[idx])
+        if Hm is None:
+            continue
+        inl = np.linalg.norm(project(Hm, a) - b, axis=1) < th
+        if inl.sum() > best_in.sum():
+            Hm, inl = _refine(a, b, Hm, inl, th)  # 良い仮説が出たら、そのインライアで解き直して数え直す（LO-RANSAC）
+            best, best_in = Hm, inl
+            w = inl.sum() / n
+            k = min(iters, int(math.ceil(math.log(1 - conf) / math.log(max(1e-12, 1 - w ** 4))))) if w < 1 else it
+    return (best, best_in) if best is not None else (None, best_in)
+
+
+def _refine(a, b, Hm, inl, th, rounds=5):
+    """インライア全部で DLT を解き直し、インライアが減らない間（最大 rounds 回）くり返す"""
+    for _ in range(rounds):
+        if inl.sum() < 5:
+            break
+        Hr = homography_dlt(a[inl], b[inl])
+        if Hr is None:
+            break
+        ir = np.linalg.norm(project(Hr, a) - b, axis=1) < th
+        if ir.sum() < inl.sum():
+            break
+        same = (ir == inl).all()
+        Hm, inl = Hr, ir
+        if same:
+            break
+    return Hm, inl
+
+
+def quad_ok(q):
+    """凸で、つぶれていない四角形か"""
+    s = [np.cross(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]) for i in range(4)]
+    area = 0.5 * abs(sum(q[i, 0] * q[(i + 1) % 4, 1] - q[(i + 1) % 4, 0] * q[i, 1] for i in range(4)))
+    return (all(x > 0 for x in s) or all(x < 0 for x in s)) and area > 16
+
+
+def post_xfeat_match(out, m, post, p):
+    import time
+    t0 = time.time()
+    top_k = int(p.get("top_k") or post.get("top_k", 512))
+    pts, sc, f = xfeat_extract(out, m, top_k, post.get("threshold", 0.05))
+    t1 = time.time()
+    tpl = p.get("_xfeat_template")
+    res = {"kind": "matches", "w": m["W"], "h": m["H"], "kpts": len(pts), "points": [[float(x), float(y), float(s)] for (x, y), s in zip(pts, sc)],
+           "found": False, "quad": None, "H": None, "inliers": 0, "matches": 0, "pairs": []}
+    if tpl is None:
+        res["note"] = "テンプレートが無い"
+        return res
+    tp, tf, tw, th_ = tpl
+    i0, i1 = match_mnn(tf, f, post.get("min_cossim", 0.82))
+    t2 = time.time()
+    Hm, inl = ransac_homography(tp[i0], pts[i1], post.get("ransac_px", 3.0), seed=int(p.get("seed", 1)))
+    t3 = time.time()
+    res.update(kpts_t=len(tp), template={"w": tw, "h": th_}, matches=int(len(i0)), inliers=int(inl.sum()),
+               pairs=[[float(tp[a][0]), float(tp[a][1]), float(pts[b][0]), float(pts[b][1]), int(k)] for a, b, k in zip(i0, i1, inl)],
+               post_detail={"extract": (t1 - t0) * 1000, "match": (t2 - t1) * 1000, "ransac": (t3 - t2) * 1000})
+    if Hm is not None:
+        q = project(Hm, np.array([[0, 0], [tw, 0], [tw, th_], [0, th_]], float))
+        res["H"] = [float(v) for v in Hm.ravel()]
+        if inl.sum() >= post.get("min_inliers", 15) and quad_ok(q):
+            res.update(found=True, quad=[[float(x), float(y)] for x, y in q])
+    return res
+
+
+def prepare_xfeat_template(adapter, p):
+    """テンプレートの点・記述子は、同じ画像（_template_key）と設定のあいだ使い回す"""
+    im = p.get("_template")
+    if im is None:
+        return
+    top_k = int(p.get("top_k") or adapter.e["post"].get("top_k", 512))
+    key = (p["_template_key"], top_k, p.get("input_size"))
+    cache = adapter.__dict__.setdefault("_tpl_cache", {})
+    if key not in cache:
+        x, meta = preprocess(im, adapter.e["pre"], p.get("input_size"))
+        o = dict(zip(adapter.outputs, adapter.sess.run(None, {adapter.e["pre"]["input"]: x})))
+        pts, _, f = xfeat_extract(o, meta, top_k, adapter.e["post"].get("threshold", 0.05))
+        cache.clear()
+        cache[key] = (pts, f, im.size[0], im.size[1])
+    p["_xfeat_template"] = cache[key]
+
+
+PREPARE = {"xfeat_match": prepare_xfeat_template}  # 後処理の前に、状態（テンプレートの特徴など）を用意する部品
+
+
+POST = {"xfeat_match": post_xfeat_match, "yunet": post_yunet, "yolo_pose_raw": post_yolo_pose_raw, "segmap": post_segmap, "ultra_e2e_detect": post_ultra_e2e_detect, "ultra_e2e_pose": post_ultra_e2e_pose, "deim_wholebody": post_deim_wholebody, "yolo_detect": post_yolo_detect, "yolo_pose": post_yolo_pose, "alpha": post_alpha, "depth": post_depth}
 
 
 class OnnxAdapter(Adapter):
@@ -289,7 +517,7 @@ class OnnxAdapter(Adapter):
             if o.get("data"):
                 hf_hub_download(o["repo"], o["data"], local_dir=local)
         # CoreML EP は既定の NeuralNetwork 形式だと YOLO26 の出力が壊れる（全スコアが負）。MLProgram なら CPU と一致し約2倍速い。
-        # BiRefNet と DA3 は MLProgram への変換に失敗するので models.json で providers: cpu にしている
+        # BiRefNet と DA3 は MLProgram への変換に失敗し、XFeat は 5 次元の並べ替えで CoreML の初期化が落ちるので models.json で providers: cpu にしている
         if self.e.get("server", {}).get("providers") == "cpu":
             providers, self.device = ["CPUExecutionProvider"], "cpu"
         else:
@@ -310,6 +538,8 @@ class OnnxAdapter(Adapter):
     def run(self, im, p):
         x, meta = preprocess(im, self.e["pre"], p.get("input_size"))
         out = dict(zip(self.outputs, self.sess.run(None, {self.e["pre"]["input"]: x})))
+        if self.e["post"]["type"] in PREPARE:
+            PREPARE[self.e["post"]["type"]](self, p)
         return POST[self.e["post"]["type"]](out, meta, self.e["post"], p)
 
 

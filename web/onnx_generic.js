@@ -2,6 +2,7 @@
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
 import { COCO } from "./coco.js";
+import { matchTemplate, xfeatExtract } from "./xfeat.js";
 
 const HF = "https://huggingface.co";
 
@@ -89,7 +90,8 @@ export async function onnxLoad(ort, e, device, onProgress) {
   // - 大きさが画像や「モデル入力（長辺）」で変わるモデル（WebGPU のみ）: 実行時に形が分かった所で作り直す（onnxRun）
   // onnx.graph_capture: false のモデルは graph capture を使わない（作れても出力が壊れるもの。DA3 small は深度が2値になる）
   const wantGraph = opt.includes("graph") && e.onnx.graph_capture !== false, fixed = fixedDims(e);
-  const dynamicShape = device === "webgpu" && !fixed && !e.pre.batch && !e.pre.seq;
+  // onnx.fix_shape: false のモデルは形を固定しない（XFeat は形を固定すると onnxruntime-web の形の推論が Range で落ちる）
+  const dynamicShape = device === "webgpu" && !fixed && !e.pre.batch && !e.pre.seq && e.onnx.fix_shape !== false;
   let session = await ort.InferenceSession.create(model, opts);
   const shape = session.inputMetadata?.find((m) => m.name === e.pre.input)?.shape;
   const fdo = fixed ? fdoFor(shape, fixed) : null;
@@ -99,7 +101,8 @@ export async function onnxLoad(ort, e, device, onProgress) {
     ({ session, graph, graphFallback } = await createSession(ort, e, model, fdo ? { ...opts, freeDimensionOverrides: fdo } : opts, wantGraph));
   }
   const fp16 = file === e.onnx.file_fp16 && !e.onnx.server_file && !e.onnx.path;
-  const cvpg = { webgpu: device === "webgpu", graph, graphFallback, fp16, fdo, file, gpuInput: null, dynamicShape, shapeKey: null };
+  const cvpg = { webgpu: device === "webgpu", graph, graphFallback, fp16, fdo, file, gpuInput: null, dynamicShape, shapeKey: null,
+    plain: () => ort.InferenceSession.create(model, opts) }; // 形を固定しない別のセッション（テンプレートなど、大きさがまちまちな入力用）
   if (dynamicShape) {
     cvpg.rebuild = async (dims) => {
       const f = fdoFor(shape, dims), r = await createSession(ort, e, model, f ? { ...opts, freeDimensionOverrides: f } : opts, wantGraph);
@@ -263,6 +266,10 @@ function layout(W, H, pre, inputSize) {
   let iw, ih;
   if (pre.resize === "stretch") {
     [iw, ih] = pre.size;
+  } else if (pre.resize === "floor32") {
+    // 長辺を S（「モデル入力（長辺）」、既定は size[0]）以下に縮め、縦横を 32 の倍数に切り下げて引き伸ばす（XFeat。kornia の _preprocess_tensor と同じ切り下げ）
+    const S = pre.dynamic && inputSize ? inputSize : pre.size[0], r = Math.min(1, S / Math.max(W, H));
+    iw = Math.max(32, Math.floor(Math.floor(W * r) / 32) * 32); ih = Math.max(32, Math.floor(Math.floor(H * r) / 32) * 32);
   } else if (pre.resize === "keep_aspect") {
     const m = pre.multiple || 1, r = pre.short / Math.min(W, H);
     iw = Math.max(m, Math.round((W * r) / m) * m); ih = Math.max(m, Math.round((H * r) / m) * m);
@@ -443,7 +450,38 @@ export function hsl(h, s, l) {
   return [f(0), f(8), f(4)];
 }
 
+// 後処理の前に状態を用意する部品（POST と同じ名前）。st は Worker の読み込み済みの状態で、フレームをまたいで持てる
+const PREPARE = {
+  // テンプレートマッチング: テンプレートの点・記述子は、同じテンプレート（id）と設定のあいだ st に持って使い回す。
+  // テンプレートは大きさがまちまちなので、形を固定しない別のセッション（graph capture なし）で計算する。
+  // 画面はテンプレートの画像を初回だけ送る（Worker に無い時に画像が無ければ TEMPLATE_MISSING で送り直してもらう）
+  async xfeat_match(ort, st, e, params) {
+    const t = params.template;
+    if (!t) { params._tpl = null; return; }
+    const topK = +(params.top_k || e.post.top_k || 512), key = `${t.id}:${topK}:${params.input_size || ""}`;
+    if (st.tpl?.key !== key) {
+      if (!t.image) throw new Error("TEMPLATE_MISSING");
+      const t0 = performance.now();
+      st.tplSession ??= await st.session.cvpg.plain();
+      const { tensor, meta } = preprocess(ort, t.image, e.pre, params.input_size);
+      const out = await st.tplSession.run({ [e.pre.input]: tensor });
+      st.tpl = { ...xfeatExtract(out, meta, topK, e.post.threshold ?? 0.05), key, w: t.image.width, h: t.image.height, ms: performance.now() - t0 };
+      params._tplNew = true;
+    }
+    params._tpl = st.tpl;
+  },
+};
+
 const POST = {
+  // XFeat の特徴点 → テンプレートとの対応 → ホモグラフィ（xfeat.js。サーバーの adapters.py と同じ手順）
+  xfeat_match(out, m, post, params) {
+    const t0 = performance.now();
+    const fr = xfeatExtract(out, m, +(params.top_k || post.top_k || 512), post.threshold ?? 0.05);
+    const t1 = performance.now();
+    const res = matchTemplate(fr, params._tpl, post, params, m.W, m.H);
+    res.post_detail = { extract: t1 - t0, ...res.post_detail, ...(params._tplNew ? { template: params._tpl.ms } : {}) };
+    return res;
+  },
   // セマンティック・セグメンテーション: logits (1, クラス数, h, w) の画素ごとに最大のクラスで塗る（出力の解像度のまま。
   // 表示で画面の大きさに広げる）。クラス名は post.labels。transformers.js のパイプラインは出力を元画像の大きさに
   // 広げてから最大を取るので、境界の細かさが少し違う
@@ -643,8 +681,11 @@ export async function onnxRun(ort, st, e, bitmap, params) {
   const t1 = performance.now();
   const out = await runSession(ort, session, e.pre.input, feed);
   const t2 = performance.now();
+  await PREPARE[e.post.type]?.(ort, st, e, params);
+  const t3 = performance.now();
   const res = await POST[e.post.type](out, meta, e.post, params);
   // 内訳（端末ごとにどこが重いかを見る）: 前処理（縮小・正規化）/ ONNX の実行（GPU との転送を含む）/ 後処理
-  res.breakdown = { pre: t1 - t0, run: t2 - t1, post: performance.now() - t2 };
+  // テンプレートなどの用意（PREPARE）の時間は後処理に入れない（post_detail.template に出す）
+  res.breakdown = { pre: t1 - t0, run: t2 - t1, post: performance.now() - t3 };
   return res;
 }

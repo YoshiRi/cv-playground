@@ -1955,7 +1955,9 @@
      "descriptors",
      "heatmap",
      "sigmoid"
-    ]
+    ],
+    "fix_shape": false,
+    "graph_capture": false
    },
    "pre": {
     "size": [

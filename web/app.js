@@ -38,6 +38,9 @@ const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
 const state = {
   task: "detect",
+  template: null,    // テンプレートマッチングの探す物 {id, bitmap, blob, w, h}
+  tplSelect: false,  // 「枠で切り出す」を押して、画像の上で枠をドラッグするのを待っている
+  tplDrag: null,     // ドラッグ中の枠 [x1, y1, x2, y2]（canvas の座標）
   image: null,       // 静止画 {blob, bitmap, width, height, key}
   video: false,      // 動画ファイルかカメラを表示中
   live: false,       // 連続実行中
@@ -120,8 +123,10 @@ function profileInBrowser(model, last) {
 async function runOnServer(model, image, params) {
   const fd = new FormData();
   fd.append("model", model.key);
-  fd.append("params", JSON.stringify(params));
+  const { _templateBlob, template, ...rest } = params;
+  fd.append("params", JSON.stringify(rest));
   fd.append("image", image, "image.jpg");
+  if (_templateBlob) fd.append("template", _templateBlob, "template.png");
   const t0 = performance.now();
   const r = await fetch("api/run", { method: "POST", body: fd });
   const body = await r.json().catch(() => ({}));
@@ -303,6 +308,8 @@ function selectTask(id) {
   const def = t.defaults || {};
   if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
   if (def.labels) $("labels").value = def.labels;
+  if (def.top_k) $("top-k").value = def.top_k;
+  setTplSelect(false);
   renderApps(t);
   renderInteract(t);
   $("canvas-wrap").classList.toggle("clickable", !!t.click);
@@ -576,6 +583,12 @@ function draw() {
   }
   if (r) for (const a of state.apps) APPS[a.id].draw?.(ctx, a.st, r, b);
   if (r) COMBOS[curTask().combo?.app]?.draw?.(ctx, r, b); // 組み合わせのタブの重ね描き（3D の姿勢の小窓など）
+  if (state.tplDrag) { // テンプレートを切り出す枠
+    const [x1, y1, x2, y2] = state.tplDrag;
+    ctx.setLineDash([8, 6]); ctx.lineWidth = lw; ctx.strokeStyle = "#facc15";
+    ctx.strokeRect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+    ctx.setLineDash([]);
+  }
 }
 
 // 結果欄: モデルと実行場所、数値（バッジ）、内訳（帯）、種類ごとの本文（KINDS[kind].panel）
@@ -791,9 +804,83 @@ function paramsFor(key, w, auto) {
     prompt: $("prompt").value,
     points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
     input_size: parseInt($("input-size").value, 10), // 入力サイズ可変のモデルの長辺
+    top_k: parseInt($("top-k").value, 10), // テンプレートマッチングの特徴点の数
     auto,
     _imageKey: key,
   };
+}
+
+// ---------- テンプレートマッチング: 探す物（テンプレート） ----------
+// 画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。Worker はテンプレートの特徴を id ごとに持って使い回すので、
+// 画像は Worker ごとに初回だけ送る（tplSent: Worker → 送った id。Worker を作り直すと新しい Worker なので送り直す）。
+// サーバーには毎回画像を送り、サーバーが同じ画像の特徴を使い回す
+const tplSent = new Map();
+async function setTemplate(source) {
+  const bitmap = await createImageBitmap(source);
+  const c = new OffscreenCanvas(bitmap.width, bitmap.height);
+  c.getContext("2d").drawImage(bitmap, 0, 0);
+  const blob = await c.convertToBlob({ type: "image/png" });
+  const id = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-1", await blob.arrayBuffer())).slice(0, 8), (b) => b.toString(16).padStart(2, "0")).join("");
+  state.template?.bitmap.close?.();
+  state.template = { id, bitmap, blob, w: bitmap.width, h: bitmap.height };
+  const th = $("tpl-thumb");
+  th.width = bitmap.width; th.height = bitmap.height;
+  th.getContext("2d").drawImage(bitmap, 0, 0);
+  $("tpl-info").textContent = `${bitmap.width}×${bitmap.height}`;
+  $("tpl-preview").hidden = false; $("tpl-clear").hidden = false;
+  if (!state.live && (state.image || state.video)) run();
+}
+function clearTemplate() {
+  state.template?.bitmap.close?.();
+  state.template = null;
+  $("tpl-preview").hidden = true; $("tpl-clear").hidden = true;
+  state.result = null; draw();
+}
+function setTplSelect(on) {
+  state.tplSelect = on; state.tplDrag = null;
+  $("canvas-wrap").classList.toggle("selecting", on);
+  $("tpl-drag").textContent = on ? "やめる" : "枠で切り出す";
+  if (on) setStatus("画像の上で、探す物を囲むようにドラッグする");
+}
+// テンプレートを params に付ける。ブラウザは Worker が持っていない時だけ画像（写し）を付ける
+async function attachTemplate(m, params) {
+  const t = state.template;
+  if (!t) return;
+  params.template = { id: t.id };
+  if (m.where === "browser" && tplSent.get(workers[workerLib(m)]) !== t.id) params.template.image = await createImageBitmap(t.bitmap);
+  if (m.where === "server") params._templateBlob = t.blob;
+}
+// 枠のドラッグ（pointer イベントなのでマウスでもタッチでも）。離した時に、表示中の画像・フレームの枠の中を切り出す
+function bindTemplateDrag() {
+  const cv = $("canvas");
+  let start = null;
+  cv.addEventListener("pointerdown", (ev) => {
+    if (!state.tplSelect || (!state.image && !state.video)) return;
+    ev.preventDefault();
+    cv.setPointerCapture(ev.pointerId);
+    start = canvasPoint(ev);
+    state.tplDrag = [...start, ...start];
+  });
+  cv.addEventListener("pointermove", (ev) => {
+    if (!start) return;
+    state.tplDrag = [...start, ...canvasPoint(ev)];
+    if (!state.live) draw();
+  });
+  const end = async (ev) => {
+    if (!start) return;
+    const [x1, y1, x2, y2] = [...start, ...canvasPoint(ev)];
+    start = null; state.tplDrag = null;
+    const b = baseSource(), x = Math.max(0, Math.min(x1, x2)), y = Math.max(0, Math.min(y1, y2));
+    const w = Math.min(b.w, Math.max(x1, x2)) - x, h = Math.min(b.h, Math.max(y1, y2)) - y;
+    if (w < 16 || h < 16) { setStatus("枠が小さすぎる（16 画素以上で囲む）", "warn"); draw(); return; }
+    // 表示と同じ大きさで描いてから切り出す（動画は表示の大きさに縮めて描いている）
+    const c = new OffscreenCanvas(Math.round(w), Math.round(h));
+    c.getContext("2d").drawImage(b.src, -x, -y, b.w, b.h);
+    setTplSelect(false); setStatus("");
+    await setTemplate(c);
+  };
+  cv.addEventListener("pointerup", end);
+  cv.addEventListener("pointercancel", () => { start = null; state.tplDrag = null; draw(); });
 }
 
 // 1回分。結果を state.result に入れ（commit: false なら入れない。パイプライン化した連続実行で、前のフレームの結果を表示中に
@@ -823,7 +910,15 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     const pp = { ...params, show: wdef.show, ...(wdef.params || {}), ...(mm.pre?.dynamic ? { input_size: mm.pre.size[0] } : {}) };
     extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => { (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x; })]);
   }
-  const r = await run1(m, image, params);
+  if (t.params.includes("template")) await attachTemplate(m, params);
+  let r;
+  try { r = await run1(m, image, params); }
+  catch (err) {
+    if (!/TEMPLATE_MISSING/.test(String(err?.message))) throw err;
+    tplSent.delete(workers[workerLib(m)]); // Worker がテンプレートを持っていない（作り直された時など）。画像つきで送り直す
+    throw new Error("テンプレートを送り直す。もう一度実行する");
+  }
+  if (t.params.includes("template")) { tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};
@@ -1223,6 +1318,10 @@ async function init() {
   $("pause").onclick = () => { const v = $("video"); v.paused ? v.play() : v.pause(); updateButtons(); };
   $("freeze").onclick = freezeFrame;
   $("clear-points").onclick = () => { state.points = []; state.result = null; draw(); };
+  $("tpl-drag").onclick = () => setTplSelect(!state.tplSelect);
+  $("tpl-clear").onclick = clearTemplate;
+  $("tpl-file").onchange = async (ev) => { const f = ev.target.files[0]; ev.target.value = ""; if (f) await setTemplate(f); };
+  bindTemplateDrag();
   $("view").onchange = () => { KINDS.depth.resetRange(); draw(); };
   $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("input-size").onchange = () => {

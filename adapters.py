@@ -444,7 +444,9 @@ def _refine(a, b, Hm, inl, th, rounds=5):
 
 def quad_ok(q):
     """凸で、つぶれていない四角形か"""
-    s = [np.cross(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]) for i in range(4)]
+    def cross(u, v):  # 2 次元の外積（np.cross は NumPy 2 で 2 次元のベクトルを受け付けない）
+        return u[0] * v[1] - u[1] * v[0]
+    s = [cross(q[(i + 1) % 4] - q[i], q[(i + 2) % 4] - q[(i + 1) % 4]) for i in range(4)]
     area = 0.5 * abs(sum(q[i, 0] * q[(i + 1) % 4, 1] - q[(i + 1) % 4, 0] * q[i, 1] for i in range(4)))
     return (all(x > 0 for x in s) or all(x < 0 for x in s)) and area > 16
 

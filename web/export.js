@@ -144,7 +144,7 @@ export async function composeImage(canvas, lines) {
 
 // 結果データ: 画像の層（canvas・Blob）を除いた、数値とラベルだけ
 export function resultData(r, m, extra) {
-  const drop = new Set(["layer", "gray", "alpha", "tint", "mask", "image", "t8", "fixedLayer", "fixedFor"]);
+  const drop = new Set(["layer", "gray", "alpha", "tint", "mask", "image", "t8", "fixedLayer", "fixedFor", "templateImage"]);
   const out = {};
   for (const [k, v] of Object.entries(r)) if (!drop.has(k)) out[k] = v;
   if (r.mask || r.image) out.note = "マスク・深度・色分けの画像は「画像を保存」で保存する（ここには入れない）";

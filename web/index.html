@@ -58,6 +58,17 @@
       </details>
 
       <div id="params">
+        <div class="field" data-param="template">探す物（テンプレート）
+          <div class="row wrap">
+            <button type="button" class="ghost" id="tpl-drag">枠で切り出す</button>
+            <label class="ghost button">ファイルから<input type="file" id="tpl-file" accept="image/*" hidden></label>
+            <button type="button" class="ghost" id="tpl-clear" hidden>消す</button>
+          </div>
+          <div class="tpl-preview" id="tpl-preview" hidden><canvas id="tpl-thumb"></canvas><span class="small muted" id="tpl-info"></span></div>
+        </div>
+        <label class="field row" data-param="top_k">特徴点の数（top_k）
+          <select id="top-k"><option value="256">256</option><option value="512" selected>512</option><option value="1024">1024</option><option value="2048">2048</option></select>
+        </label>
         <label class="field" data-param="labels">候補（カンマ区切り）
           <input id="labels" type="text" autocomplete="off">
         </label>

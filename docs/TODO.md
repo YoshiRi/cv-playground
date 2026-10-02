@@ -64,8 +64,8 @@
 ## テンプレートマッチング・ビジュアルオドメトリ
 
 - [x] テンプレートマッチング（XFeat ＋ 相互最近傍 ＋ LO-RANSAC のホモグラフィ）。ブラウザとサーバーで同じ手順、kornia と一致
-- [ ] スマホ（Galaxy Z Fold6）で速さを測る（「速度を測る」の Markdown に点の取り出し・対応・RANSAC の内訳が出る）
-- [x] 後処理を GPU に（WGSL で極大・スコア・記述子・対応。`web/xfeat_gpu.js`）。Fold6 で測り直す
+- [x] スマホ（Galaxy Z Fold6）で速さを測る（JS の後処理 70ms、GPU の後処理 31ms）
+- [x] 後処理を GPU に（WGSL で極大・スコア・記述子・対応。`web/xfeat_gpu.js`）。Fold6 で 70 → 31ms
 - [ ] 比較用の古典的な画素相関（matchTemplate、NCC）
 - [ ] fp16 版（ONNX を端末で fp16 に変える）
 - [ ] ビジュアルオドメトリ（連続するフレームの対応から基本行列 → カメラの動き）、LightGlue（マッチングの速さと精度が分かってから）

@@ -2209,7 +2209,10 @@ const { mul3, inv3, apply3, affineOf, STAB_ALPHA, Stabilizer } = await (async ()
 //   なめらか: S_t = S_{t−1} + α (C_t − S_{t−1})（要素ごと。小さい回転なら相似変換・ホモグラフィとも近似として足りる）
 //   三脚:     S_t = 最初のフレーム（I）のまま。切り抜きの外に出る時だけ寄せる
 //
-// 揺れの指標: 補正前は M_t、補正後は画面の上での動き D_t = Z·W_{t−1}·M_t·W_t⁻¹·Z⁻¹ の、画面の中心のずれ（px）と回転（度）の二乗平均
+// 指標（どちらも元のフレームの px と度。補正後は D_t = W_{t−1}·M_t·W_t⁻¹ で、切り抜きの拡大は入れない。入れると補正しきれない動きが
+// 拡大の分だけ大きく見え、補正前と比べられない）:
+//   動き（全体）: フレーム間の動き（画面の中心のずれと回転）の二乗平均。カメラを振った・歩いた動きも入る
+//   揺れ（細かい成分）: フレーム間の動きから、前後 4 フレーム（計 9）の平均の動きを引いた残りの二乗平均。意図した動きを除いた、ぶれの量
 
 const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 function mul3(a, b) {
@@ -2227,10 +2230,24 @@ const apply3 = (m, x, y) => { const w = m[6] * x + m[7] * y + m[8]; return [(m[0
 const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
 // 拡大（中心まわりに z 倍）
 const zoom = (z, w, h) => [z, 0, (1 - z) * w / 2, 0, z, (1 - z) * h / 2, 0, 0, 1];
-// 動き（3×3）の、画面の中心のずれ（px）と回転（度）
+// 動き（3×3）の、画面の中心のずれ（px、ベクトル）と回転（度）
 function motionAt(m, w, h) {
   const [x, y] = apply3(m, w / 2, h / 2);
-  return { t: Math.hypot(x - w / 2, y - h / 2), deg: (Math.atan2(m[3] - m[6] * m[5], m[0] - m[6] * m[2]) * 180) / Math.PI };
+  return { x: x - w / 2, y: y - h / 2, deg: (Math.atan2(m[3] - m[6] * m[5], m[0] - m[6] * m[2]) * 180) / Math.PI };
+}
+// 動きの列 → 全体の二乗平均と、細かい成分（前後 K フレームの平均を引いた残り）の二乗平均
+const K = 4;
+function metrics(v) {
+  const n = v.length;
+  if (!n) return { move_px: 0, move_deg: 0, jit_px: 0, jit_deg: 0 };
+  let mp = 0, md = 0, jp = 0, jd = 0;
+  for (let i = 0; i < n; i++) {
+    let ax = 0, ay = 0, ad = 0, c = 0;
+    for (let j = Math.max(0, i - K); j <= Math.min(n - 1, i + K); j++) { ax += v[j].x; ay += v[j].y; ad += v[j].deg; c++; }
+    mp += v[i].x ** 2 + v[i].y ** 2; md += v[i].deg ** 2;
+    jp += (v[i].x - ax / c) ** 2 + (v[i].y - ay / c) ** 2; jd += (v[i].deg - ad / c) ** 2;
+  }
+  return { move_px: Math.sqrt(mp / n), move_deg: Math.sqrt(md / n), jit_px: Math.sqrt(jp / n), jit_deg: Math.sqrt(jd / n) };
 }
 // canvas の 2D はアフィン変換しか描けないので、ホモグラフィは四隅を最小二乗で合わせたアフィンで近似する（小さい揺れなら差はわずか）
 function affineOf(m, w, h) {
@@ -2253,7 +2270,7 @@ class Stabilizer {
   constructor() { this.reset(); }
   reset() {
     this.C = I.slice(); this.S = I.slice(); this.W = I.slice(); this.mode = null;
-    this.hist = []; this.sum = { rt: 0, rd: 0, ot: 0, od: 0, n: 0 }; this.lost = 0; this.frames = 0;
+    this.hist = []; this.raws = []; this.outs = []; this.lost = 0; this.frames = 0; this.clamped = 0;
   }
   // r: Worker の結果（kind: motion）。opts = { mode: "smooth" | "tripod", strength: "weak" | "mid" | "strong", crop: 0〜0.4 }
   update(r, opts) {
@@ -2272,6 +2289,7 @@ class Stabilizer {
       return [[0, 0], [w, 0], [w, h], [0, h]].every(([x, y]) => { const [u, v] = apply3(back, x, y); return u >= -0.5 && v >= -0.5 && u <= w + 0.5 && v <= h + 0.5; });
     };
     if (!inside(S)) {
+      this.clamped++; // 切り抜きの端に当たった（補正を元の動きの側へ寄せた）フレーム
       let lo = 0, hi = 1;
       for (let k = 0; k < 20; k++) { const mid = (lo + hi) / 2; if (inside(lerp(S, this.C, mid))) hi = mid; else lo = mid; }
       S = lerp(S, this.C, hi);
@@ -2279,18 +2297,17 @@ class Stabilizer {
     this.S = norm(S);
     this.W = norm(mul3(inv3(this.S), this.C));
     this.Z = Z;
-    // 揺れ: 補正前は M、補正後は画面の上での動き D = W_{t−1}·M·W_t⁻¹
+    // 補正前は M、補正後は D = W_{t−1}·M·W_t⁻¹（元のフレームの px）
     if (!r.first) {
-      // 画面の上の動きは拡大（切り抜き）も含める: Z·W_{t−1}·M·W_t⁻¹·Z⁻¹
-      const raw = motionAt(M, w, h), out = motionAt(norm(mul3(Z, mul3(Wprev, mul3(M, mul3(inv3(this.W), inv3(Z)))))), w, h);
-      this.hist.push({ raw: raw.t, out: out.t });
+      const raw = motionAt(M, w, h), out = motionAt(norm(mul3(Wprev, mul3(M, inv3(this.W)))), w, h);
+      this.raws.push(raw); this.outs.push(out);
+      if (this.raws.length > 5000) { this.raws.shift(); this.outs.shift(); }
+      this.hist.push({ raw: Math.hypot(raw.x, raw.y), out: Math.hypot(out.x, out.y) });
       if (this.hist.length > 240) this.hist.shift();
-      const s = this.sum;
-      s.rt += raw.t ** 2; s.rd += raw.deg ** 2; s.ot += out.t ** 2; s.od += out.deg ** 2; s.n++;
     }
-    const s = this.sum, rms = (v) => (s.n ? Math.sqrt(v / s.n) : 0);
-    r.stab = { W: this.W, Z, crop: opts.crop, mode: opts.mode, hist: this.hist.slice(), lost: this.lost, frames: this.frames,
-      jitter: { raw_px: rms(s.rt), raw_deg: rms(s.rd), out_px: rms(s.ot), out_deg: rms(s.od), n: s.n } };
+    const a = metrics(this.raws), b = metrics(this.outs);
+    r.stab = { W: this.W, Z, crop: opts.crop, mode: opts.mode, strength: opts.strength, hist: this.hist.slice(), lost: this.lost, clamped: this.clamped, frames: this.frames,
+      jitter: { raw_px: a.jit_px, raw_deg: a.jit_deg, out_px: b.jit_px, out_deg: b.jit_deg, move_raw_px: a.move_px, move_out_px: b.move_px, n: this.raws.length } };
     return r.stab;
   }
 }
@@ -2624,13 +2641,14 @@ const KINDS = {
       if (r.first && !r.stab?.frames) return `<div class="sub">動画かカメラを選んで「▶ 連続実行」で補正する（前のフレームとの動きを使うので、静止画では補正しない）</div>`;
       const j = r.stab?.jitter, d = r.post_detail || {};
       const f = (v, u, n = 1) => `${v.toFixed(n)}${u}`;
-      const jit = j?.n ? `<div class="sub">揺れ（フレーム間の動きの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>` : "";
+      const jit = j?.n ? `<div class="sub">揺れ（細かい成分。フレーム間の動きから前後 9 フレームの平均を引いた残りの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>`
+        + `<div class="sub">動き（全体。カメラを振った・歩いた動きも入る）: 補正前 ${f(j.move_raw_px, "px")} → 補正後 ${f(j.move_out_px, "px")}（どちらも元のフレームの px）</div>` : "";
       const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
       return `<div class="chips"><span class="chip"><i style="background:${r.ok || r.first ? "#22c55e" : "#dc2626"}"></i>${r.model === "homography" ? "ホモグラフィ" : "相似変換"}・インライア ${r.inliers}/${r.matches}</span>`
-        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : "なめらか"}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}</div>`
+        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab?.strength] ?? ""}`}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}${r.stab?.clamped ? `<span class="chip">切り抜きの端に当たった ${r.stab.clamped} フレーム（多ければ切り抜きを大きく）</span>` : ""}</div>`
         + jit + (times ? `<div class="sub">後処理の内訳: ${times}</div>` : "");
     },
-    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px` : "補正なし"; },
+    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px（動き ${j.move_raw_px.toFixed(1)}→${j.move_out_px.toFixed(1)}）` : "補正なし"; },
   },
 
   // 文章（画像の説明・質問）
@@ -2652,7 +2670,7 @@ function drawJitter(ctx, hist, b, lw) {
     ctx.stroke();
   }
   ctx.fillStyle = "#e5e7eb"; ctx.font = `${Math.max(10, Math.round(b.w / 70))}px sans-serif`;
-  ctx.fillText(`フレーム間の動き（最大 ${max.toFixed(0)}px）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
+  ctx.fillText(`フレーム間の動き（元のフレームの px、最大 ${max.toFixed(0)}）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
 }
 
 // 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用
@@ -3106,7 +3124,8 @@ const RUN_COLUMNS = [
   "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
   "infer_p95_ms", "gpu_ms", // 後から足した列（前の版の CSV と列の位置が変わらないように末尾に置く）
   "extract_ms", "match_ms", "ransac_ms", "inliers", "matches", "quad_err_px", // テンプレートマッチングの後処理の内訳と、ベンチの四隅の誤差
-  "jitter_raw_px", "jitter_out_px", "jitter_raw_deg", "jitter_out_deg", // 手ぶれ補正: フレーム間の動きの二乗平均（補正前・補正後）
+  "jitter_raw_px", "jitter_out_px", "jitter_raw_deg", "jitter_out_deg", // 手ぶれ補正: 揺れ（細かい成分）の二乗平均（補正前・補正後）
+  "move_raw_px", "move_out_px", "stab_mode", "stab_strength", "stab_crop", "stab_clamped", // 手ぶれ補正: 動き（全体）の二乗平均と、補正の設定
 ];
 const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
   "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];
@@ -3136,7 +3155,7 @@ function toMarkdown(runs, env) {
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   // テンプレートマッチング: 点の取り出し・対応・RANSAC（ms）と、インライア/対応、ベンチなら正解の四隅からの誤差
   const detail = (r) => (r.match_ms == null ? "" : `点 ${ms(r.extract_ms)} / 対応 ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ 四隅 ${Number(r.quad_err_px).toFixed(1)}px` : ""}`
-    + (r.jitter_raw_px != null ? ` ・ 揺れ ${r.jitter_raw_px}px/${r.jitter_raw_deg}° → ${r.jitter_out_px}px/${r.jitter_out_deg}°` : ""));
+    + (r.jitter_raw_px != null ? ` ・ ${r.stab_mode === "tripod" ? "三脚" : r.stab_mode ? `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab_strength] ?? ""}` : ""}${r.stab_crop != null ? ` ${Math.round(r.stab_crop * 100)}%` : ""} 揺れ ${r.jitter_raw_px}px/${r.jitter_raw_deg}° → ${r.jitter_out_px}px/${r.jitter_out_deg}°${r.move_raw_px != null ? `（動き ${r.move_raw_px} → ${r.move_out_px}px）` : ""}${r.stab_clamped ? ` ・ 端 ${r.stab_clamped}/${r.frames_total ?? ""}` : ""}` : ""));
   for (const r of runs) {
     lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${ms(r.infer_p95_ms)} | ${ms(r.pre_ms)} | ${ms(r.run_ms)} | ${ms(r.post_ms)} | ${ms(r.gpu_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} | ${detail(r)} |`);
   }
@@ -4467,7 +4486,8 @@ function makeRecord(m, r, mode, extra = {}) {
     frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind,
     ...(r.kind === "matches" || r.kind === "motion" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
-    ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3) } : {}),
+    ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3),
+      move_raw_px: +r.stab.jitter.move_raw_px.toFixed(2), move_out_px: +r.stab.jitter.move_out_px.toFixed(2), stab_mode: r.stab.mode, stab_strength: r.stab.strength, stab_crop: r.stab.crop, stab_clamped: r.stab.clamped, frames_total: r.stab.frames } : {}),
     ...extra,
   };
 }

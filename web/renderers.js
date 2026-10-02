@@ -326,13 +326,14 @@ export const KINDS = {
       if (r.first && !r.stab?.frames) return `<div class="sub">動画かカメラを選んで「▶ 連続実行」で補正する（前のフレームとの動きを使うので、静止画では補正しない）</div>`;
       const j = r.stab?.jitter, d = r.post_detail || {};
       const f = (v, u, n = 1) => `${v.toFixed(n)}${u}`;
-      const jit = j?.n ? `<div class="sub">揺れ（フレーム間の動きの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>` : "";
+      const jit = j?.n ? `<div class="sub">揺れ（細かい成分。フレーム間の動きから前後 9 フレームの平均を引いた残りの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>`
+        + `<div class="sub">動き（全体。カメラを振った・歩いた動きも入る）: 補正前 ${f(j.move_raw_px, "px")} → 補正後 ${f(j.move_out_px, "px")}（どちらも元のフレームの px）</div>` : "";
       const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
       return `<div class="chips"><span class="chip"><i style="background:${r.ok || r.first ? "#22c55e" : "#dc2626"}"></i>${r.model === "homography" ? "ホモグラフィ" : "相似変換"}・インライア ${r.inliers}/${r.matches}</span>`
-        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : "なめらか"}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}</div>`
+        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab?.strength] ?? ""}`}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}${r.stab?.clamped ? `<span class="chip">切り抜きの端に当たった ${r.stab.clamped} フレーム（多ければ切り抜きを大きく）</span>` : ""}</div>`
         + jit + (times ? `<div class="sub">後処理の内訳: ${times}</div>` : "");
     },
-    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px` : "補正なし"; },
+    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px（動き ${j.move_raw_px.toFixed(1)}→${j.move_out_px.toFixed(1)}）` : "補正なし"; },
   },
 
   // 文章（画像の説明・質問）
@@ -354,7 +355,7 @@ function drawJitter(ctx, hist, b, lw) {
     ctx.stroke();
   }
   ctx.fillStyle = "#e5e7eb"; ctx.font = `${Math.max(10, Math.round(b.w / 70))}px sans-serif`;
-  ctx.fillText(`フレーム間の動き（最大 ${max.toFixed(0)}px）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
+  ctx.fillText(`フレーム間の動き（元のフレームの px、最大 ${max.toFixed(0)}）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
 }
 
 // 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用

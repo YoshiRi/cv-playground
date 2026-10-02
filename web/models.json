@@ -150,6 +150,24 @@
    }
   },
   {
+   "id": "stabilize",
+   "name": "手ぶれ補正",
+   "category": "detect",
+   "result": "motion",
+   "video": true,
+   "hint": "動画・カメラの連続実行で、前のフレームとの動きを XFeat で求め、カメラの動きの軌跡をなめらかにして描き直す（周りを切り抜く）。「なめらか」は細かい揺れだけを消し、「三脚」は最初のフレームに止める。結果欄に補正前と補正後の揺れの大きさを出す",
+   "params": [
+    "stab_mode",
+    "stab_strength",
+    "stab_crop",
+    "stab_model",
+    "top_k"
+   ],
+   "defaults": {
+    "top_k": 512
+   }
+  },
+  {
    "id": "segment",
    "name": "プロンプト（SAM）",
    "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）",
@@ -1989,6 +2007,56 @@
    "server": {
     "providers": "cpu"
    }
+  },
+  {
+   "key": "xfeat-motion",
+   "task": "stabilize",
+   "name": "XFeat（フレーム間の動き）",
+   "where": [
+    "browser"
+   ],
+   "adapter": "onnx",
+   "mb": 2.8,
+   "bench": false,
+   "onnx": {
+    "repo": "kornia/xfeat",
+    "file": "xfeat_backbone.onnx",
+    "data": "xfeat_backbone.onnx.data",
+    "cut": [
+     "descriptors",
+     "heatmap",
+     "sigmoid"
+    ],
+    "squeeze": [
+     "val_424",
+     "val_436"
+    ],
+    "sha256": {
+     "xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0",
+     "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"
+    }
+   },
+   "pre": {
+    "size": [
+     640,
+     640
+    ],
+    "resize": "floor32",
+    "dynamic": true,
+    "scale": 0.00392156862745098,
+    "input": "image"
+   },
+   "post": {
+    "type": "xfeat_motion",
+    "gpu": true,
+    "top_k": 512,
+    "threshold": 0.05,
+    "min_cossim": 0.82,
+    "min_inliers": 12,
+    "ransac_px": 2.0
+   },
+   "license": "Apache-2.0",
+   "note": "前のフレームと XFeat の点を対応させ、RANSAC で動き（既定は相似変換）を求める。補正（軌跡をなめらかにして描き直す）は画面側の stabilize.js。テンプレートマッチングと同じ ONNX"
   }
  ],
  "interact": [

@@ -61,6 +61,7 @@ export const RUN_COLUMNS = [
   "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
   "infer_p95_ms", "gpu_ms", // 後から足した列（前の版の CSV と列の位置が変わらないように末尾に置く）
   "extract_ms", "match_ms", "ransac_ms", "inliers", "matches", "quad_err_px", // テンプレートマッチングの後処理の内訳と、ベンチの四隅の誤差
+  "jitter_raw_px", "jitter_out_px", "jitter_raw_deg", "jitter_out_deg", // 手ぶれ補正: フレーム間の動きの二乗平均（補正前・補正後）
 ];
 export const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
   "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];
@@ -89,7 +90,8 @@ export function toMarkdown(runs, env) {
   const lines = ["| 日時 | 種類 | タスク | モデル | 実行場所 | 入力 | 推論 ms（中央値） | p90 | p95 | 前処理 | モデル実行 | 後処理 | GPU（詳細計測） | fps | 読み込み ms | 後処理の内訳など |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   // テンプレートマッチング: 点の取り出し・対応・RANSAC（ms）と、インライア/対応、ベンチなら正解の四隅からの誤差
-  const detail = (r) => (r.match_ms == null ? "" : `点 ${ms(r.extract_ms)} / 対応 ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ 四隅 ${Number(r.quad_err_px).toFixed(1)}px` : ""}`);
+  const detail = (r) => (r.match_ms == null ? "" : `点 ${ms(r.extract_ms)} / 対応 ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ 四隅 ${Number(r.quad_err_px).toFixed(1)}px` : ""}`
+    + (r.jitter_raw_px != null ? ` ・ 揺れ ${r.jitter_raw_px}px/${r.jitter_raw_deg}° → ${r.jitter_out_px}px/${r.jitter_out_deg}°` : ""));
   for (const r of runs) {
     lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${ms(r.infer_p95_ms)} | ${ms(r.pre_ms)} | ${ms(r.run_ms)} | ${ms(r.post_ms)} | ${ms(r.gpu_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} | ${detail(r)} |`);
   }

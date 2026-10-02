@@ -267,6 +267,18 @@ td small { color: var(--muted); margin-left: 2px; }
         <label class="field row" data-param="top_k">特徴点の数（top_k）
           <select id="top-k"><option value="256">256</option><option value="512" selected>512</option><option value="1024">1024</option><option value="2048">2048</option></select>
         </label>
+        <label class="field row" data-param="stab_mode">補正
+          <select id="stab-mode"><option value="smooth" selected>なめらか（細かい揺れだけ消す）</option><option value="tripod">三脚（最初のフレームに止める）</option></select>
+        </label>
+        <label class="field row" data-param="stab_strength">なめらかさ
+          <select id="stab-strength"><option value="weak">弱</option><option value="mid" selected>中</option><option value="strong">強</option></select>
+        </label>
+        <label class="field row" data-param="stab_crop">切り抜き
+          <select id="stab-crop"><option value="0.1">10%</option><option value="0.2" selected>20%</option><option value="0.3">30%</option></select>
+        </label>
+        <label class="field row" data-param="stab_model">動きのモデル
+          <select id="stab-model"><option value="similarity" selected>相似変換（回転・拡大縮小・平行移動）</option><option value="homography">ホモグラフィ（カメラの回転だけなら正確）</option></select>
+        </label>
         <label class="field" data-param="labels">候補（カンマ区切り）
           <input id="labels" type="text" autocomplete="off">
         </label>
@@ -437,7 +449,7 @@ const COCO = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "trai
 
 return { COCO };
 })();
-const { xfeatExtract, matchMnn, project, ransacHomography, quadOk, matchTemplate } = await (async () => {
+const { xfeatExtract, matchMnn, project, ransacHomography, similarityFit, ransacSimilarity, estimateMotion, quadOk, matchTemplate } = await (async () => {
 // XFeat（特徴点）の後処理とテンプレートマッチング。サーバーの adapters.py（xfeat_extract・match_mnn・ransac_homography）と
 // 同じ手順で、kornia.feature.XFeat（0.8.3）の detectAndCompute・_match_mnn に合わせている（tools/xfeat_check.py で一致を確認）。
 // ONNX（kornia/xfeat の xfeat_backbone.onnx）は onnx.cut で [descriptors, heatmap, sigmoid] に切り、
@@ -636,12 +648,12 @@ function collinear(P, idx, eps = 1e-3) {
   }
   return false;
 }
-// インライア全部で解き直し、インライアが減らない間（最大 rounds 回）くり返す（LO-RANSAC の局所最適化）
-function refine(a, b, n, Hm, cur, th, rounds = 5) {
+// インライア全部で解き直し、インライアが減らない間（最大 rounds 回）くり返す（LO-RANSAC の局所最適化）。fit(a, b, idx) → 3×3
+function refine(a, b, n, Hm, cur, th, fit, rounds = 5) {
   for (let r = 0; r < rounds && cur.k >= 5; r++) {
     const idx = [];
     for (let i = 0; i < n; i++) if (cur.inl[i]) idx.push(i);
-    const Hr = homographyDlt(a, b, idx);
+    const Hr = fit(a, b, idx);
     if (!Hr) break;
     const nx = inliersOf(Hr, a, b, n, th);
     if (nx.k < cur.k) break;
@@ -651,28 +663,68 @@ function refine(a, b, n, Hm, cur, th, rounds = 5) {
   }
   return { Hm, cur };
 }
-// 4 点の DLT で仮説を立て、再投影の誤差 th 以下の数が一番多いものを選ぶ。良い仮説ごとに解き直す（LO-RANSAC）
-function ransacHomography(a, b, n, th = 3, iters = 1000, conf = 0.995, seed = 1) {
+// RANSAC（m 点で仮説を立て、再投影の誤差 th 以下の数が一番多いものを選ぶ。良い仮説ごとに解き直す LO-RANSAC）
+function ransac(a, b, n, m, fit, degenerate, th, iters, conf, seed) {
   let best = null, bestIn = { inl: new Uint8Array(n), k: 0 };
-  if (n < 4) return { H: null, ...bestIn };
+  if (n < m) return { H: null, ...bestIn };
   const rnd = mulberry32(seed);
   let k = iters, it = 0;
   while (it < k) {
     it++;
     const idx = [];
-    while (idx.length < 4) { const i = Math.floor(rnd() * n); if (!idx.includes(i)) idx.push(i); }
-    if (collinear(a, idx) || collinear(b, idx)) continue;
-    let Hm = homographyDlt(a, b, idx);
+    while (idx.length < m) { const i = Math.floor(rnd() * n); if (!idx.includes(i)) idx.push(i); }
+    if (degenerate(idx)) continue;
+    let Hm = fit(a, b, idx);
     if (!Hm) continue;
     let cur = inliersOf(Hm, a, b, n, th);
     if (cur.k > bestIn.k) {
-      ({ Hm, cur } = refine(a, b, n, Hm, cur, th));
+      ({ Hm, cur } = refine(a, b, n, Hm, cur, th, fit));
       best = Hm; bestIn = cur;
       const w = cur.k / n;
-      k = w < 1 ? Math.min(iters, Math.ceil(Math.log(1 - conf) / Math.log(Math.max(1e-12, 1 - w ** 4)))) : it;
+      k = w < 1 ? Math.min(iters, Math.ceil(Math.log(1 - conf) / Math.log(Math.max(1e-12, 1 - w ** m)))) : it;
     }
   }
   return { H: best, ...bestIn };
+}
+// ホモグラフィ: 4 点の DLT（サーバーの adapters.py の ransac_homography と同じ）
+function ransacHomography(a, b, n, th = 3, iters = 1000, conf = 0.995, seed = 1) {
+  return ransac(a, b, n, 4, homographyDlt, (idx) => collinear(a, idx) || collinear(b, idx), th, iters, conf, seed);
+}
+
+// 相似変換（回転・拡大縮小・平行移動の 4 自由度）。複素数で b = c·a + d と書き、最小二乗で c と d を求める（2 点なら厳密に通る）。
+// cv2.estimateAffinePartial2D と同じ動きのモデル。手ぶれ補正のフレーム間の動きに使う（ホモグラフィより安定）
+function similarityFit(a, b, idx) {
+  let ax = 0, ay = 0, bx = 0, by = 0;
+  for (const i of idx) { ax += a[2 * i]; ay += a[2 * i + 1]; bx += b[2 * i]; by += b[2 * i + 1]; }
+  const n = idx.length;
+  ax /= n; ay /= n; bx /= n; by /= n;
+  let re = 0, im = 0, den = 0;
+  for (const i of idx) {
+    const zx = a[2 * i] - ax, zy = a[2 * i + 1] - ay, wx = b[2 * i] - bx, wy = b[2 * i + 1] - by;
+    re += wx * zx + wy * zy; im += wy * zx - wx * zy; den += zx * zx + zy * zy; // w · conj(z)
+  }
+  if (den < 1e-9) return null;
+  const cr = re / den, ci = im / den;
+  return [cr, -ci, bx - (cr * ax - ci * ay), ci, cr, by - (ci * ax + cr * ay), 0, 0, 1];
+}
+function ransacSimilarity(a, b, n, th = 2, iters = 500, conf = 0.995, seed = 1) {
+  // 近すぎる 2 点は回転・拡大縮小が決まらない
+  const degenerate = (idx) => Math.hypot(a[2 * idx[0]] - a[2 * idx[1]], a[2 * idx[0] + 1] - a[2 * idx[1] + 1]) < 4
+    || Math.hypot(b[2 * idx[0]] - b[2 * idx[1]], b[2 * idx[0] + 1] - b[2 * idx[1] + 1]) < 4;
+  return ransac(a, b, n, 2, similarityFit, degenerate, th, iters, conf, seed);
+}
+
+// 前のフレームとの動き（手ぶれ補正）: 今のフレームの点 → 前のフレームの点 の変換 M（3×3）。prev・fr は xfeatExtract の形、
+// i0 は prev の番号、i1 は fr の番号。インライアが minInliers より少なければ ok = false（補正の側は動きなしとして扱う）
+function estimateMotion(prev, fr, i0, i1, post, params) {
+  const n = i0.length, a = new Float64Array(2 * n), b = new Float64Array(2 * n);
+  i0.forEach((pi, k) => { a[2 * k] = fr.pts[2 * i1[k]]; a[2 * k + 1] = fr.pts[2 * i1[k] + 1]; b[2 * k] = prev.pts[2 * pi]; b[2 * k + 1] = prev.pts[2 * pi + 1]; });
+  const homog = params.motion_model === "homography", th = post.ransac_px ?? 2;
+  const r = homog ? ransacHomography(a, b, n, th, 1000, 0.995, params.seed ?? 1) : ransacSimilarity(a, b, n, th, 500, 0.995, params.seed ?? 1);
+  const ok = !!r.H && r.k >= (post.min_inliers ?? 12);
+  const pairs = [];
+  for (let k = 0; k < n && pairs.length < 400; k++) pairs.push([b[2 * k], b[2 * k + 1], a[2 * k], a[2 * k + 1], r.inl[k]]);
+  return { model: homog ? "homography" : "similarity", ok, M: ok ? r.H : [1, 0, 0, 0, 1, 0, 0, 0, 1], inliers: r.k, matches: n, pairs };
 }
 
 // 凸で、つぶれていない四角形か
@@ -710,7 +762,7 @@ async function matchTemplate(fr, tpl, post, params, w, h, matcher = (a, b) => ma
   return res;
 }
 
-return { xfeatExtract, matchMnn, project, ransacHomography, quadOk, matchTemplate };
+return { xfeatExtract, matchMnn, project, ransacHomography, similarityFit, ransacSimilarity, estimateMotion, quadOk, matchTemplate };
 })();
 const { XFeatGpu } = await (async () => {
 // XFeat の後処理を WebGPU で（xfeat.js と同じ手順。onnxruntime の出力を読み戻さずに GPU の上で続ける）。
@@ -866,7 +918,8 @@ class XFeatGpu {
   }
 
   // ONNX の出力（GPU の上）→ 点（元画像の座標）・スコア・記述子（GPU のバッファ）
-  async extract(out, m, topK, th) {
+  // featsName: 記述子のバッファの名前（手ぶれ補正は前のフレームの分を残すので、2 つを交互に使う）
+  async extract(out, m, topK, th, featsName = "feats") {
     const D = out.cut_0, Hm = out.cut_1, R = out.cut_2, H = Hm.dims[2], W = Hm.dims[3], h8 = D.dims[2], w8 = D.dims[3];
     const cap = Math.ceil((W * H) / 9);
     const cnt = this.buf("cnt", 16, S.STORAGE | S.COPY_SRC | S.COPY_DST), cand = this.buf("cand", cap * 8, S.STORAGE | S.COPY_SRC);
@@ -897,7 +950,7 @@ class XFeatGpu {
     keep.forEach(([x, y, s], i) => { pts[2 * i] = x / m.sx; pts[2 * i + 1] = y / m.sy; scores[i] = s; pin[2 * i] = x; pin[2 * i + 1] = y; });
     const pb = this.buf("pts", pin.byteLength, S.STORAGE | S.COPY_DST);
     this.dev.queue.writeBuffer(pb, 0, pin);
-    const feats = this.buf("feats", Math.max(1, n) * 256, S.STORAGE | S.COPY_SRC);
+    const feats = this.buf(featsName, Math.max(1, n) * 256, S.STORAGE | S.COPY_SRC);
     if (n) {
       const ud = new Uint32Array(8); ud.set([W, H, w8, h8, n]);
       this.dev.queue.submit([this.run(this.desc, [D.gpuBuffer, pb, feats, this.uniform("udesc", ud)], [Math.ceil(n / 64), 1, 1]).finish()]);
@@ -1435,6 +1488,12 @@ let xgpu = null, ort_ = null; // XFeat の GPU の後処理（最初に使う時
 
 // 後処理の前に状態を用意する部品（POST と同じ名前）。st は Worker の読み込み済みの状態で、フレームをまたいで持てる
 const PREPARE = {
+  // 手ぶれ補正: 前のフレームの点・記述子を st に持つ。連続実行を始め直した時（motion_seq が変わった時）と、大きさが変わった時に捨てる
+  xfeat_motion(ort, st, e, params) {
+    const key = `${params.motion_seq ?? ""}:${params.top_k || e.post.top_k}`;
+    if (st.motionKey !== key) { st.motionKey = key; st.prev = null; }
+    params._motion = st;
+  },
   // テンプレートマッチング: テンプレートの点・記述子は、同じテンプレート（id）と設定のあいだ st に持って使い回す。
   // テンプレートは大きさがまちまちなので、形を固定しない別のセッション（graph capture なし）で計算する。
   // 画面はテンプレートの画像を初回だけ送る（Worker に無い時に画像が無ければ TEMPLATE_MISSING で送り直してもらう）
@@ -1457,6 +1516,35 @@ const PREPARE = {
 };
 
 const POST = {
+  // 手ぶれ補正: XFeat の点・記述子を前のフレームと相互最近傍で対応させ、RANSAC で動き（今 → 前）を求める（xfeat.js の estimateMotion）。
+  // GPU の後処理では、記述子のバッファを 2 つ交互に使い、前のフレームの分を GPU に残したまま対応を取る
+  async xfeat_motion(out, m, post, params) {
+    const topK = +(params.top_k || post.top_k || 512), th = post.threshold ?? 0.05, minCos = post.min_cossim ?? 0.82, st = params._motion;
+    const t0 = performance.now();
+    let fr, mnn;
+    if (out.cut_1.location === "gpu-buffer") {
+      xgpu ??= new XFeatGpu(ort_.env.webgpu.device);
+      st.flip = !st.flip;
+      fr = await xgpu.extract(out, m, topK, th, st.flip ? "featsA" : "featsB");
+      if (st.prev && !st.prev.featsGpu) st.prev = null; // JS の後処理から切り替わった時
+      mnn = (a, b) => xgpu.match(a, a.featsGpu, b, minCos);
+    } else {
+      for (const k of ["cut_0", "cut_1", "cut_2"]) if (out[k].location === "gpu-buffer") out[k] = { dims: out[k].dims, data: await out[k].getData() };
+      fr = xfeatExtract(out, m, topK, th);
+      if (st.prev && !st.prev.feats) st.prev = null;
+      mnn = (a, b) => matchMnn(a, b, minCos);
+    }
+    const t1 = performance.now();
+    const prev = st.prev?.W === m.W && st.prev?.H === m.H ? st.prev : null;
+    st.prev = Object.assign(fr, { W: m.W, H: m.H });
+    const res = { kind: "motion", w: m.W, h: m.H, kpts: fr.n, ok: false, M: [1, 0, 0, 0, 1, 0, 0, 0, 1], inliers: 0, matches: 0, pairs: [], first: !prev };
+    if (!prev) { res.post_detail = { extract: t1 - t0 }; return res; }
+    const { i0, i1 } = await mnn(prev, fr);
+    const t2 = performance.now();
+    Object.assign(res, estimateMotion(prev, fr, i0, i1, post, params));
+    res.post_detail = { extract: t1 - t0, match: t2 - t1, ransac: performance.now() - t2 };
+    return res;
+  },
   // XFeat の特徴点 → テンプレートとの対応 → ホモグラフィ（xfeat.js。サーバーの adapters.py と同じ手順）。
   // 出力が GPU の上なら、点の取り出しと対応を GPU で（xfeat_gpu.js）。RANSAC はどちらも JS
   async xfeat_match(out, m, post, params) {
@@ -2103,7 +2191,7 @@ return { COCO };
 })();
 const { CATALOG, TASKS, MODELS, SKELETON } = await (async () => {
 // タブ（tasks）とモデル（models）の定義は models.json（サーバーの adapters.py と共通）。1ファイル版では build.py が中身を埋め込む
-const CATALOG = {"_doc": ["UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"], "categories": [{"id": "detect", "name": "検出・追跡"}, {"id": "seg", "name": "セグメンテーション"}, {"id": "3d", "name": "深度・3D"}, {"id": "vl", "name": "画像と言語"}], "tasks": [{"id": "detect", "name": "物体検出", "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect", "result": "boxes"}, {"id": "pose", "name": "人物の姿勢", "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect", "result": "boxes"}, {"id": "face", "name": "顔", "category": "detect", "result": "boxes", "hint": "顔の検出。動画・カメラでは追跡（ID 付け）もできる。YuNet は顔の5点（両目・鼻・口の両端）も出し、切り出した顔の表情（8種類と快・覚醒度）を HSEmotion で分類する。追跡を選ぶと表情の確率を ID ごとにならす。PINTO の DEIMv2 の顔のクラスとも比べられる", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.6}}, {"id": "wholebody", "name": "手・目（PINTO）", "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.35}, "category": "detect", "result": "boxes"}, {"id": "gesture", "name": "しぐさ（姿勢＋PINTO）", "category": "detect", "result": "boxes", "hint": "2つのモデルを同じフレームで回して組み合わせる。姿勢（YOLO26n-pose）の関節点と、PINTO の頭・目・手・顔の向きから、人ごとに「手を挙げた」「顔の向き」「目を閉じている」「指差し」を判定する。PINTO のモデルは「組み合わせるモデル」で選ぶ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.4}, "combo": {"base": "pose", "with": [{"role": "parts", "name": "組み合わせるモデル（PINTO の部位）", "task": "wholebody", "show": ["head", "eye", "hand", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front"], "default": "deimv2-atto"}], "app": "gesture"}}, {"id": "zsdetect", "name": "テキスト物体検知", "hint": "英語の名詞をカンマ区切り（例: cat, remote control）", "params": ["labels", "threshold", "track"], "defaults": {"threshold": 0.3, "labels": "person, bus, bag"}, "category": "detect", "result": "boxes"}, {"id": "template", "name": "テンプレートマッチング", "category": "detect", "result": "matches", "hint": "探す物（テンプレート）を、画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。XFeat の特徴点の対応からホモグラフィを求め、テンプレートの四隅を写した四角形を描く。表示の「対応点」でテンプレートとフレームの対応を線で見られる", "params": ["template", "top_k"], "defaults": {"top_k": 512}}, {"id": "segment", "name": "プロンプト（SAM）", "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）", "params": ["points"], "click": true, "category": "seg"}, {"id": "semantic", "name": "セマンティック", "category": "seg", "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる", "params": []}, {"id": "panoptic", "name": "パノプティック", "category": "seg", "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）", "params": []}, {"id": "depth", "name": "深度推定", "hint": "赤いほど近い（相対深度）", "params": [], "category": "3d"}, {"id": "approach", "name": "接近・後退（物体検出＋深度）", "category": "3d", "result": "boxes", "hint": "物体検出と深度を組み合わせ、追跡の ID ごとに近づいているか・遠ざかっているかを判定する。枠の大きさ（ROI）と深度の変化から距離の変化の速さをカルマンフィルタで推定し、接近は赤・後退は青で塗って、クラスごとに接近した・遠ざかった数を数える。接近中はあと何秒で届くかも出す。追跡が「なし」なら ByteTrack を使う", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "combo": {"base": "detect", "app": "approach", "track": "bytetrack", "with": [{"role": "depth", "name": "組み合わせる深度のモデル", "task": "depth", "every": 3, "default": "da3-small", "params": {"depth_raw": true}}]}}, {"id": "pose3d", "name": "3D の姿勢（姿勢＋深度）", "category": "3d", "result": "boxes", "hint": "人物の姿勢と深度を組み合わせる。関節点に深度で奥行きを付け、画面の右下の小窓に骨格を回して描く。奥行きは相対深度からの大まかなもの", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "combo": {"base": "pose", "app": "pose3d", "with": [{"role": "depth", "name": "組み合わせる深度のモデル", "task": "depth", "every": 2, "default": "dav2-small", "params": {"depth_raw": true}}]}}, {"id": "classify", "name": "ゼロショット分類", "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", "params": ["labels"], "defaults": {"labels": "bus, truck, tram, street, office, cat"}, "category": "vl"}, {"id": "matting", "name": "背景除去", "hint": "前景だけを残す", "params": [], "category": "seg"}, {"id": "vlm", "name": "画像の説明・質問", "hint": "SmolVLM は英語のみ。日本語は Qwen", "params": ["prompt"], "defaults": {"prompt": "この画像を日本語で詳しく説明してください。"}, "category": "vl"}], "apps": [{"id": "count", "name": "数える", "accepts": ["boxes"], "params": ["classes"], "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）"}], "models": [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "cda08d9440217e243e075ee839f40383c59b3f973e493f9f6c7452922a69436e", "onnx/model_fp16.onnx": "3d4ed4f51a2a9ed64b9a8703c84441e5151ac8dd8b3a48eeecd3e4362bda8e77"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "c72bc5ad4e7f7c87666a051d0f01fc02d084688c1ca78e825031827a0590efb1", "onnx/model_fp16.onnx": "cd0f78d2b82d86782e785cb6dba60e5d5efe7bcfad3950dbb2f0c8ba209ff57d"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "7cd89faaa164887c3c33ee0fe5d63723bf262f75dd90088c4cb3be5a310aabff", "onnx/model_fp16.onnx": "d3ca56f73c3b0d0816adeb772f899894bf360cb9ced3a131f3da60972cd10242"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "73970a0227222a6e454b7b12f8453bd228183ebc688a62699e7ba57b3e105c42", "onnx/model_fp16.onnx": "d49d4160bbe376db0a33903030210cf53e8e0410491f50fb0a7dbb713779ec53"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large", "license": "Apache-2.0"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "6ca5dc9681e0305708085715427f50779c761d5abfddaa0c38ac7c2d89b56085", "onnx/model_fp16.onnx": "6063e023c0c5c16e918b276eb4be6e4556c41723e92e1016c8da789ebe3930d7"}, "cut": ["/model.23/Transpose_2_output_0"]}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose_raw"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "5bff1f4d49f638ab830559fcefe0560e4e9f0e82d861ef2d929114ef48d5c37c", "onnx/model_fp16.onnx": "41e0d8fe8eedb9d6caa10314eeeb542e7143da3ec478a1b01ced8bdd13b17c8d"}, "cut": ["/model.23/Transpose_2_output_0"]}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose_raw"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base", "license": "Apache-2.0"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp16", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "SAM License（Meta）"}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large", "license": "Apache-2.0"}, {"key": "segformer-b0", "task": "semantic", "name": "SegFormer B0（ADE20K）", "where": ["browser"], "adapter": "onnx", "mb": 15, "onnx": {"repo": "Xenova/segformer-b0-finetuned-ade-512-512", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "3e5c18a4be395f16646438d54c42377ddc202edfa33d5eced0c9506de75c44c2", "onnx/model_fp16.onnx": "c6ee378a26bb782f960161ab2d99885db168334ec2ab3429ac36afdcc0f2b038"}}, "pre": {"size": [512, 512], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values"}, "post": {"type": "segmap", "output": "logits", "labels": ["wall", "building", "sky", "floor", "tree", "ceiling", "road", "bed ", "windowpane", "grass", "cabinet", "sidewalk", "person", "earth", "door", "table", "mountain", "plant", "curtain", "chair", "car", "water", "painting", "sofa", "shelf", "house", "sea", "mirror", "rug", "field", "armchair", "seat", "fence", "desk", "rock", "wardrobe", "lamp", "bathtub", "railing", "cushion", "base", "box", "column", "signboard", "chest of drawers", "counter", "sand", "sink", "skyscraper", "fireplace", "refrigerator", "grandstand", "path", "stairs", "runway", "case", "pool table", "pillow", "screen door", "stairway", "river", "bridge", "bookcase", "blind", "coffee table", "toilet", "flower", "book", "hill", "bench", "countertop", "stove", "palm", "kitchen island", "computer", "swivel chair", "boat", "bar", "arcade machine", "hovel", "bus", "towel", "light", "truck", "tower", "chandelier", "awning", "streetlight", "booth", "television receiver", "airplane", "dirt track", "apparel", "pole", "land", "bannister", "escalator", "ottoman", "bottle", "buffet", "poster", "stage", "van", "ship", "fountain", "conveyer belt", "canopy", "washer", "plaything", "swimming pool", "stool", "barrel", "basket", "waterfall", "tent", "bag", "minibike", "cradle", "oven", "ball", "food", "step", "tank", "trade name", "microwave", "pot", "animal", "bicycle", "lake", "dishwasher", "screen", "blanket", "sculpture", "hood", "sconce", "vase", "traffic light", "tray", "ashcan", "fan", "pier", "crt screen", "plate", "monitor", "bulletin board", "shower", "radiator", "glass", "clock", "flag"]}, "license": "NVIDIA Source Code License（非商用）", "bench": true}, {"key": "eomt-ade-large", "task": "semantic", "name": "EoMT DINOv3 large（ADE20K）", "where": ["server"], "adapter": "hf-segment", "subtask": "semantic", "repo": "tue-mps/eomt-dinov3-ade-semantic-large-512", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "detr-panoptic", "task": "panoptic", "name": "DETR ResNet-50（COCO パノプティック）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "panoptic", "mb": 172, "repo": "Xenova/detr-resnet-50-panoptic", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0", "label_map": {"184": "tree-merged", "185": "fence-merged", "186": "ceiling-merged", "187": "sky-other-merged", "188": "cabinet-merged", "189": "table-merged", "190": "floor-other-merged", "191": "pavement-merged", "192": "mountain-merged", "193": "grass-merged", "194": "dirt-merged", "195": "paper-merged", "196": "food-other-merged", "197": "building-other-merged", "198": "rock-merged", "199": "wall-other-merged", "200": "rug-merged"}, "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"}, {"key": "eomt-coco-panoptic", "task": "panoptic", "name": "EoMT DINOv3 base（COCO パノプティック）", "where": ["server"], "adapter": "hf-segment", "subtask": "panoptic", "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "onnx", "mb": 50, "onnx": {"repo": "onnx-community/depth-anything-v2-small", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c", "onnx/model_fp16.onnx": "2df6223f206b5164e21f664ace61dabeb9bb6a49b8b5a3e00510b4807d0f5b04"}}, "pre": {"size": [320, 320], "resize": "letterbox_rect", "stride": 14, "dynamic": true, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values"}, "post": {"type": "depth", "output": "predicted_depth"}, "license": "Apache-2.0", "bench": true, "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める（transformers.js の既定は短辺 518）。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data", "sha256": {"onnx/model.onnx": "396008798244a074297fd88e450433b1357fc687f534939375c804ded86e7b2a", "onnx/model.onnx_data": "802bb24741e67f5bb2b369fc64d40afe11439cc895d676d658d65cfb75c9860f"}, "graph_capture": false}, "pre": {"size": [320, 320], "resize": "letterbox_rect", "stride": 14, "dynamic": true, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}, "license": "Apache-2.0", "bench": true, "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf", "license": "CC BY-NC 4.0（非商用）"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx", "sha256": {"onnx/model.onnx": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"}}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}, "license": "MIT"}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1028, "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "prompt": "Describe this image in detail.", "license": "Apache-2.0", "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}, "license": "Apache-2.0"}, {"key": "yunet", "task": "face", "name": "YuNet（OpenCV、顔の5点つき）", "where": ["browser", "server"], "adapter": "onnx", "mb": 0.3, "onnx": {"repo": "opencv/face_detection_yunet", "file": "face_detection_yunet_2023mar.onnx", "sha256": {"face_detection_yunet_2023mar.onnx": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"}, "graph_capture": false}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 0, "scale": 1, "bgr": true, "input": "input"}, "post": {"type": "yunet", "nms": 0.3}, "note": "OpenCV の顔検出（10〜300px ほどの顔向け）。入力は BGR の 0〜255。出力の組み立てと重なりの除去（NMS）は OpenCV の FaceDetectorYN と同じ手順", "license": "MIT（OpenCV Zoo、元は libfacedetection）", "bench": true, "cascade": [{"id": "emo-mbf", "on": "face", "model": "hsemotion-mbf", "name": "表情（HSEmotion MobileFaceNet、軽い）", "classes": ["怒り", "軽蔑", "嫌悪", "恐れ", "喜び", "無表情", "悲しみ", "驚き"], "va": true, "expand": 0.1}, {"id": "emo-b0", "on": "face", "model": "hsemotion-b0", "name": "表情（HSEmotion EfficientNet-B0、精度重視）", "classes": ["怒り", "軽蔑", "嫌悪", "恐れ", "喜び", "無表情", "悲しみ", "驚き"], "va": true, "expand": 0.1, "default": false}]}, {"key": "deimv2-atto-face", "task": "face", "name": "DEIMv2 Atto の顔（PINTO、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["face"]}, "note": "手・目（PINTO）と同じモデルの、顔のクラスだけを出す", "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）", "server": {"providers": "cpu"}}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）", "bench": true}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "hsemotion-mbf", "task": "cascade", "name": "HSEmotion MobileFaceNet（表情8種類＋快・覚醒度）", "where": ["browser"], "adapter": "onnx", "mb": 8, "onnx": {"url": "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/main/models/affectnet_emotions/onnx/mbf_va_mtl.onnx", "file": "mbf_va_mtl.onnx"}, "pre": {"size": [112, 112], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5], "input": "input", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"}, {"key": "hsemotion-b0", "task": "cascade", "name": "HSEmotion EfficientNet-B0（表情8種類＋快・覚醒度）", "where": ["browser"], "adapter": "onnx", "mb": 16, "onnx": {"url": "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/main/models/affectnet_emotions/onnx/enet_b0_8_va_mtl.onnx", "file": "enet_b0_8_va_mtl.onnx"}, "pre": {"size": [224, 224], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx", "sha256": {"osnet_x0_25_msmt17.onnx": "e78604f4ccda49b8f41cd0f8f7303800ce75d2361895ebb0729513c1bf53d277"}}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}, "license": "MIT（torchreid）"}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意", "license": "モデルによる（qwen3-vl は Apache-2.0）"}, {"key": "xfeat", "task": "template", "name": "XFeat（特徴点＋対応＋RANSAC）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2.8, "bench": true, "onnx": {"repo": "kornia/xfeat", "file": "xfeat_backbone.onnx", "data": "xfeat_backbone.onnx.data", "cut": ["descriptors", "heatmap", "sigmoid"], "squeeze": ["val_424", "val_436"], "sha256": {"xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0", "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"}}, "pre": {"size": [640, 640], "resize": "floor32", "dynamic": true, "scale": 0.00392156862745098, "input": "image"}, "post": {"type": "xfeat_match", "top_k": 512, "threshold": 0.05, "min_cossim": 0.82, "min_inliers": 15, "ransac_px": 3.0, "gpu": true}, "license": "Apache-2.0", "note": "学習ベースの軽い特徴点（CVPR 2024、verlab/accelerated_features）。kornia の ONNX（2.8MB）。後処理は kornia の detectAndCompute と相互最近傍のマッチングに合わせ、ホモグラフィは 4 点の DLT ＋ RANSAC を自前で書いた。入力は 32 の倍数に切り下げる（画素の値の倍率は効かない。中で濃淡にして正規化する）", "server": {"providers": "cpu"}}], "interact": [{"id": "broadcast", "name": "別のタブに流す（BroadcastChannel）", "tasks": ["detect", "pose", "face", "wholebody", "gesture", "zsdetect", "approach", "pose3d"], "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"}, {"id": "websocket", "name": "WebSocket に流す", "tasks": ["detect", "pose", "face", "wholebody", "gesture", "zsdetect", "approach", "pose3d"], "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"}, {"id": "puppet", "name": "キャラを動かす（Live2D 風。確認用）", "tasks": ["pose", "face", "gesture", "pose3d"], "hint": "一番大きく写っている人（顔）に合わせてキャラが動く。姿勢のタブなら頭の向き・体の傾き・腕、顔のタブなら頭の向きと表情。推論の合間は画面の更新ごとにばねでなめらかにつなぐ"}]};
+const CATALOG = {"_doc": ["UI のタブ（tasks）とモデル（models）の定義。ブラウザ（web/）とサーバー（adapters.py）が読む。書き方は docs/ADDING_MODELS.md と docs/ADDING_UI.md"], "categories": [{"id": "detect", "name": "検出・追跡"}, {"id": "seg", "name": "セグメンテーション"}, {"id": "3d", "name": "深度・3D"}, {"id": "vl", "name": "画像と言語"}], "tasks": [{"id": "detect", "name": "物体検出", "hint": "COCO 80クラス。閾値で絞る。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect", "result": "boxes"}, {"id": "pose", "name": "人物の姿勢", "hint": "17関節（COCO）。動画・カメラでは追跡（ID 付け）もできる", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "category": "detect", "result": "boxes"}, {"id": "face", "name": "顔", "category": "detect", "result": "boxes", "hint": "顔の検出。動画・カメラでは追跡（ID 付け）もできる。YuNet は顔の5点（両目・鼻・口の両端）も出し、切り出した顔の表情（8種類と快・覚醒度）を HSEmotion で分類する。追跡を選ぶと表情の確率を ID ごとにならす。PINTO の DEIMv2 の顔のクラスとも比べられる", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.6}}, {"id": "wholebody", "name": "手・目（PINTO）", "hint": "PINTO の超軽量モデル。体・頭・顔・目・手を検出し、目の開閉・指差し・手を振る動作を小さな分類モデルで判定する。手を振るは動画・カメラで追跡を選んだ時だけ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.35}, "category": "detect", "result": "boxes"}, {"id": "gesture", "name": "しぐさ（姿勢＋PINTO）", "category": "detect", "result": "boxes", "hint": "2つのモデルを同じフレームで回して組み合わせる。姿勢（YOLO26n-pose）の関節点と、PINTO の頭・目・手・顔の向きから、人ごとに「手を挙げた」「顔の向き」「目を閉じている」「指差し」を判定する。PINTO のモデルは「組み合わせるモデル」で選ぶ", "params": ["threshold", "track", "cascade"], "defaults": {"threshold": 0.4}, "combo": {"base": "pose", "with": [{"role": "parts", "name": "組み合わせるモデル（PINTO の部位）", "task": "wholebody", "show": ["head", "eye", "hand", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front"], "default": "deimv2-atto"}], "app": "gesture"}}, {"id": "zsdetect", "name": "テキスト物体検知", "hint": "英語の名詞をカンマ区切り（例: cat, remote control）", "params": ["labels", "threshold", "track"], "defaults": {"threshold": 0.3, "labels": "person, bus, bag"}, "category": "detect", "result": "boxes"}, {"id": "template", "name": "テンプレートマッチング", "category": "detect", "result": "matches", "hint": "探す物（テンプレート）を、画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。XFeat の特徴点の対応からホモグラフィを求め、テンプレートの四隅を写した四角形を描く。表示の「対応点」でテンプレートとフレームの対応を線で見られる", "params": ["template", "top_k"], "defaults": {"top_k": 512}}, {"id": "stabilize", "name": "手ぶれ補正", "category": "detect", "result": "motion", "video": true, "hint": "動画・カメラの連続実行で、前のフレームとの動きを XFeat で求め、カメラの動きの軌跡をなめらかにして描き直す（周りを切り抜く）。「なめらか」は細かい揺れだけを消し、「三脚」は最初のフレームに止める。結果欄に補正前と補正後の揺れの大きさを出す", "params": ["stab_mode", "stab_strength", "stab_crop", "stab_model", "top_k"], "defaults": {"top_k": 512}}, {"id": "segment", "name": "プロンプト（SAM）", "hint": "クリックした場所の物体を切り出す（プロンプト型のセグメンテーション）。除く点は Shift＋クリックかチェックで。「全体を自動分割」は格子状の点から画面全体を物体ごとに塗り分ける（クラス名は付かない。ブラウザのみ）", "params": ["points"], "click": true, "category": "seg"}, {"id": "semantic", "name": "セマンティック", "category": "seg", "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる", "params": []}, {"id": "panoptic", "name": "パノプティック", "category": "seg", "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）", "params": []}, {"id": "depth", "name": "深度推定", "hint": "赤いほど近い（相対深度）", "params": [], "category": "3d"}, {"id": "approach", "name": "接近・後退（物体検出＋深度）", "category": "3d", "result": "boxes", "hint": "物体検出と深度を組み合わせ、追跡の ID ごとに近づいているか・遠ざかっているかを判定する。枠の大きさ（ROI）と深度の変化から距離の変化の速さをカルマンフィルタで推定し、接近は赤・後退は青で塗って、クラスごとに接近した・遠ざかった数を数える。接近中はあと何秒で届くかも出す。追跡が「なし」なら ByteTrack を使う", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "combo": {"base": "detect", "app": "approach", "track": "bytetrack", "with": [{"role": "depth", "name": "組み合わせる深度のモデル", "task": "depth", "every": 3, "default": "da3-small", "params": {"depth_raw": true}}]}}, {"id": "pose3d", "name": "3D の姿勢（姿勢＋深度）", "category": "3d", "result": "boxes", "hint": "人物の姿勢と深度を組み合わせる。関節点に深度で奥行きを付け、画面の右下の小窓に骨格を回して描く。奥行きは相対深度からの大まかなもの", "params": ["threshold", "track"], "defaults": {"threshold": 0.4}, "combo": {"base": "pose", "app": "pose3d", "with": [{"role": "depth", "name": "組み合わせる深度のモデル", "task": "depth", "every": 2, "default": "dav2-small", "params": {"depth_raw": true}}]}}, {"id": "classify", "name": "ゼロショット分類", "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア", "params": ["labels"], "defaults": {"labels": "bus, truck, tram, street, office, cat"}, "category": "vl"}, {"id": "matting", "name": "背景除去", "hint": "前景だけを残す", "params": [], "category": "seg"}, {"id": "vlm", "name": "画像の説明・質問", "hint": "SmolVLM は英語のみ。日本語は Qwen", "params": ["prompt"], "defaults": {"prompt": "この画像を日本語で詳しく説明してください。"}, "category": "vl"}], "apps": [{"id": "count", "name": "数える", "accepts": ["boxes"], "params": ["classes"], "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）"}], "models": [{"key": "yolo26n", "task": "detect", "name": "YOLO26n", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "onnx": {"repo": "onnx-community/yolo26n-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "cda08d9440217e243e075ee839f40383c59b3f973e493f9f6c7452922a69436e", "onnx/model_fp16.onnx": "3d4ed4f51a2a9ed64b9a8703c84441e5151ac8dd8b3a48eeecd3e4362bda8e77"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-dyn", "task": "detect", "name": "YOLO26n（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 10, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26s", "task": "detect", "name": "YOLO26s", "where": ["browser", "server"], "adapter": "onnx", "mb": 38, "onnx": {"repo": "onnx-community/yolo26s-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "c72bc5ad4e7f7c87666a051d0f01fc02d084688c1ca78e825031827a0590efb1", "onnx/model_fp16.onnx": "cd0f78d2b82d86782e785cb6dba60e5d5efe7bcfad3950dbb2f0c8ba209ff57d"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26m", "task": "detect", "name": "YOLO26m", "where": ["browser", "server"], "adapter": "onnx", "mb": 82, "onnx": {"repo": "onnx-community/yolo26m-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "7cd89faaa164887c3c33ee0fe5d63723bf262f75dd90088c4cb3be5a310aabff", "onnx/model_fp16.onnx": "d3ca56f73c3b0d0816adeb772f899894bf360cb9ced3a131f3da60972cd10242"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x", "task": "detect", "name": "YOLO26x", "where": ["browser", "server"], "adapter": "onnx", "mb": 223, "onnx": {"repo": "onnx-community/yolo26x-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "73970a0227222a6e454b7b12f8453bd228183ebc688a62699e7ba57b3e105c42", "onnx/model_fp16.onnx": "d49d4160bbe376db0a33903030210cf53e8e0410491f50fb0a7dbb713779ec53"}}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_detect", "classes": "coco"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "rfdetr-nano", "task": "detect", "name": "RF-DETR Nano", "where": ["browser"], "adapter": "tjs-detect", "mb": 108, "repo": "onnx-community/rfdetr_nano-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-medium", "task": "detect", "name": "RF-DETR Medium", "where": ["browser"], "adapter": "tjs-detect", "mb": 121, "repo": "onnx-community/rfdetr_medium-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "rfdetr-large", "task": "detect", "name": "RF-DETR Large", "where": ["server"], "adapter": "hf-detect", "repo": "Roboflow/rf-detr-large", "license": "Apache-2.0"}, {"key": "yolo26n-pose", "task": "pose", "name": "YOLO26n-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "onnx": {"repo": "onnx-community/yolo26n-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "6ca5dc9681e0305708085715427f50779c761d5abfddaa0c38ac7c2d89b56085", "onnx/model_fp16.onnx": "6063e023c0c5c16e918b276eb4be6e4556c41723e92e1016c8da789ebe3930d7"}, "cut": ["/model.23/Transpose_2_output_0"]}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose_raw"}, "license": "AGPL-3.0（Ultralytics）", "bench": true}, {"key": "yolo26n-pose-dyn", "task": "pose", "name": "YOLO26n-pose（入力サイズ可変、このサーバーのみ）", "where": ["browser", "server"], "adapter": "onnx", "mb": 12, "note": "Ultralytics から入力サイズ可変・NMS 不要で書き出した ONNX（tools/export_yolo26_dynamic.py）。重みは AGPL なのでこのサーバーからだけ配る", "onnx": {"server_file": "ultralytics/yolo26n-pose_dyn.onnx"}, "pre": {"size": [640, 640], "resize": "letterbox_rect", "stride": 32, "dynamic": true, "pad_value": 114, "scale": 0.00392156862745098, "input": "images"}, "post": {"type": "ultra_e2e_pose"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "yolo26x-pose", "task": "pose", "name": "YOLO26x-pose", "where": ["browser", "server"], "adapter": "onnx", "mb": 231, "onnx": {"repo": "onnx-community/yolo26x-pose-ONNX", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "5bff1f4d49f638ab830559fcefe0560e4e9f0e82d861ef2d929114ef48d5c37c", "onnx/model_fp16.onnx": "41e0d8fe8eedb9d6caa10314eeeb542e7143da3ec478a1b01ced8bdd13b17c8d"}, "cut": ["/model.23/Transpose_2_output_0"]}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 114, "scale": 0.00392156862745098, "input": "pixel_values"}, "post": {"type": "yolo_pose_raw"}, "license": "AGPL-3.0（Ultralytics）"}, {"key": "gdino-tiny", "task": "zsdetect", "name": "Grounding DINO tiny", "where": ["browser"], "adapter": "tjs-gdino", "mb": 719, "repo": "onnx-community/grounding-dino-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "gdino-base", "task": "zsdetect", "name": "Grounding DINO base", "where": ["server"], "adapter": "hf-gdino", "repo": "IDEA-Research/grounding-dino-base", "license": "Apache-2.0"}, {"key": "edgetam", "task": "segment", "name": "EdgeTAM", "where": ["browser"], "adapter": "tjs-sam", "mb": 41, "repo": "onnx-community/EdgeTAM-ONNX", "dtype": {"webgpu": "fp16", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam2.1-tiny", "task": "segment", "name": "SAM 2.1 tiny", "where": ["browser"], "adapter": "tjs-sam", "mb": 156, "repo": "onnx-community/sam2.1-hiera-tiny-ONNX", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "license": "Apache-2.0"}, {"key": "sam3-tracker", "task": "segment", "name": "SAM 3（点指定）", "where": ["browser"], "adapter": "tjs-sam", "mb": 947, "repo": "onnx-community/sam3-tracker-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "SAM License（Meta）"}, {"key": "sam2.1-large", "task": "segment", "name": "SAM 2.1 large", "where": ["server"], "adapter": "hf-sam2", "repo": "facebook/sam2.1-hiera-large", "license": "Apache-2.0"}, {"key": "segformer-b0", "task": "semantic", "name": "SegFormer B0（ADE20K）", "where": ["browser"], "adapter": "onnx", "mb": 15, "onnx": {"repo": "Xenova/segformer-b0-finetuned-ade-512-512", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "3e5c18a4be395f16646438d54c42377ddc202edfa33d5eced0c9506de75c44c2", "onnx/model_fp16.onnx": "c6ee378a26bb782f960161ab2d99885db168334ec2ab3429ac36afdcc0f2b038"}}, "pre": {"size": [512, 512], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values"}, "post": {"type": "segmap", "output": "logits", "labels": ["wall", "building", "sky", "floor", "tree", "ceiling", "road", "bed ", "windowpane", "grass", "cabinet", "sidewalk", "person", "earth", "door", "table", "mountain", "plant", "curtain", "chair", "car", "water", "painting", "sofa", "shelf", "house", "sea", "mirror", "rug", "field", "armchair", "seat", "fence", "desk", "rock", "wardrobe", "lamp", "bathtub", "railing", "cushion", "base", "box", "column", "signboard", "chest of drawers", "counter", "sand", "sink", "skyscraper", "fireplace", "refrigerator", "grandstand", "path", "stairs", "runway", "case", "pool table", "pillow", "screen door", "stairway", "river", "bridge", "bookcase", "blind", "coffee table", "toilet", "flower", "book", "hill", "bench", "countertop", "stove", "palm", "kitchen island", "computer", "swivel chair", "boat", "bar", "arcade machine", "hovel", "bus", "towel", "light", "truck", "tower", "chandelier", "awning", "streetlight", "booth", "television receiver", "airplane", "dirt track", "apparel", "pole", "land", "bannister", "escalator", "ottoman", "bottle", "buffet", "poster", "stage", "van", "ship", "fountain", "conveyer belt", "canopy", "washer", "plaything", "swimming pool", "stool", "barrel", "basket", "waterfall", "tent", "bag", "minibike", "cradle", "oven", "ball", "food", "step", "tank", "trade name", "microwave", "pot", "animal", "bicycle", "lake", "dishwasher", "screen", "blanket", "sculpture", "hood", "sconce", "vase", "traffic light", "tray", "ashcan", "fan", "pier", "crt screen", "plate", "monitor", "bulletin board", "shower", "radiator", "glass", "clock", "flag"]}, "license": "NVIDIA Source Code License（非商用）", "bench": true}, {"key": "eomt-ade-large", "task": "semantic", "name": "EoMT DINOv3 large（ADE20K）", "where": ["server"], "adapter": "hf-segment", "subtask": "semantic", "repo": "tue-mps/eomt-dinov3-ade-semantic-large-512", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "detr-panoptic", "task": "panoptic", "name": "DETR ResNet-50（COCO パノプティック）", "where": ["browser"], "adapter": "tjs-segment", "subtask": "panoptic", "mb": 172, "repo": "Xenova/detr-resnet-50-panoptic", "dtype": {"webgpu": "fp32", "wasm": "q8"}, "license": "Apache-2.0", "label_map": {"184": "tree-merged", "185": "fence-merged", "186": "ceiling-merged", "187": "sky-other-merged", "188": "cabinet-merged", "189": "table-merged", "190": "floor-other-merged", "191": "pavement-merged", "192": "mountain-merged", "193": "grass-merged", "194": "dirt-merged", "195": "paper-merged", "196": "food-other-merged", "197": "building-other-merged", "198": "rock-merged", "199": "wall-other-merged", "200": "rug-merged"}, "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"}, {"key": "eomt-coco-panoptic", "task": "panoptic", "name": "EoMT DINOv3 base（COCO パノプティック）", "where": ["server"], "adapter": "hf-segment", "subtask": "panoptic", "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640", "license": "MIT（バックボーンは DINOv3 License）"}, {"key": "dav2-small", "task": "depth", "name": "Depth Anything V2 small", "where": ["browser"], "adapter": "onnx", "mb": 50, "onnx": {"repo": "onnx-community/depth-anything-v2-small", "file": "onnx/model.onnx", "file_fp16": "onnx/model_fp16.onnx", "sha256": {"onnx/model.onnx": "afb6a5c28f3b6bf1618c6e43f02073ef9dfdc70e937502d51603e57b0a1df10c", "onnx/model_fp16.onnx": "2df6223f206b5164e21f664ace61dabeb9bb6a49b8b5a3e00510b4807d0f5b04"}}, "pre": {"size": [320, 320], "resize": "letterbox_rect", "stride": 14, "dynamic": true, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values"}, "post": {"type": "depth", "output": "predicted_depth"}, "license": "Apache-2.0", "bench": true, "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める（transformers.js の既定は短辺 518）。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"}, {"key": "da3-small", "task": "depth", "name": "Depth Anything 3 small", "where": ["browser", "server"], "adapter": "onnx", "mb": 105, "onnx": {"repo": "onnx-community/depth-anything-v3-small", "file": "onnx/model.onnx", "data": "onnx/model.onnx_data", "sha256": {"onnx/model.onnx": "396008798244a074297fd88e450433b1357fc687f534939375c804ded86e7b2a", "onnx/model.onnx_data": "802bb24741e67f5bb2b369fc64d40afe11439cc895d676d658d65cfb75c9860f"}, "graph_capture": false}, "pre": {"size": [320, 320], "resize": "letterbox_rect", "stride": 14, "dynamic": true, "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "pixel_values", "add_dims": [1]}, "post": {"type": "depth", "output": "predicted_depth", "inverse": true, "intrinsics": "intrinsics"}, "server": {"providers": "cpu"}, "license": "Apache-2.0", "bench": true, "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"}, {"key": "dav2-large", "task": "depth", "name": "Depth Anything V2 large", "where": ["server"], "adapter": "hf-depth", "repo": "depth-anything/Depth-Anything-V2-Large-hf", "license": "CC BY-NC 4.0（非商用）"}, {"key": "siglip2-base", "task": "classify", "name": "SigLIP2 base", "where": ["browser"], "adapter": "tjs-siglip", "mb": 750, "repo": "onnx-community/siglip2-base-patch16-224-ONNX", "dtype": {"webgpu": "fp16", "wasm": "q8"}, "license": "Apache-2.0"}, {"key": "birefnet-lite", "task": "matting", "name": "BiRefNet lite", "where": ["server", "browser"], "adapter": "onnx", "mb": 224, "avoid_browser": "Mac の Chrome では WebGPU の上限（storage buffer 11 > 10）で動かない", "onnx": {"repo": "onnx-community/BiRefNet_lite-ONNX", "file": "onnx/model.onnx", "sha256": {"onnx/model.onnx": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333"}}, "pre": {"size": [1024, 1024], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input_image"}, "post": {"type": "alpha", "output": "output_image", "sigmoid": true}, "server": {"providers": "cpu"}, "license": "MIT"}, {"key": "smolvlm-256m", "task": "vlm", "name": "SmolVLM 256M", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1028, "repo": "HuggingFaceTB/SmolVLM-256M-Instruct", "dtype": {"webgpu": "fp32", "wasm": "fp32"}, "prompt": "Describe this image in detail.", "license": "Apache-2.0", "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"}, {"key": "qwen3vl-2b", "task": "vlm", "name": "Qwen3-VL 2B", "where": ["browser"], "adapter": "tjs-vlm", "mb": 1373, "repo": "onnx-community/Qwen3-VL-2B-Instruct-ONNX", "dtype": {"webgpu": "q4f16", "wasm": "q4"}, "license": "Apache-2.0"}, {"key": "yunet", "task": "face", "name": "YuNet（OpenCV、顔の5点つき）", "where": ["browser", "server"], "adapter": "onnx", "mb": 0.3, "onnx": {"repo": "opencv/face_detection_yunet", "file": "face_detection_yunet_2023mar.onnx", "sha256": {"face_detection_yunet_2023mar.onnx": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"}, "graph_capture": false}, "pre": {"size": [640, 640], "resize": "letterbox", "pad_value": 0, "scale": 1, "bgr": true, "input": "input"}, "post": {"type": "yunet", "nms": 0.3}, "note": "OpenCV の顔検出（10〜300px ほどの顔向け）。入力は BGR の 0〜255。出力の組み立てと重なりの除去（NMS）は OpenCV の FaceDetectorYN と同じ手順", "license": "MIT（OpenCV Zoo、元は libfacedetection）", "bench": true, "cascade": [{"id": "emo-mbf", "on": "face", "model": "hsemotion-mbf", "name": "表情（HSEmotion MobileFaceNet、軽い）", "classes": ["怒り", "軽蔑", "嫌悪", "恐れ", "喜び", "無表情", "悲しみ", "驚き"], "va": true, "expand": 0.1}, {"id": "emo-b0", "on": "face", "model": "hsemotion-b0", "name": "表情（HSEmotion EfficientNet-B0、精度重視）", "classes": ["怒り", "軽蔑", "嫌悪", "恐れ", "喜び", "無表情", "悲しみ", "驚き"], "va": true, "expand": 0.1, "default": false}]}, {"key": "deimv2-atto-face", "task": "face", "name": "DEIMv2 Atto の顔（PINTO、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["face"]}, "note": "手・目（PINTO）と同じモデルの、顔のクラスだけを出す", "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）", "server": {"providers": "cpu"}}, {"key": "deimv2-atto192", "task": "wholebody", "name": "DEIMv2 Atto（192×192、最軽量）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_170query_n_batch_192x192.onnx"}, "pre": {"size": [192, 192], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-atto", "task": "wholebody", "name": "DEIMv2 Atto（PINTO Wholebody34、320×320）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2, "note": "体・頭・顔・目・手など 34 クラスを1つのモデルで検出する超軽量モデル。前処理（縮小）はモデルの中にあり、入力は BGR の 0〜255", "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx", "path": "pinto/deimv2_hgnetv2_atto_wholebody34_340query_n_batch_320x320.onnx"}, "pre": {"size": [320, 320], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）", "bench": true}, {"key": "deimv2-femto", "task": "wholebody", "name": "DEIMv2 Femto（416×416）", "where": ["browser", "server"], "adapter": "onnx", "mb": 4, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx", "path": "pinto/deimv2_hgnetv2_femto_wholebody34_340query_n_batch_416x416.onnx"}, "pre": {"size": [416, 416], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "deimv2-pico", "task": "wholebody", "name": "DEIMv2 Pico（640×640）", "where": ["browser", "server"], "adapter": "onnx", "mb": 6, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx", "path": "pinto/deimv2_hgnetv2_pico_wholebody34_340query_n_batch_640x640.onnx"}, "pre": {"size": [640, 640], "resize": "stretch", "scale": 1, "bgr": true, "input": "input_bgr"}, "post": {"type": "deim_wholebody", "classes": ["body", "adult", "child", "male", "female", "body_with_wheelchair", "body_with_crutches", "head", "front", "right-front", "right-side", "right-back", "back", "left-back", "left-side", "left-front", "face", "eye", "nose", "mouth", "ear", "collarbone", "shoulder", "solar_plexus", "elbow", "wrist", "hand", "hand_left", "hand_right", "abdomen", "hip_joint", "knee", "ankle", "foot"], "show": ["body", "head", "face", "eye", "hand"]}, "server": {"providers": "cpu"}, "cascade": [{"id": "ocec", "on": "eye", "model": "ocec-p", "name": "目の開閉（OCEC）", "yes": "開", "no": "閉"}, {"id": "pgc", "on": "hand", "model": "pgc-s", "name": "指差し（PGC）", "yes": "指差し", "no": ""}, {"id": "whc", "on": "hand", "model": "whc-4", "name": "手を振る（WHC、要追跡）", "yes": "手を振る", "no": "", "seq": 4}], "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"}, {"key": "hsemotion-mbf", "task": "cascade", "name": "HSEmotion MobileFaceNet（表情8種類＋快・覚醒度）", "where": ["browser"], "adapter": "onnx", "mb": 8, "onnx": {"url": "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/main/models/affectnet_emotions/onnx/mbf_va_mtl.onnx", "file": "mbf_va_mtl.onnx"}, "pre": {"size": [112, 112], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5], "input": "input", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"}, {"key": "hsemotion-b0", "task": "cascade", "name": "HSEmotion EfficientNet-B0（表情8種類＋快・覚醒度）", "where": ["browser"], "adapter": "onnx", "mb": 16, "onnx": {"url": "https://raw.githubusercontent.com/sb-ai-lab/EmotiEffLib/main/models/affectnet_emotions/onnx/enet_b0_8_va_mtl.onnx", "file": "enet_b0_8_va_mtl.onnx"}, "pre": {"size": [224, 224], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"}, {"key": "ocec-p", "task": "cascade", "name": "OCEC P（目の開閉）", "where": ["browser"], "adapter": "onnx", "mb": 0.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/ocec_p.onnx", "path": "pinto/ocec_p.onnx"}, "pre": {"size": [40, 24], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "pgc-s", "task": "cascade", "name": "PGC S（指差し）", "where": ["browser"], "adapter": "onnx", "mb": 0.5, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/pgc_s_32x32.onnx", "path": "pinto/pgc_s_32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "batch": "dynamic"}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "whc-4", "task": "cascade", "name": "WHC（手を振る、4 フレーム）", "where": ["browser"], "adapter": "onnx", "mb": 1.1, "onnx": {"url": "https://yoshiri.github.io/cv-playground/web/pinto/whc_seq_3dcnn_1x4x32x32.onnx", "path": "pinto/whc_seq_3dcnn_1x4x32x32.onnx"}, "pre": {"size": [32, 32], "resize": "stretch", "scale": 0.00392156862745098, "input": "images", "seq": 4}, "post": {"type": "embedding"}, "license": "MIT"}, {"key": "osnet-x025", "task": "reid", "name": "OSNet x0.25（MSMT17）", "where": ["browser"], "adapter": "onnx", "mb": 1, "note": "追跡（BoT-SORT + ReID）で使う人物 ReID の特徴。torchreid の OSNet を ONNX にしたもの（入力 256×128、512 次元、バッチ 16 固定）", "onnx": {"repo": "anriha/osnet_x0_25_msmt17", "file": "osnet_x0_25_msmt17.onnx", "sha256": {"osnet_x0_25_msmt17.onnx": "e78604f4ccda49b8f41cd0f8f7303800ce75d2361895ebb0729513c1bf53d277"}}, "pre": {"size": [128, 256], "resize": "stretch", "scale": 0.00392156862745098, "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "input": "input", "batch": 16}, "post": {"type": "embedding"}, "license": "MIT（torchreid）"}, {"key": "ollama-vlm", "task": "vlm", "name": "Ollama の VLM", "where": ["server"], "adapter": "ollama-vlm", "ollama": "qwen3-vl:8b", "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意", "license": "モデルによる（qwen3-vl は Apache-2.0）"}, {"key": "xfeat", "task": "template", "name": "XFeat（特徴点＋対応＋RANSAC）", "where": ["browser", "server"], "adapter": "onnx", "mb": 2.8, "bench": true, "onnx": {"repo": "kornia/xfeat", "file": "xfeat_backbone.onnx", "data": "xfeat_backbone.onnx.data", "cut": ["descriptors", "heatmap", "sigmoid"], "squeeze": ["val_424", "val_436"], "sha256": {"xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0", "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"}}, "pre": {"size": [640, 640], "resize": "floor32", "dynamic": true, "scale": 0.00392156862745098, "input": "image"}, "post": {"type": "xfeat_match", "top_k": 512, "threshold": 0.05, "min_cossim": 0.82, "min_inliers": 15, "ransac_px": 3.0, "gpu": true}, "license": "Apache-2.0", "note": "学習ベースの軽い特徴点（CVPR 2024、verlab/accelerated_features）。kornia の ONNX（2.8MB）。後処理は kornia の detectAndCompute と相互最近傍のマッチングに合わせ、ホモグラフィは 4 点の DLT ＋ RANSAC を自前で書いた。入力は 32 の倍数に切り下げる（画素の値の倍率は効かない。中で濃淡にして正規化する）", "server": {"providers": "cpu"}}, {"key": "xfeat-motion", "task": "stabilize", "name": "XFeat（フレーム間の動き）", "where": ["browser"], "adapter": "onnx", "mb": 2.8, "bench": false, "onnx": {"repo": "kornia/xfeat", "file": "xfeat_backbone.onnx", "data": "xfeat_backbone.onnx.data", "cut": ["descriptors", "heatmap", "sigmoid"], "squeeze": ["val_424", "val_436"], "sha256": {"xfeat_backbone.onnx": "86d7d549b380405f208933efb5202e1584d9762f3a72e06e7ed81ca1436972e0", "xfeat_backbone.onnx.data": "d4498528d37bf7c737cce9c135f9b0340d828bab7dc808339e50553ac8c1b7d9"}}, "pre": {"size": [640, 640], "resize": "floor32", "dynamic": true, "scale": 0.00392156862745098, "input": "image"}, "post": {"type": "xfeat_motion", "gpu": true, "top_k": 512, "threshold": 0.05, "min_cossim": 0.82, "min_inliers": 12, "ransac_px": 2.0}, "license": "Apache-2.0", "note": "前のフレームと XFeat の点を対応させ、RANSAC で動き（既定は相似変換）を求める。補正（軌跡をなめらかにして描き直す）は画面側の stabilize.js。テンプレートマッチングと同じ ONNX"}], "interact": [{"id": "broadcast", "name": "別のタブに流す（BroadcastChannel）", "tasks": ["detect", "pose", "face", "wholebody", "gesture", "zsdetect", "approach", "pose3d"], "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"}, {"id": "websocket", "name": "WebSocket に流す", "tasks": ["detect", "pose", "face", "wholebody", "gesture", "zsdetect", "approach", "pose3d"], "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"}, {"id": "puppet", "name": "キャラを動かす（Live2D 風。確認用）", "tasks": ["pose", "face", "gesture", "pose3d"], "hint": "一番大きく写っている人（顔）に合わせてキャラが動く。姿勢のタブなら頭の向き・体の傾き・腕、顔のタブなら頭の向きと表情。推論の合間は画面の更新ごとにばねでなめらかにつなぐ"}]};
 const TASKS = CATALOG.tasks;
 const MODELS = CATALOG.models;
 
@@ -2112,6 +2200,102 @@ const SKELETON = [[15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6,
   [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6]];
 
 return { CATALOG, TASKS, MODELS, SKELETON };
+})();
+const { mul3, inv3, apply3, affineOf, STAB_ALPHA, Stabilizer } = await (async () => {
+// 手ぶれ補正（画面側）: Worker が返すフレーム間の動き M_t（今のフレームの点 → 前のフレームの点、3×3）から、カメラの動きの軌跡
+// C_t = C_{t−1}·M_t（今のフレーム → 最初のフレーム）を積み、なめらかにした軌跡 S_t との差 W_t = S_t⁻¹·C_t でフレームを描き直す。
+// 周りを切り抜く（crop の割合だけ拡大）ので、W_t で動かしても画面の中は埋まっている。埋まらなくなる時は S_t を C_t の側へ寄せる
+//
+//   なめらか: S_t = S_{t−1} + α (C_t − S_{t−1})（要素ごと。小さい回転なら相似変換・ホモグラフィとも近似として足りる）
+//   三脚:     S_t = 最初のフレーム（I）のまま。切り抜きの外に出る時だけ寄せる
+//
+// 揺れの指標: 補正前は M_t、補正後は画面の上での動き D_t = Z·W_{t−1}·M_t·W_t⁻¹·Z⁻¹ の、画面の中心のずれ（px）と回転（度）の二乗平均
+
+const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+function mul3(a, b) {
+  const r = new Array(9);
+  for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) r[i * 3 + j] = a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+  return r;
+}
+function inv3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m, A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g, det = a * A + b * B + c * C;
+  if (Math.abs(det) < 1e-12) return I.slice();
+  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+}
+const norm = (m) => (Math.abs(m[8]) > 1e-12 ? m.map((v) => v / m[8]) : m);
+const apply3 = (m, x, y) => { const w = m[6] * x + m[7] * y + m[8]; return [(m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w]; };
+const lerp = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+// 拡大（中心まわりに z 倍）
+const zoom = (z, w, h) => [z, 0, (1 - z) * w / 2, 0, z, (1 - z) * h / 2, 0, 0, 1];
+// 動き（3×3）の、画面の中心のずれ（px）と回転（度）
+function motionAt(m, w, h) {
+  const [x, y] = apply3(m, w / 2, h / 2);
+  return { t: Math.hypot(x - w / 2, y - h / 2), deg: (Math.atan2(m[3] - m[6] * m[5], m[0] - m[6] * m[2]) * 180) / Math.PI };
+}
+// canvas の 2D はアフィン変換しか描けないので、ホモグラフィは四隅を最小二乗で合わせたアフィンで近似する（小さい揺れなら差はわずか）
+function affineOf(m, w, h) {
+  if (Math.abs(m[6]) < 1e-12 && Math.abs(m[7]) < 1e-12) return [m[0] / m[8], m[3] / m[8], m[1] / m[8], m[4] / m[8], m[2] / m[8], m[5] / m[8]];
+  const src = [[0, 0], [w, 0], [w, h], [0, h], [w / 2, h / 2]], dst = src.map(([x, y]) => apply3(m, x, y));
+  // [x y 1] → u, v をそれぞれ最小二乗（3×3 の正規方程式）
+  const solve = (k) => {
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], bb = [0, 0, 0];
+    src.forEach(([x, y], i) => { const r = [x, y, 1]; for (let p = 0; p < 3; p++) { bb[p] += r[p] * dst[i][k]; for (let q = 0; q < 3; q++) A[p][q] += r[p] * r[q]; } });
+    const inv = inv3(A.flat());
+    return [0, 1, 2].map((p) => inv[p * 3] * bb[0] + inv[p * 3 + 1] * bb[1] + inv[p * 3 + 2] * bb[2]);
+  };
+  const [a, c, e] = solve(0), [b, d, f] = solve(1);
+  return [a, b, c, d, e, f];
+}
+
+const STAB_ALPHA = { weak: 0.3, mid: 0.1, strong: 0.03 }; // なめらかにする強さ（指数移動平均の係数。小さいほど強い）
+
+class Stabilizer {
+  constructor() { this.reset(); }
+  reset() {
+    this.C = I.slice(); this.S = I.slice(); this.W = I.slice(); this.mode = null;
+    this.hist = []; this.sum = { rt: 0, rd: 0, ot: 0, od: 0, n: 0 }; this.lost = 0; this.frames = 0;
+  }
+  // r: Worker の結果（kind: motion）。opts = { mode: "smooth" | "tripod", strength: "weak" | "mid" | "strong", crop: 0〜0.4 }
+  update(r, opts) {
+    const w = r.w, h = r.h;
+    if (r.first || this.mode !== opts.mode || this.w !== w || this.h !== h) { this.reset(); this.mode = opts.mode; this.w = w; this.h = h; }
+    this.frames++;
+    const M = r.ok ? norm(r.M) : I;
+    if (!r.first && !r.ok) this.lost++;
+    const Wprev = this.W;
+    this.C = norm(mul3(this.C, M));
+    let S = opts.mode === "tripod" ? this.S : lerp(this.S, this.C, STAB_ALPHA[opts.strength] ?? 0.1);
+    // 切り抜いた枠（画面全体）を元のフレームに戻した四隅が、フレームの中に入るまで S を C の側へ寄せる（二分探索）
+    const z = 1 / (1 - opts.crop), Z = zoom(z, w, h); // crop は幅・高さのうち切り抜く割合（両側の合計）
+    const inside = (Sx) => {
+      const back = inv3(mul3(Z, mul3(inv3(Sx), this.C)));
+      return [[0, 0], [w, 0], [w, h], [0, h]].every(([x, y]) => { const [u, v] = apply3(back, x, y); return u >= -0.5 && v >= -0.5 && u <= w + 0.5 && v <= h + 0.5; });
+    };
+    if (!inside(S)) {
+      let lo = 0, hi = 1;
+      for (let k = 0; k < 20; k++) { const mid = (lo + hi) / 2; if (inside(lerp(S, this.C, mid))) hi = mid; else lo = mid; }
+      S = lerp(S, this.C, hi);
+    }
+    this.S = norm(S);
+    this.W = norm(mul3(inv3(this.S), this.C));
+    this.Z = Z;
+    // 揺れ: 補正前は M、補正後は画面の上での動き D = W_{t−1}·M·W_t⁻¹
+    if (!r.first) {
+      // 画面の上の動きは拡大（切り抜き）も含める: Z·W_{t−1}·M·W_t⁻¹·Z⁻¹
+      const raw = motionAt(M, w, h), out = motionAt(norm(mul3(Z, mul3(Wprev, mul3(M, mul3(inv3(this.W), inv3(Z)))))), w, h);
+      this.hist.push({ raw: raw.t, out: out.t });
+      if (this.hist.length > 240) this.hist.shift();
+      const s = this.sum;
+      s.rt += raw.t ** 2; s.rd += raw.deg ** 2; s.ot += out.t ** 2; s.od += out.deg ** 2; s.n++;
+    }
+    const s = this.sum, rms = (v) => (s.n ? Math.sqrt(v / s.n) : 0);
+    r.stab = { W: this.W, Z, crop: opts.crop, mode: opts.mode, hist: this.hist.slice(), lost: this.lost, frames: this.frames,
+      jitter: { raw_px: rms(s.rt), raw_deg: rms(s.rd), out_px: rms(s.ot), out_deg: rms(s.od), n: s.n } };
+    return r.stab;
+  }
+}
+
+return { mul3, inv3, apply3, affineOf, STAB_ALPHA, Stabilizer };
 })();
 const { esc, labelColor, idColor, limbColor, nearColor, TURBO_CSS, KINDS, fmtMs } = await (async () => {
 // 結果の種類（kind）ごとの見せ方。新しい種類の結果を足す時はここに1件足す（書き方は docs/ADDING_UI.md）。
@@ -2398,6 +2582,57 @@ const KINDS = {
     summary: (r) => `${r.found ? "見つかった" : "見つからない"}（インライア ${r.inliers}/対応 ${r.matches}）`,
   },
 
+  // 手ぶれ補正: Worker の動き（M）と、画面側の stabilize.js が付ける r.stab（補正 W・拡大 Z・揺れ）、解析したフレーム r.frame
+  motion: {
+    views: () => [["stab", "補正後"], ["side", "並べる（元・補正後）"], ["orig", "元＋切り抜く枠"]],
+    draw(ctx, r, b, view) {
+      const f = r.frame, st = r.stab;
+      if (!f) return;
+      const k = b.w / r.w, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
+      ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h);
+      const T = st ? mul3(st.Z, st.W) : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      const drawStab = (ox, oy, sc) => {
+        const [a, bb, c, d, e, ff] = affineOf(T, r.w, r.h);
+        ctx.save();
+        ctx.beginPath(); ctx.rect(ox, oy, r.w * sc, r.h * sc); ctx.clip();
+        ctx.setTransform(a * sc, bb * sc, c * sc, d * sc, ox + e * sc, oy + ff * sc);
+        ctx.drawImage(f, 0, 0, r.w, r.h);
+        ctx.restore();
+      };
+      if (view === "side") {
+        const sc = (b.w / 2 - 4) / r.w, oy = (b.h - r.h * sc) / 2;
+        ctx.drawImage(f, 0, oy, r.w * sc, r.h * sc);
+        drawStab(b.w / 2 + 4, oy, sc);
+        tag(ctx, 4, oy + 4, "元", "#64748b", size); tag(ctx, b.w / 2 + 8, oy + 4, "補正後", "#16a34a", size);
+      } else if (view === "orig") {
+        ctx.drawImage(f, 0, 0, b.w, b.h);
+        // 補正後に見える範囲（画面全体を元のフレームに戻した四角形）と、前のフレームとの対応（インライアは緑）
+        const back = inv3(T), q = [[0, 0], [r.w, 0], [r.w, r.h], [0, r.h]].map(([x, y]) => apply3(back, x, y));
+        ctx.lineWidth = lw; ctx.strokeStyle = "#facc15"; ctx.beginPath();
+        q.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.closePath(); ctx.stroke();
+        for (const [xp, yp, xc, yc, inl] of r.pairs) {
+          ctx.strokeStyle = inl ? "rgba(34,197,94,.9)" : "rgba(239,68,68,.5)"; ctx.lineWidth = Math.max(1, lw / 2);
+          ctx.beginPath(); ctx.moveTo(xp * k, yp * k); ctx.lineTo(xc * k, yc * k); ctx.stroke();
+        }
+      } else {
+        drawStab(0, 0, k);
+      }
+      if (st?.hist.length > 1) drawJitter(ctx, st.hist, b, lw);
+      if (!r.ok && !r.first) tag(ctx, 4, b.h - size * 2.2, `動きを推定できない（インライア ${r.inliers}）`, "#dc2626", size);
+    },
+    panel(r) {
+      if (r.first && !r.stab?.frames) return `<div class="sub">動画かカメラを選んで「▶ 連続実行」で補正する（前のフレームとの動きを使うので、静止画では補正しない）</div>`;
+      const j = r.stab?.jitter, d = r.post_detail || {};
+      const f = (v, u, n = 1) => `${v.toFixed(n)}${u}`;
+      const jit = j?.n ? `<div class="sub">揺れ（フレーム間の動きの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>` : "";
+      const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
+      return `<div class="chips"><span class="chip"><i style="background:${r.ok || r.first ? "#22c55e" : "#dc2626"}"></i>${r.model === "homography" ? "ホモグラフィ" : "相似変換"}・インライア ${r.inliers}/${r.matches}</span>`
+        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : "なめらか"}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}</div>`
+        + jit + (times ? `<div class="sub">後処理の内訳: ${times}</div>` : "");
+    },
+    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px` : "補正なし"; },
+  },
+
   // 文章（画像の説明・質問）
   text: {
     views: () => [],
@@ -2406,6 +2641,19 @@ const KINDS = {
     summary: (r) => r.text.slice(0, 24) + "…",
   },
 };
+
+// 揺れのグラフ（画面の下の帯）: フレーム間の動きの大きさ（px）。赤が補正前、緑が補正後
+function drawJitter(ctx, hist, b, lw) {
+  const H = b.h * 0.18, y0 = b.h - H, n = hist.length, max = Math.max(4, ...hist.map((x) => x.raw));
+  ctx.fillStyle = "rgba(11,15,20,.55)"; ctx.fillRect(0, y0, b.w, H);
+  for (const [key, col, wd] of [["raw", "#f87171", lw * 0.6], ["out", "#4ade80", lw]]) {
+    ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.beginPath();
+    hist.forEach((h, i) => { const x = (i / Math.max(1, 239)) * b.w, y = y0 + H - (h[key] / max) * (H - 4) - 2; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#e5e7eb"; ctx.font = `${Math.max(10, Math.round(b.w / 70))}px sans-serif`;
+  ctx.fillText(`フレーム間の動き（最大 ${max.toFixed(0)}px）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
+}
 
 // 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用
 function drawPairs(ctx, r, b, lw, size) {
@@ -2858,6 +3106,7 @@ const RUN_COLUMNS = [
   "frames", "fps", "infer_mean_ms", "infer_median_ms", "infer_p90_ms", "infer_min_ms", "infer_max_ms", "warmup", "bench_image", "summary",
   "infer_p95_ms", "gpu_ms", // 後から足した列（前の版の CSV と列の位置が変わらないように末尾に置く）
   "extract_ms", "match_ms", "ransac_ms", "inliers", "matches", "quad_err_px", // テンプレートマッチングの後処理の内訳と、ベンチの四隅の誤差
+  "jitter_raw_px", "jitter_out_px", "jitter_raw_deg", "jitter_out_deg", // 手ぶれ補正: フレーム間の動きの二乗平均（補正前・補正後）
 ];
 const ENV_COLUMNS = ["variant", "app_version", "browser", "os", "device_model", "gpu", "webgpu", "cpu_threads", "device_memory_gb",
   "wasm_threads", "cross_origin_isolated", "screen", "user_agent"];
@@ -2886,7 +3135,8 @@ function toMarkdown(runs, env) {
   const lines = ["| 日時 | 種類 | タスク | モデル | 実行場所 | 入力 | 推論 ms（中央値） | p90 | p95 | 前処理 | モデル実行 | 後処理 | GPU（詳細計測） | fps | 読み込み ms | 後処理の内訳など |",
     "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"];
   // テンプレートマッチング: 点の取り出し・対応・RANSAC（ms）と、インライア/対応、ベンチなら正解の四隅からの誤差
-  const detail = (r) => (r.match_ms == null ? "" : `点 ${ms(r.extract_ms)} / 対応 ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ 四隅 ${Number(r.quad_err_px).toFixed(1)}px` : ""}`);
+  const detail = (r) => (r.match_ms == null ? "" : `点 ${ms(r.extract_ms)} / 対応 ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ 四隅 ${Number(r.quad_err_px).toFixed(1)}px` : ""}`
+    + (r.jitter_raw_px != null ? ` ・ 揺れ ${r.jitter_raw_px}px/${r.jitter_raw_deg}° → ${r.jitter_out_px}px/${r.jitter_out_deg}°` : ""));
   for (const r of runs) {
     lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${{ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode} | ${r.task} | ${r.model_name} | ${r.where} ${r.device}${r.runtime ? " " + r.runtime : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${ms(r.infer_p95_ms)} | ${ms(r.pre_ms)} | ${ms(r.run_ms)} | ${ms(r.post_ms)} | ${ms(r.gpu_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} | ${detail(r)} |`);
   }
@@ -3621,6 +3871,8 @@ const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
 const state = {
   task: "detect",
+  stab: new Stabilizer(), // 手ぶれ補正の軌跡（連続実行ごとに作り直す）
+  motionSeq: 0,
   template: null,    // テンプレートマッチングの探す物 {id, bitmap, blob, w, h}
   tplSelect: false,  // 「枠で切り出す」を押して、画像の上で枠をドラッグするのを待っている
   tplDrag: null,     // ドラッグ中の枠 [x1, y1, x2, y2]（canvas の座標）
@@ -4214,7 +4466,8 @@ function makeRecord(m, r, mode, extra = {}) {
     device: r.device, runtime: m.where === "browser" ? r.dtype || "" : "", input_size: m.pre?.dynamic ? parseInt($("input-size").value, 10) : "",
     frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind,
-    ...(r.kind === "matches" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
+    ...(r.kind === "matches" || r.kind === "motion" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
+    ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3) } : {}),
     ...extra,
   };
 }
@@ -4289,7 +4542,7 @@ function benchQuadErr(r) {
 // 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
 // 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
 function benchCandidates() {
-  return TASKS.filter((t) => !t.click && !t.combo).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+  return TASKS.filter((t) => !t.click && !t.combo && !t.video).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
 }
 
 function renderBench() {
@@ -4414,11 +4667,15 @@ function paramsFor(key, w, auto) {
     prompt: $("prompt").value,
     points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
     input_size: parseInt($("input-size").value, 10), // 入力サイズ可変のモデルの長辺
-    top_k: parseInt($("top-k").value, 10), // テンプレートマッチングの特徴点の数
+    top_k: parseInt($("top-k").value, 10), // テンプレートマッチング・手ぶれ補正の特徴点の数
+    motion_model: $("stab-model").value, motion_seq: state.motionSeq, // 手ぶれ補正の動きのモデルと、連続実行の通し番号（変わったら前のフレームを捨てる）
     auto,
     _imageKey: key,
   };
 }
+
+// ---------- 手ぶれ補正 ----------
+const stabOpts = () => ({ mode: $("stab-mode").value, strength: $("stab-strength").value, crop: parseFloat($("stab-crop").value) });
 
 // ---------- テンプレートマッチング: 探す物（テンプレート） ----------
 // 画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。Worker はテンプレートの特徴を id ごとに持って使い回すので、
@@ -4499,6 +4756,7 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
   const [w, h] = inferSize();
   const tg = performance.now();
   const { image, key } = await grabFrame(m.where === "server");
+  const frameCanvas = state.video ? state.lastFrame : state.image?.bitmap;
   const grabMs = performance.now() - tg;
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
@@ -4530,6 +4788,7 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     throw new Error("テンプレートを送り直す。もう一度実行する");
   }
   if (usesTemplate) { if (m.where === "browser") tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
+  if (r.kind === "motion") r.frame = frameCanvas; // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};
@@ -4559,7 +4818,9 @@ async function run() {
   $("run").disabled = true;
   setStatus(m.where === "browser" ? "ブラウザで実行中…（初回はモデルを取得）" : "サーバーで実行中…（初回はモデルを読み込み）");
   try {
+    state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 静止画の 1 回は前のフレームが無い
     const r = await runOnce(m);
+    if (r.kind === "motion") state.stab.update(r, stabOpts());
     await applyCascade(m, r, null);
     await applyCombo(r, null);
     state.apps = createApps();
@@ -4601,6 +4862,7 @@ async function liveLoop() {
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();
+  state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 手ぶれ補正: 連続実行ごとに前のフレームと軌跡を捨てる
   state.comboCache = {}; state.comboTick = 0; COMBOS[curTask().combo?.app]?.reset?.(); // 組み合わせの前の結果・履歴を捨てる
   KINDS.depth.resetRange(); // 深度の「範囲を固定」は連続実行ごとに取り直す
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
@@ -4612,6 +4874,7 @@ async function liveLoop() {
   const nextPrompt = () => (samTrack?.prompt ? { points: [[...samTrack.prompt.point, 1]], box: samTrack.prompt.box } : {});
   // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
   const handle = async (r) => {
+    if (r.kind === "motion") state.stab.update(r, stabOpts()); // フレームの順に（パイプライン化しても handle は順に呼ばれる）
     if (samTrack) updateSamTrack(samTrack, r);
     if (tracker) {
       const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;

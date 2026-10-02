@@ -151,7 +151,8 @@ export class XFeatGpu {
   }
 
   // ONNX の出力（GPU の上）→ 点（元画像の座標）・スコア・記述子（GPU のバッファ）
-  async extract(out, m, topK, th) {
+  // featsName: 記述子のバッファの名前（手ぶれ補正は前のフレームの分を残すので、2 つを交互に使う）
+  async extract(out, m, topK, th, featsName = "feats") {
     const D = out.cut_0, Hm = out.cut_1, R = out.cut_2, H = Hm.dims[2], W = Hm.dims[3], h8 = D.dims[2], w8 = D.dims[3];
     const cap = Math.ceil((W * H) / 9);
     const cnt = this.buf("cnt", 16, S.STORAGE | S.COPY_SRC | S.COPY_DST), cand = this.buf("cand", cap * 8, S.STORAGE | S.COPY_SRC);
@@ -182,7 +183,7 @@ export class XFeatGpu {
     keep.forEach(([x, y, s], i) => { pts[2 * i] = x / m.sx; pts[2 * i + 1] = y / m.sy; scores[i] = s; pin[2 * i] = x; pin[2 * i + 1] = y; });
     const pb = this.buf("pts", pin.byteLength, S.STORAGE | S.COPY_DST);
     this.dev.queue.writeBuffer(pb, 0, pin);
-    const feats = this.buf("feats", Math.max(1, n) * 256, S.STORAGE | S.COPY_SRC);
+    const feats = this.buf(featsName, Math.max(1, n) * 256, S.STORAGE | S.COPY_SRC);
     if (n) {
       const ud = new Uint32Array(8); ud.set([W, H, w8, h8, n]);
       this.dev.queue.submit([this.run(this.desc, [D.gpuBuffer, pb, feats, this.uniform("udesc", ud)], [Math.ceil(n / 64), 1, 1]).finish()]);

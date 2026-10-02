@@ -2,7 +2,7 @@
 // 前処理（pre）と後処理（post）は models.json に名前で書き、ここと adapters.py に同じ部品を持つ。
 // 部品を足したら両方に足すと、同じモデルをブラウザとサーバーで同じ手順で比べられる。
 import { COCO } from "./coco.js";
-import { matchMnn, matchTemplate, xfeatExtract } from "./xfeat.js";
+import { estimateMotion, matchMnn, matchTemplate, xfeatExtract } from "./xfeat.js";
 import { XFeatGpu } from "./xfeat_gpu.js";
 
 const HF = "https://huggingface.co";
@@ -488,6 +488,12 @@ let xgpu = null, ort_ = null; // XFeat の GPU の後処理（最初に使う時
 
 // 後処理の前に状態を用意する部品（POST と同じ名前）。st は Worker の読み込み済みの状態で、フレームをまたいで持てる
 const PREPARE = {
+  // 手ぶれ補正: 前のフレームの点・記述子を st に持つ。連続実行を始め直した時（motion_seq が変わった時）と、大きさが変わった時に捨てる
+  xfeat_motion(ort, st, e, params) {
+    const key = `${params.motion_seq ?? ""}:${params.top_k || e.post.top_k}`;
+    if (st.motionKey !== key) { st.motionKey = key; st.prev = null; }
+    params._motion = st;
+  },
   // テンプレートマッチング: テンプレートの点・記述子は、同じテンプレート（id）と設定のあいだ st に持って使い回す。
   // テンプレートは大きさがまちまちなので、形を固定しない別のセッション（graph capture なし）で計算する。
   // 画面はテンプレートの画像を初回だけ送る（Worker に無い時に画像が無ければ TEMPLATE_MISSING で送り直してもらう）
@@ -510,6 +516,35 @@ const PREPARE = {
 };
 
 const POST = {
+  // 手ぶれ補正: XFeat の点・記述子を前のフレームと相互最近傍で対応させ、RANSAC で動き（今 → 前）を求める（xfeat.js の estimateMotion）。
+  // GPU の後処理では、記述子のバッファを 2 つ交互に使い、前のフレームの分を GPU に残したまま対応を取る
+  async xfeat_motion(out, m, post, params) {
+    const topK = +(params.top_k || post.top_k || 512), th = post.threshold ?? 0.05, minCos = post.min_cossim ?? 0.82, st = params._motion;
+    const t0 = performance.now();
+    let fr, mnn;
+    if (out.cut_1.location === "gpu-buffer") {
+      xgpu ??= new XFeatGpu(ort_.env.webgpu.device);
+      st.flip = !st.flip;
+      fr = await xgpu.extract(out, m, topK, th, st.flip ? "featsA" : "featsB");
+      if (st.prev && !st.prev.featsGpu) st.prev = null; // JS の後処理から切り替わった時
+      mnn = (a, b) => xgpu.match(a, a.featsGpu, b, minCos);
+    } else {
+      for (const k of ["cut_0", "cut_1", "cut_2"]) if (out[k].location === "gpu-buffer") out[k] = { dims: out[k].dims, data: await out[k].getData() };
+      fr = xfeatExtract(out, m, topK, th);
+      if (st.prev && !st.prev.feats) st.prev = null;
+      mnn = (a, b) => matchMnn(a, b, minCos);
+    }
+    const t1 = performance.now();
+    const prev = st.prev?.W === m.W && st.prev?.H === m.H ? st.prev : null;
+    st.prev = Object.assign(fr, { W: m.W, H: m.H });
+    const res = { kind: "motion", w: m.W, h: m.H, kpts: fr.n, ok: false, M: [1, 0, 0, 0, 1, 0, 0, 0, 1], inliers: 0, matches: 0, pairs: [], first: !prev };
+    if (!prev) { res.post_detail = { extract: t1 - t0 }; return res; }
+    const { i0, i1 } = await mnn(prev, fr);
+    const t2 = performance.now();
+    Object.assign(res, estimateMotion(prev, fr, i0, i1, post, params));
+    res.post_detail = { extract: t1 - t0, match: t2 - t1, ransac: performance.now() - t2 };
+    return res;
+  },
   // XFeat の特徴点 → テンプレートとの対応 → ホモグラフィ（xfeat.js。サーバーの adapters.py と同じ手順）。
   // 出力が GPU の上なら、点の取り出しと対応を GPU で（xfeat_gpu.js）。RANSAC はどちらも JS
   async xfeat_match(out, m, post, params) {

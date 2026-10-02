@@ -524,16 +524,33 @@ class OnnxAdapter(Adapter):
             providers, self.device = ["CPUExecutionProvider"], "cpu"
         else:
             providers, self.device = [("CoreMLExecutionProvider", {"ModelFormat": "MLProgram"}), "CPUExecutionProvider"], "coreml"
-        if o.get("cut"):  # 途中の値で切る（ブラウザの onnx_generic.js の cutOnnx と同じ。出力は cut_0, cut_1, …）
+        if o.get("squeeze") or o.get("cut"):
             import onnx
             from onnx import TensorProto, helper
             mp = onnx.load(path)
+        if o.get("cut"):  # 途中の値で切る（ブラウザの onnx_generic.js の cutOnnx と同じ。出力は cut_0, cut_1, …）
             sub = onnx.utils.Extractor(mp).extract_model([i.name for i in mp.graph.input], o["cut"])
             for i, name in enumerate(o["cut"]):
                 sub.graph.node.append(helper.make_node("Cast", [name], [f"cut_{i}"], to=TensorProto.FLOAT))
             del sub.graph.output[:]
             sub.graph.output.extend([helper.make_tensor_value_info(f"cut_{i}", TensorProto.FLOAT, None) for i in range(len(o["cut"]))])
-            path = sub.SerializeToString()
+            path = mp = sub
+        if o.get("squeeze"):  # 値をスカラーにする（ブラウザの squeezeOnnx と同じ。作るノードの出力を 名前_raw にして Squeeze を挟む。
+            # 形の情報を消すので、onnx.utils.Extractor で切った後に）
+            want = set(o["squeeze"])
+            nodes = []
+            for n in mp.graph.node:
+                nodes.append(n)
+                for k, out in enumerate(n.output):
+                    if out in want:
+                        n.output[k] = out + "_raw"
+                        nodes.append(helper.make_node("Squeeze", [out + "_raw"], [out], name=f"squeeze_{out}"))
+            del mp.graph.node[:]
+            mp.graph.node.extend(nodes)
+            del mp.graph.value_info[:]  # 形の情報は全部消す（後ろの値にも長さ 1 と書かれている。onnxruntime が推論し直す）
+            path = mp
+        if not isinstance(path, str):
+            path = path.SerializeToString()
         self.sess = ort.InferenceSession(path, providers=providers)
         self.outputs = [o.name for o in self.sess.get_outputs()]
 

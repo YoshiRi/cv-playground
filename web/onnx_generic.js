@@ -74,6 +74,7 @@ export async function onnxLoad(ort, e, device, onProgress) {
     : await fetchModelFile(base + file, onProgress);
   // onnx.cut: 途中の値で切り、そこより後ろのノードを消す（出力の頭が CPU に回って graph capture を作れないモデル用。
   // 重みのライセンス上、書き換えた ONNX は配らず、取得した ONNX をこの端末で書き換える）
+  if (e.onnx.squeeze) model = squeezeOnnx(model, e.onnx.squeeze);
   if (e.onnx.cut) model = cutOnnx(model, e.onnx.cut);
   // WebGPU は { name } の形で渡す。onnxruntime-web 1.30 は文字列の "webgpu" だと enableGraphCapture を WebGPU EP に渡さず、
   // graph capture が黙って無効になる（EP の設定のログが "graph capture enable: 0" のまま）
@@ -161,6 +162,34 @@ export function cutOnnx(model, outputs) {
     parts.push(pbLen(1, pbCat([pbStr(1, name), pbStr(2, `cut_${i}`), pbStr(3, `cut_cast_${i}`), pbStr(4, "Cast"), pbLen(5, attr)])));
     parts.push(pbLen(12, pbCat([pbStr(1, `cut_${i}`), pbLen(2, pbLen(1, pbInt(1, 1)))]))); // ValueInfo: name, type.tensor_type.elem_type = FLOAT
   });
+  return pbCat(top.map((x) => (x === g ? pbLen(7, pbCat(parts)) : model.subarray(x.s, x.pe))));
+}
+
+// onnx.squeeze: 値の名前の並び。その値（長さ 1 の配列）をスカラーにする: 作るノードの出力名を「名前_raw」に変え、直後に
+// Squeeze（名前_raw → 名前）を足す。使う側はそのまま。XFeat の書き出しは Range の上限を長さ 1 の配列で作っていて、形が決まらない
+// 間は実行時に通るが、形を固定すると形の推論が「Range の入力がスカラーでない」で落ちる（onnxruntime-web・Python とも）。
+// 形の情報（value_info）は全部消す（後ろの値にも長さ 1 と書かれていて、onnxruntime-web は食い違うと作成を止める。
+// value_info はヒントなので、無くても onnxruntime が推論し直す）
+export function squeezeOnnx(model, names) {
+  const top = pbFields(model, 0, model.length), g = top.find((x) => x.f === 7), gf = pbFields(model, g.ps, g.pe);
+  const want = new Set(names), found = new Set(), parts = [];
+  for (const x of gf) {
+    const bytes = model.subarray(x.s, x.pe);
+    if (x.f === 13) continue; // value_info
+    if (x.f !== 1) { parts.push(bytes); continue; }
+    const nf = pbFields(model, x.ps, x.pe), hits = [];
+    const rebuilt = nf.map((y) => {
+      if (y.f !== 2) return model.subarray(y.s, y.pe);
+      const out = utf8.decode(model.subarray(y.ps, y.pe));
+      if (!want.has(out)) return model.subarray(y.s, y.pe);
+      hits.push(out); found.add(out);
+      return pbStr(2, out + "_raw");
+    });
+    parts.push(hits.length ? pbLen(1, pbCat(rebuilt)) : bytes);
+    for (const out of hits) parts.push(pbLen(1, pbCat([pbStr(1, out + "_raw"), pbStr(2, out), pbStr(3, `squeeze_${out}`), pbStr(4, "Squeeze")])));
+  }
+  const miss = names.filter((n) => !found.has(n));
+  if (miss.length) throw new Error(`スカラーにする値（${miss.join(", ")}）が ONNX に無い`);
   return pbCat(top.map((x) => (x === g ? pbLen(7, pbCat(parts)) : model.subarray(x.s, x.pe))));
 }
 
@@ -406,7 +435,7 @@ function gpuPreprocess(ort, session, bitmap, pre, inputSize, mode) {
 // GPU 版が対応している指定だけのモデルに限る。pre に新しい指定や縮小方法を足したら（preprocess と adapters.py に足す）、
 // ここに足すまでは自動で CPU の前処理になる（GPU 版が黙って違う入力を作らないように）
 const GPU_PRE_KEYS = new Set(["size", "resize", "dynamic", "stride", "short", "multiple", "pad_value", "scale", "mean", "std", "bgr", "input", "add_dims"]);
-const GPU_PRE_RESIZE = new Set(["letterbox", "letterbox_rect", "stretch", "keep_aspect"]);
+const GPU_PRE_RESIZE = new Set(["letterbox", "letterbox_rect", "stretch", "keep_aspect", "floor32"]);
 const useGpuPre = (ort, session, e) => session.cvpg?.webgpu && !session.cvpg.noGpuPre && e.preMode !== "cpu" && !!ort.env.webgpu?.device
   && GPU_PRE_RESIZE.has(e.pre.resize) && Object.keys(e.pre).every((k) => GPU_PRE_KEYS.has(k));
 

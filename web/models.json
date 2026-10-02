@@ -1956,8 +1956,10 @@
      "heatmap",
      "sigmoid"
     ],
-    "fix_shape": false,
-    "graph_capture": false
+    "squeeze": [
+     "val_424",
+     "val_436"
+    ]
    },
    "pre": {
     "size": [

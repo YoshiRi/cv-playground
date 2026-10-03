@@ -1087,25 +1087,9 @@
    "license": "CC BY-NC 4.0（非商用）"
   },
   {
-   "key": "siglip2-base",
-   "task": "classify",
-   "name": "SigLIP2 base（毎フレーム文も通す。比較用）",
-   "where": [
-    "browser"
-   ],
-   "adapter": "tjs-siglip",
-   "mb": 750,
-   "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
-   "dtype": {
-    "webgpu": "fp16",
-    "wasm": "q8"
-   },
-   "license": "Apache-2.0"
-  },
-  {
    "key": "siglip2-base-onnx",
    "task": "classify",
-   "name": "SigLIP2 base（画像は ONNX 直接、文は候補を変えた時だけ）",
+   "name": "SigLIP2 base",
    "where": [
     "browser"
    ],
@@ -1151,28 +1135,6 @@
    "text_model": "siglip2-base-text",
    "license": "Apache-2.0",
    "note": "画像エンコーダ（vision_model、fp16 186MB）を汎用 ONNX で回し、候補の文の埋め込み（文エンコーダ int8 283MB、wasm）は候補を変えた時だけ作る。スコアは cos × exp(logit_scale) + logit_bias（google/siglip2-base-patch16-224 の重みの値）。前処理は preprocessor_config.json（224×224 に引き伸ばし、平均・標準偏差 0.5）"
-  },
-  {
-   "key": "siglip2-base-tjsv",
-   "task": "classify",
-   "name": "SigLIP2 base（transformers.js、文は候補を変えた時だけ）",
-   "where": [
-    "browser"
-   ],
-   "adapter": "tjs-siglip-vision",
-   "mb": 469,
-   "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
-   "dtype": {
-    "webgpu": "fp16",
-    "wasm": "q8"
-   },
-   "post": {
-    "type": "zeroshot",
-    "logit_scale": 4.724453449249268,
-    "logit_bias": -16.771724700927734
-   },
-   "text_model": "siglip2-base-text",
-   "license": "Apache-2.0"
   },
   {
    "key": "siglip2-base-text",

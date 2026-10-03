@@ -11,7 +11,7 @@
 // Worker 名でライブラリを分ける: "ort" = onnxruntime-web、"4" = transformers.js 4.3、"3" = 3.8.1（4.x で壊れるモデル用）。
 // 同じ Worker に2つのライブラリを読むと onnxruntime が二重になるので分けている。版を URL でなく name で渡すのは、
 // 1ファイル版では Worker を Blob URL から作るので URL に引数を付けられないため
-import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor, setMirror, takeFetchLog, zeroshotLabels } from "./onnx_generic.js";
+import { hsl, onnxEmbed, onnxLoad, onnxProfile, onnxRun, segColor, setMirror, takeFetchLog } from "./onnx_generic.js";
 
 const ORT_URL = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/";
 const TJS_VERSION = self.name === "3" ? "3.8.1" : "4.3.0";
@@ -141,25 +141,8 @@ const ADAPTERS = {
   },
 
   // pipeline は SigLIP2 の文字列処理で "Invalid array length" になる。SigLIP は学習時と同じ max_length 64 で埋める
-  "tjs-siglip": {
-    load: async (e, d, pr) => ({
-      model: await T.AutoModel.from_pretrained(e.repo, tjsOpts(e, d, pr)),
-      proc: await T.AutoProcessor.from_pretrained(e.repo),
-      tok: await T.AutoTokenizer.from_pretrained(e.repo),
-    }),
-    async run(st, img, p) {
-      const labels = splitLabels(p.labels);
-      const text = st.tok(labels.map((l) => `a photo of ${l}`.toLowerCase()), { padding: "max_length", truncation: true, max_length: 64 });
-      const out = await st.model({ ...text, ...(await st.proc(img)) });
-      // SigLIP は候補ごとの独立なシグモイドで学習されていて、絶対値は小さく出がち。棒は候補間の softmax、abs にシグモイド
-      const logits = Array.from(out.logits_per_image.data);
-      const mx = Math.max(...logits), ex = logits.map((v) => Math.exp(v - mx)), sum = ex.reduce((a, b) => a + b, 0);
-      return { kind: "labels", items: labels.map((l, i) => ({ label: l, score: ex[i] / sum, abs: sigmoid(logits[i]) })).sort((a, b) => b.score - a.score) };
-    },
-  },
-
   // SigLIP の文エンコーダだけ（候補が変わった時に 1 回）。候補の文の埋め込み（L2 正規化済み、n × d）を返す。
-  // 画面が保持して、画像エンコーダのモデル（tjs-siglip-vision・汎用 ONNX の zeroshot）に毎フレーム渡す
+  // 画面が保持して、画像エンコーダのモデル（汎用 ONNX の後処理 zeroshot）に毎フレーム渡す
   "tjs-siglip-text": {
     load: async (e, d, pr) => ({
       model: await T.SiglipTextModel.from_pretrained(e.repo, { ...tjsOpts(e, e.text_device || d, pr), device: e.text_device || d }),
@@ -176,18 +159,6 @@ const ADAPTERS = {
         for (let i = 0; i < dim; i++) data[k * dim + i] *= inv;
       }
       return { kind: "embeddings", labels, data, dims: [n, dim] };
-    },
-  },
-  // SigLIP の画像エンコーダだけ（transformers.js）。文の埋め込みは画面から params.text_embeds で受け取る
-  "tjs-siglip-vision": {
-    load: async (e, d, pr) => ({
-      model: await T.SiglipVisionModel.from_pretrained(e.repo, tjsOpts(e, d, pr)),
-      proc: await T.AutoProcessor.from_pretrained(e.repo),
-    }),
-    async run(st, img, p, e) {
-      if (!p.text_embeds) throw new Error("候補の文の埋め込みが無い");
-      const out = await st.model(await st.proc(img));
-      return zeroshotLabels(out.pooler_output.data, p.text_embeds, p.text_labels, e.post.logit_scale, e.post.logit_bias);
     },
   },
 

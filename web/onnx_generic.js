@@ -486,7 +486,7 @@ export function hsl(h, s, l) {
 
 // ゼロショット分類（SigLIP）: 画像の埋め込み（L2 正規化前）と、候補の文の埋め込み（正規化済み、n × d）から、
 // logit = cos × exp(logit_scale) + logit_bias。棒は候補間の softmax、abs に logit のシグモイド（SigLIP は候補ごとの独立なシグモイドで学習）。
-// transformers.js の SiglipModel の logits_per_image と同じ式（transformers.js の画像エンコーダの adapter からも使う）
+// transformers.js の SiglipModel の logits_per_image と同じ式
 export function zeroshotLabels(img, text, labels, scale, bias) {
   const d = img.length, n = labels.length;
   let nn = 0;

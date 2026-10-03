@@ -299,7 +299,7 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
   - 文エンコーダは transformers.js の Worker（トークナイザが要る）、画像エンコーダは 1. transformers.js（SiglipVisionModel）か 2. 汎用 ONNX（vision_model_fp16.onnx を onnx.cut で pooler_output だけにして、fp16・graph capture・GPU の前処理）。文の埋め込みは画面が Worker をまたいで渡す
 - **文エンコーダの軽い版は精度に効く**（3 枚の画像で今の出力との logit の差の最大）: fp16（565MB）0.05〜0.07、**q4f16（443MB）0.6〜0.87（1 位は 3 枚とも同じ、% は動く: サッカー 91.4 → 97.1%）**、int8（283MB）3.7（1 位が変わる）。既定は q4f16（合計 629MB。前は 750MB）
 - M4 の Chrome（20 回の中央値）: 毎フレーム文も通す 71ms → 1. transformers.js で画像だけ 34ms → **2. 画像は汎用 ONNX 25ms**。CPU に回るノードは無い（GPU の時間の 7 割は Gemm）
-- Galaxy Z Fold6: 毎フレーム文も通す 219ms → **画像は汎用 ONNX 76ms**（約 2.9 倍）。transformers.js の版は、ベンチで前のモデル（両方入り 750MB・文エンコーダ 443MB）を載せたまま読み込んでメモリが足りなくなり、記録が残らなかった。ベンチでは測り終えたモデルを画面で選んでいるもの以外は捨てる（Worker に release を足した）
+- Galaxy Z Fold6: 毎フレーム文も通す 219ms → **画像は汎用 ONNX 76ms**（約 2.9 倍）。これで比較用（毎フレーム文も通す）と transformers.js の画像エンコーダの版は消し、汎用 ONNX の版だけにした。transformers.js の版は、ベンチで前のモデル（両方入り 750MB・文エンコーダ 443MB）を載せたまま読み込んでメモリが足りなくなり、記録が残らなかった。ベンチでは測り終えたモデルを画面で選んでいるもの以外は捨てる（Worker に release を足した）
 - `?profile=1` は onnxruntime の profiler の記録の手間で遅くなる（汎用 ONNX が 25 → 60ms）。速さの比較は付けずに測る
 - サーバーの `/mirror/` で、数百 MB のファイルの転送が途中で切れると、ブラウザに「network error」が返っていた（ログは Response content shorter than Content-Length）。切れたら Range で続きから取り直す（3 回まで）。上流には圧縮しないで送ってもらう（受け取ったまま流すので長さを合わせる）
 

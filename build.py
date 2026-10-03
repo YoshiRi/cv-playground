@@ -38,7 +38,7 @@ def main() -> None:
     assert "import.meta" not in catalog
     # Worker は classic で起動するので、トップレベル await を避けて全体を1つの async 関数に入れる
     worker = "(async () => {\n" + module("coco.js") + module("xfeat.js") + module("xfeat_gpu.js") + module("onnx_generic.js") + module("worker.js") + "})();\n"
-    app = module("coco.js") + module("catalog.js", catalog) + module("stabilize.js") + module("renderers.js") + module("tracker.js") + module("export.js") + module("apps.js") + module("interact.js") + module("app.js")
+    app = module("coco.js") + module("catalog.js", catalog) + module("stabilize.js") + module("renderers.js") + module("tracker.js") + module("export.js") + module("apps.js") + module("interact.js") + module("judge.js") + module("app.js")
     html = (WEB / "index.html").read_text()
     css = (WEB / "style.css").read_text()
 

@@ -263,9 +263,10 @@
   {
    "id": "classify",
    "name": "ゼロショット分類",
-   "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア",
+   "hint": "候補をカンマ区切り（英語）。棒は候補間の相対値、括弧内はモデルの絶対スコア。「判定」に、はい・いいえを判断する言い方を書くと（例: 通れる | 通れない）、画像に判定を重ね、動画では時間でならして切り替わりを記録する。インタラクトの出口で外にも流せる",
    "params": [
-    "labels"
+    "labels",
+    "judge"
    ],
    "defaults": {
     "labels": "bus, truck, tram, street, office, cat"
@@ -2122,7 +2123,8 @@
     "gesture",
     "zsdetect",
     "approach",
-    "pose3d"
+    "pose3d",
+    "classify"
    ],
    "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"
   },
@@ -2137,7 +2139,8 @@
     "gesture",
     "zsdetect",
     "approach",
-    "pose3d"
+    "pose3d",
+    "classify"
    ],
    "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"
   },

@@ -16,7 +16,8 @@ function onMessage(msg, via) {
   if (last) rate = rate ? rate * 0.9 + 0.1 * (1000 / (now - last)) : 1000 / (now - last);
   last = now; n++;
   lat = Date.now() - f.wall; // 送り手と同じ端末なら、送ってから届くまで（別の端末だと時計のずれも入る）
-  $("stat").textContent = `${via} ・ ${n} フレーム ・ ${rate.toFixed(1)} fps ・ 遅れ ${lat} ms ・ #${f.seq} ${f.task ?? ""} ${f.model ?? ""} ${f.w}×${f.h}`;
+  if (f.decisions) $("stat").dataset.dec = f.decisions.map((d) => `${d.value}(${d.p})`).join(" ");
+  $("stat").textContent = `${f.decisions ? "判定: " + $("stat").dataset.dec + " ・ " : ""}${via} ・ ${n} フレーム ・ ${rate.toFixed(1)} fps ・ 遅れ ${lat} ms ・ #${f.seq} ${f.task ?? ""} ${f.model ?? ""} ${f.w}×${f.h}`;
   $("items").innerHTML = "<tr><th>ID</th><th>ラベル</th><th>スコア</th><th>枠（0〜1）</th><th>点</th><th>状態・表情</th></tr>"
     + f.items.slice(0, 30).map((it) => `<tr><td>${it.id ?? ""}</td><td>${esc(it.label)}</td><td>${(it.score ?? 0).toFixed(2)}</td>`
       + `<td>${it.box.map((v) => v.toFixed(2)).join(", ")}</td><td>${it.keypoints?.length ?? ""}</td>`

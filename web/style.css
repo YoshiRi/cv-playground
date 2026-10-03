@@ -197,3 +197,5 @@ td small { color: var(--muted); margin-left: 2px; }
 .prof table { border-collapse: collapse; width: max-content; }
 .prof th, .prof td { padding: 2px 10px 2px 0; text-align: left; border-bottom: 1px solid var(--line); }
 .prof .num { text-align: right; }
+
+#judge { width: 100%; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }

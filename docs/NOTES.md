@@ -292,6 +292,17 @@ Galaxy Z Fold6（Brave 153）の連続実行（360×640 の動画）: 1フレー
   - 既定は先読み 8（Fold6 の結果から。表示は約 0.27 秒遅れる）
   - **Fold6 で歩きながら（ターンあり）**: なめらか中・先読みなし 揺れ 3.33 → 2.45px（26% 減）・端 141/495、**先読み 8 で 1.67 → 0.16px（90% 減）・端 0**。速さは 26〜37ms（先読みに重い計算は無い）
 
+## ゼロショット分類を速くする（SigLIP2 base、2026-10-03）
+
+- 前は毎フレーム、候補の文まで文エンコーダに通していた（transformers.js の SiglipModel、両方入りの model_fp16.onnx 750MB）。候補の文の埋め込みは候補を変えた時だけ作って画面が持ち、毎フレームは画像エンコーダだけを回す。スコアは cos × exp(logit_scale) + logit_bias（SiglipModel の logits と同じ式。4.7245 と −16.7717）
+  - 2 つの値は、元の重み（google/siglip2-base-patch16-224 の model.safetensors）の先頭の目次を Range で読み、その 8 バイトだけ取った（1.5GB の model.onnx を落とさずに済む）。今の出力の logit と差 0.05〜0.07（文エンコーダが fp16 の時）なので、ONNX の値と同じと確かめた
+  - 文エンコーダは transformers.js の Worker（トークナイザが要る）、画像エンコーダは 1. transformers.js（SiglipVisionModel）か 2. 汎用 ONNX（vision_model_fp16.onnx を onnx.cut で pooler_output だけにして、fp16・graph capture・GPU の前処理）。文の埋め込みは画面が Worker をまたいで渡す
+- **文エンコーダの軽い版は精度に効く**（3 枚の画像で今の出力との logit の差の最大）: fp16（565MB）0.05〜0.07、**q4f16（443MB）0.6〜0.87（1 位は 3 枚とも同じ、% は動く: サッカー 91.4 → 97.1%）**、int8（283MB）3.7（1 位が変わる）。既定は q4f16（合計 629MB。前は 750MB）
+- M4 の Chrome（20 回の中央値）: 毎フレーム文も通す 71ms → 1. transformers.js で画像だけ 34ms → **2. 画像は汎用 ONNX 25ms**。CPU に回るノードは無い（GPU の時間の 7 割は Gemm）
+- Galaxy Z Fold6: 毎フレーム文も通す 219ms → **画像は汎用 ONNX 76ms**（約 2.9 倍）。これで比較用（毎フレーム文も通す）と transformers.js の画像エンコーダの版は消し、汎用 ONNX の版だけにした。transformers.js の版は、ベンチで前のモデル（両方入り 750MB・文エンコーダ 443MB）を載せたまま読み込んでメモリが足りなくなり、記録が残らなかった。ベンチでは測り終えたモデルを画面で選んでいるもの以外は捨てる（Worker に release を足した）
+- `?profile=1` は onnxruntime の profiler の記録の手間で遅くなる（汎用 ONNX が 25 → 60ms）。速さの比較は付けずに測る
+- サーバーの `/mirror/` で、数百 MB のファイルの転送が途中で切れると、ブラウザに「network error」が返っていた（ログは Response content shorter than Content-Length）。切れたら Range で続きから取り直す（3 回まで）。上流には圧縮しないで送ってもらう（受け取ったまま流すので長さを合わせる）
+
 ## Grounding DINO の候補の扱い
 
 - サーバー（transformers、base）: 標準の後処理は閾値を超えた単語をつなげて「orange lemon」のような混ざった名前を返すので、候補ごとの単語の範囲で確率の最大を比べ、枠ごとに候補を1つ選ぶ（`adapters.py` の `HfGdino`）

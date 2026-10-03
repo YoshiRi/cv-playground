@@ -141,20 +141,24 @@ const ADAPTERS = {
   },
 
   // pipeline は SigLIP2 の文字列処理で "Invalid array length" になる。SigLIP は学習時と同じ max_length 64 で埋める
-  "tjs-siglip": {
+  // SigLIP の文エンコーダだけ（候補が変わった時に 1 回）。候補の文の埋め込み（L2 正規化済み、n × d）を返す。
+  // 画面が保持して、画像エンコーダのモデル（汎用 ONNX の後処理 zeroshot）に毎フレーム渡す
+  "tjs-siglip-text": {
     load: async (e, d, pr) => ({
-      model: await T.AutoModel.from_pretrained(e.repo, tjsOpts(e, d, pr)),
-      proc: await T.AutoProcessor.from_pretrained(e.repo),
+      model: await T.SiglipTextModel.from_pretrained(e.repo, { ...tjsOpts(e, e.text_device || d, pr), device: e.text_device || d }),
       tok: await T.AutoTokenizer.from_pretrained(e.repo),
     }),
     async run(st, img, p) {
       const labels = splitLabels(p.labels);
       const text = st.tok(labels.map((l) => `a photo of ${l}`.toLowerCase()), { padding: "max_length", truncation: true, max_length: 64 });
-      const out = await st.model({ ...text, ...(await st.proc(img)) });
-      // SigLIP は候補ごとの独立なシグモイドで学習されていて、絶対値は小さく出がち。棒は候補間の softmax、abs にシグモイド
-      const logits = Array.from(out.logits_per_image.data);
-      const mx = Math.max(...logits), ex = logits.map((v) => Math.exp(v - mx)), sum = ex.reduce((a, b) => a + b, 0);
-      return { kind: "labels", items: labels.map((l, i) => ({ label: l, score: ex[i] / sum, abs: sigmoid(logits[i]) })).sort((a, b) => b.score - a.score) };
+      const out = await st.model(text), emb = out.pooler_output, [n, dim] = emb.dims, data = new Float32Array(emb.data);
+      for (let k = 0; k < n; k++) {
+        let s = 0;
+        for (let i = 0; i < dim; i++) s += data[k * dim + i] ** 2;
+        const inv = 1 / Math.max(Math.sqrt(s), 1e-12);
+        for (let i = 0; i < dim; i++) data[k * dim + i] *= inv;
+      }
+      return { kind: "embeddings", labels, data, dims: [n, dim] };
     },
   },
 
@@ -333,6 +337,18 @@ function ortRuntime(e, session, device) {
   return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${pre}${g.postGpu ? " 後処理GPU" : ""}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
 }
 
+// 読み込み済みのモデルを捨てる（ベンチで測り終えたモデル。スマホでは何個も載せると GPU のメモリが足りなくなる）
+async function release(key) {
+  const p = loaded.get(key);
+  if (!p) return;
+  loaded.delete(key);
+  try {
+    const st = await p;
+    await st.session?.release?.(); await st.tplSession?.release?.();
+    for (const k of ["model", "pipe"]) await st[k]?.dispose?.();
+  } catch (err) { console.warn("モデルを捨てられない", key, err); }
+}
+
 // 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
 async function profile(id, e, last) {
   try {
@@ -350,6 +366,7 @@ async function profile(id, e, last) {
 self.onmessage = async (ev) => {
   if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
   if (ev.data.type === "profile") return profile(ev.data.id, ev.data.model, ev.data.last);
+  if (ev.data.type === "release") return release(ev.data.key);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;
@@ -368,7 +385,7 @@ self.onmessage = async (ev) => {
       loadFrom = fetchSummary(takeFetchLog(), e);
     }
     const st = await loaded.get(e.key);
-    const img = await toInput(image, A.image);
+    const img = image ? await toInput(image, A.image) : null; // 文エンコーダのように画像を使わないモデルもある
     const go = async () => {
       const t1 = performance.now();
       const r = await A.run(st, img, params, e);

@@ -1087,17 +1087,67 @@
    "license": "CC BY-NC 4.0（非商用）"
   },
   {
-   "key": "siglip2-base",
+   "key": "siglip2-base-onnx",
    "task": "classify",
    "name": "SigLIP2 base",
    "where": [
     "browser"
    ],
-   "adapter": "tjs-siglip",
-   "mb": 750,
+   "adapter": "onnx",
+   "mb": 469,
+   "bench": true,
+   "onnx": {
+    "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
+    "file": "onnx/vision_model.onnx",
+    "file_fp16": "onnx/vision_model_fp16.onnx",
+    "cut": [
+     "pooler_output"
+    ],
+    "sha256": {
+     "onnx/vision_model.onnx": "c0573e3f4140c3a7c4e9cc5912bd6b26a033b46a6a8e8af26cbea262b163bcad",
+     "onnx/vision_model_fp16.onnx": "a1959f7bd3993a607e48839f6d01e25b876fe76afda301b028b78eef68aabd95"
+    }
+   },
+   "pre": {
+    "size": [
+     224,
+     224
+    ],
+    "resize": "stretch",
+    "scale": 0.00392156862745098,
+    "mean": [
+     0.5,
+     0.5,
+     0.5
+    ],
+    "std": [
+     0.5,
+     0.5,
+     0.5
+    ],
+    "input": "pixel_values"
+   },
+   "post": {
+    "type": "zeroshot",
+    "logit_scale": 4.724453449249268,
+    "logit_bias": -16.771724700927734
+   },
+   "text_model": "siglip2-base-text",
+   "license": "Apache-2.0",
+   "note": "画像エンコーダ（vision_model、fp16 186MB）を汎用 ONNX で回し、候補の文の埋め込み（文エンコーダ int8 283MB、wasm）は候補を変えた時だけ作る。スコアは cos × exp(logit_scale) + logit_bias（google/siglip2-base-patch16-224 の重みの値）。前処理は preprocessor_config.json（224×224 に引き伸ばし、平均・標準偏差 0.5）"
+  },
+  {
+   "key": "siglip2-base-text",
+   "task": "_text",
+   "name": "SigLIP2 base の文エンコーダ",
+   "where": [
+    "browser"
+   ],
+   "adapter": "tjs-siglip-text",
+   "mb": 283,
    "repo": "onnx-community/siglip2-base-patch16-224-ONNX",
    "dtype": {
-    "webgpu": "fp16",
+    "webgpu": "q4f16",
     "wasm": "q8"
    },
    "license": "Apache-2.0"

@@ -146,7 +146,8 @@ def mirror(site: str, path: str, request: Request):
     if request.method == "HEAD":
         r = requests.head(url, allow_redirects=True, timeout=30)
         return Response(status_code=r.status_code, headers={k: v for k, v in r.headers.items() if k.lower() in ("content-length", "content-type")})
-    r = requests.get(url, stream=True, timeout=30)
+    # 圧縮しないで送ってもらう（受け取ったまま流して保存するので、長さが Content-Length と合うように）
+    r = requests.get(url, stream=True, timeout=30, headers={"Accept-Encoding": "identity"})
     if r.status_code != 200:  # 無いファイル（transformers.js は省略できる設定ファイルを探す）は、そのままの状態で返して保存しない
         r.close()
         return Response(status_code=r.status_code)
@@ -154,19 +155,34 @@ def mirror(site: str, path: str, request: Request):
     if r.headers.get("content-length"):
         headers["Content-Length"] = r.headers["content-length"]
 
+    total = int(r.headers["content-length"]) if r.headers.get("content-length") else None
+
     def body():
-        # 取りながら送り、最後まで取れた時だけ置く（途中で切れた半端なファイルは残さない）
+        # 取りながら送り、最後まで取れた時だけ置く（途中で切れた半端なファイルは残さない）。
+        # 大きいファイル（数百 MB）は転送が途中で切れることがあるので、その時は続きから取り直す（Range、3 回まで）
         f.parent.mkdir(parents=True, exist_ok=True)
         tmp = f.with_name(f".{f.name}.{os.getpid()}.{threading.get_ident()}.part")
-        ok = False
+        ok, got, resp, tries = False, 0, r, 0
         try:
             with open(tmp, "wb") as out:
-                for chunk in r.iter_content(1 << 20):
-                    out.write(chunk)
-                    yield chunk
-            ok = True
+                while True:
+                    try:
+                        for chunk in resp.raw.stream(1 << 20, decode_content=False):
+                            out.write(chunk)
+                            got += len(chunk)
+                            yield chunk
+                    except Exception:
+                        pass
+                    resp.close()
+                    if total is None or got >= total or tries >= 3:
+                        break
+                    tries += 1
+                    resp = requests.get(url, stream=True, timeout=30, headers={"Range": f"bytes={got}-", "Accept-Encoding": "identity"})
+                    if resp.status_code != 206:
+                        break
+            ok = total is None or got == total
         finally:
-            r.close()
+            resp.close()
             if ok:
                 os.replace(tmp, f)
             else:

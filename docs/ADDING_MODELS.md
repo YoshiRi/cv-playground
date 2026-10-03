@@ -75,6 +75,7 @@ web/models.json ──┬── ブラウザ: web/worker.js の ADAPTERS[adapter
 | `segmap` | セマンティック・セグメンテーションの logits (1, クラス数, h, w)。画素ごとに最大のクラスで塗る。`labels` にクラス名の並び、`output` に出力名 | segmap（凡例つき） |
 | `depth` | 深度。`inverse`（大きいほど遠い深度を反転）、`intrinsics`（内部パラメータの出力名、あれば画角を出す） | depth |
 | `embedding` | 特徴ベクトル・確率（ReID や cascade の分類で使う） | － |
+| `zeroshot` | SigLIP の画像エンコーダの出力（画像の埋め込み）と、画面が渡す候補の文の埋め込み（`params.text_embeds`）で、cos × exp(`logit_scale`) + `logit_bias`。モデルに `text_model`（文エンコーダのモデルの key）を書くと、画面が候補を変えた時だけ文の埋め込みを作る | labels |
 | `xfeat_motion` | `xfeat_match` と同じ XFeat の出力。前のフレームの点・記述子を Worker に持ち（`params.motion_seq` が変わったら捨てる）、相互最近傍と RANSAC（`params.motion_model` が `homography` ならホモグラフィ、既定は相似変換の 2 点 RANSAC）で動き（今のフレーム → 前のフレーム）を求める。補正は画面側（`web/stabilize.js`） | motion |
 | `xfeat_match` | XFeat を `onnx.cut: ["descriptors", "heatmap", "sigmoid"]` で切った出力（記述子 H/8・heatmap H・reliability H/8）。kornia の `detectAndCompute` と同じ手順で点（5×5 の極大・閾値 `threshold`・上位 `top_k`）と記述子（bicubic）を取り、テンプレートと相互最近傍（cos > `min_cossim`）で対応を取って、LO-RANSAC（`ransac_px`）でホモグラフィ。インライアが `min_inliers` 以上で凸な四角形なら「見つかった」。計算は `web/xfeat.js`（JS）と `adapters.py`（Python）で同じ。`post.gpu: true` なら WebGPU では ONNX の出力を読み戻さず、点の取り出しと対応を GPU で（`web/xfeat_gpu.js`、`?postgpu=0` で JS） | matches |
 

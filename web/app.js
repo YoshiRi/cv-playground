@@ -103,6 +103,11 @@ function embedInBrowser(model, crops) {
   });
 }
 
+// Worker の読み込み済みのモデルを捨てる（その Worker が無ければ何もしない）
+function releaseInBrowser(model) {
+  workers[workerLib(model)]?.postMessage({ type: "release", key: model.key });
+}
+
 function runInBrowser(model, image, params) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
@@ -782,6 +787,8 @@ async function runBench() {
     }));
     done.push(v.name);
     renderResult(v, r);
+    // 測り終えたブラウザのモデルは、画面で選んでいるもの以外を捨てる（スマホで何個も載せるとメモリが足りなくなり、ページが落ちた）
+    if (v.where === "browser" && currentModel()?.id !== v.id) releaseInBrowser(v);
     draw();
   }
   if (state.benchSavedTemplate !== undefined) { // ベンチの前のテンプレートに戻す
@@ -791,6 +798,9 @@ async function runBench() {
   }
   $("bench-progress").textContent = state.bench ? `完了: ${done.length} モデル（結果は実行履歴に「ベンチ」として追加。CSV で書き出せる）` : `中止した（${done.length} モデル分を記録）`;
   state.bench = false;
+  // 文エンコーダ（text_model）も、画面で選んでいるモデルが使っていなければ捨てて、文の埋め込みの写しも消す
+  const keepText = currentModel()?.text_model;
+  for (const tm of new Set(list.map(({ v }) => v.text_model).filter(Boolean))) if (tm !== keepText) { releaseInBrowser(MODELS.find((x) => x.key === tm)); textEmbCache.clear(); }
   $("bench-start").textContent = "▶ 測る";
 }
 
@@ -842,6 +852,26 @@ function paramsFor(key, w, auto) {
     auto,
     _imageKey: key,
   };
+}
+
+// ---------- ゼロショット分類: 候補の文の埋め込み ----------
+// models.json の text_model（文エンコーダのモデルの key）を持つモデルは、候補の文の埋め込みを候補が変わった時だけ作り、
+// 毎フレーム params.text_embeds で渡す（画像エンコーダだけを回す）。文エンコーダは transformers.js の Worker（トークナイザが要るため）
+const textEmbCache = new Map(); // `${text_model}:${候補}` → { data, labels }
+async function attachTextEmbeds(m, params) {
+  const key = `${m.text_model}:${params.labels}`;
+  if (!textEmbCache.has(key)) {
+    const te = MODELS.find((x) => x.key === m.text_model && x.where.includes("browser"));
+    if (!te) throw new Error(`文エンコーダ ${m.text_model} が無い`);
+    const t0 = performance.now();
+    const r = await runInBrowser({ ...te, where: "browser" }, null, { labels: params.labels });
+    textEmbCache.clear();
+    textEmbCache.set(key, { data: r.data, labels: r.labels, ms: performance.now() - t0 });
+    params._textNew = true;
+  }
+  const c = textEmbCache.get(key);
+  params.text_embeds = c.data; params.text_labels = c.labels;
+  if (params._textNew) params.text_ms = c.ms;
 }
 
 // ---------- 手ぶれ補正 ----------
@@ -948,6 +978,7 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     const pp = { ...params, show: wdef.show, ...(wdef.params || {}), ...(mm.pre?.dynamic ? { input_size: mm.pre.size[0] } : {}) };
     extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => { (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x; })]);
   }
+  if (m.text_model) await attachTextEmbeds(m, params);
   const usesTemplate = TASKS.find((x) => x.id === m.task)?.params.includes("template"); // ベンチは別のタブのまま回るので、モデルのタスクで見る
   if (usesTemplate) await attachTemplate(m, params);
   let r;
@@ -958,7 +989,8 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     throw new Error("テンプレートを送り直す。もう一度実行する");
   }
   if (usesTemplate) { if (m.where === "browser") tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
-  if (r.kind === "motion") r.frame = frameCanvas; // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
+  if (r.kind === "motion") r.frame = frameCanvas;
+  if (params._textNew) r.text_ms = params.text_ms; // 文の埋め込みを作った時（候補を変えた時）の時間 // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};

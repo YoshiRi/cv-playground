@@ -484,6 +484,19 @@ export function hsl(h, s, l) {
   return [f(0), f(8), f(4)];
 }
 
+// ゼロショット分類（SigLIP）: 画像の埋め込み（L2 正規化前）と、候補の文の埋め込み（正規化済み、n × d）から、
+// logit = cos × exp(logit_scale) + logit_bias。棒は候補間の softmax、abs に logit のシグモイド（SigLIP は候補ごとの独立なシグモイドで学習）。
+// transformers.js の SiglipModel の logits_per_image と同じ式
+export function zeroshotLabels(img, text, labels, scale, bias) {
+  const d = img.length, n = labels.length;
+  let nn = 0;
+  for (let i = 0; i < d; i++) nn += img[i] * img[i];
+  const inv = 1 / Math.max(Math.sqrt(nn), 1e-12), es = Math.exp(scale);
+  const logits = labels.map((_, k) => { let s = 0; for (let i = 0; i < d; i++) s += img[i] * text[k * d + i]; return s * inv * es + bias; });
+  const mx = Math.max(...logits), ex = logits.map((v) => Math.exp(v - mx)), sum = ex.reduce((a, b) => a + b, 0);
+  return { kind: "labels", logits, items: labels.map((l, i) => ({ label: l, score: ex[i] / sum, abs: 1 / (1 + Math.exp(-logits[i])) })).sort((a, b) => b.score - a.score) };
+}
+
 let xgpu = null, ort_ = null; // XFeat の GPU の後処理（最初に使う時に作る）と onnxruntime（onnxRun で覚える）
 
 // 後処理の前に状態を用意する部品（POST と同じ名前）。st は Worker の読み込み済みの状態で、フレームをまたいで持てる
@@ -516,6 +529,12 @@ const PREPARE = {
 };
 
 const POST = {
+  // ゼロショット分類（SigLIP の画像エンコーダ）: 出力の画像の埋め込みと、画面が渡す候補の文の埋め込み（params.text_embeds、
+  // 候補が変わった時だけ文エンコーダで作る）でスコアを出す
+  zeroshot(out, m, post, params) {
+    if (!params.text_embeds) throw new Error("候補の文の埋め込みが無い");
+    return zeroshotLabels(Object.values(out)[0].data, params.text_embeds, params.text_labels, post.logit_scale, post.logit_bias);
+  },
   // 手ぶれ補正: XFeat の点・記述子を前のフレームと相互最近傍で対応させ、RANSAC で動き（今 → 前）を求める（xfeat.js の estimateMotion）。
   // GPU の後処理では、記述子のバッファを 2 つ交互に使い、前のフレームの分を GPU に残したまま対応を取る
   async xfeat_motion(out, m, post, params) {

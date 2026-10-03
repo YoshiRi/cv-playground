@@ -288,7 +288,7 @@ export const KINDS = {
   motion: {
     views: () => [["stab", "補正後"], ["side", "並べる（元・補正後）"], ["orig", "元＋切り抜く枠"]],
     draw(ctx, r, b, view) {
-      const f = r.frame, st = r.stab;
+      const st = r.stab, f = st?.frame ?? r.frame; // 先読みの時は数フレーム前のフレーム
       if (!f) return;
       const k = b.w / r.w, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
       ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h);
@@ -312,7 +312,7 @@ export const KINDS = {
         const back = inv3(T), q = [[0, 0], [r.w, 0], [r.w, r.h], [0, r.h]].map(([x, y]) => apply3(back, x, y));
         ctx.lineWidth = lw; ctx.strokeStyle = "#facc15"; ctx.beginPath();
         q.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.closePath(); ctx.stroke();
-        for (const [xp, yp, xc, yc, inl] of r.pairs) {
+        for (const [xp, yp, xc, yc, inl] of st?.pairs ?? r.pairs) {
           ctx.strokeStyle = inl ? "rgba(34,197,94,.9)" : "rgba(239,68,68,.5)"; ctx.lineWidth = Math.max(1, lw / 2);
           ctx.beginPath(); ctx.moveTo(xp * k, yp * k); ctx.lineTo(xc * k, yc * k); ctx.stroke();
         }
@@ -330,7 +330,7 @@ export const KINDS = {
         + `<div class="sub">動き（全体。カメラを振った・歩いた動きも入る）: 補正前 ${f(j.move_raw_px, "px")} → 補正後 ${f(j.move_out_px, "px")}（どちらも元のフレームの px）</div>` : "";
       const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
       return `<div class="chips"><span class="chip"><i style="background:${r.ok || r.first ? "#22c55e" : "#dc2626"}"></i>${r.model === "homography" ? "ホモグラフィ" : "相似変換"}・インライア ${r.inliers}/${r.matches}</span>`
-        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab?.strength] ?? ""}`}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}${r.stab?.clamped ? `<span class="chip">切り抜きの端に当たった ${r.stab.clamped} フレーム（多ければ切り抜きを大きく）</span>` : ""}</div>`
+        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : r.stab?.delay ? `なめらか（先読み ${r.stab.delay} フレーム${r.stab.warmup ? "。ためている所" : ""}）` : `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab?.strength] ?? ""}`}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}${r.stab?.clamped ? `<span class="chip">切り抜きの端に当たった ${r.stab.clamped} フレーム（多ければ切り抜きを大きく）</span>` : ""}</div>`
         + jit + (times ? `<div class="sub">後処理の内訳: ${times}</div>` : "");
     },
     summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px（動き ${j.move_raw_px.toFixed(1)}→${j.move_out_px.toFixed(1)}）` : "補正なし"; },

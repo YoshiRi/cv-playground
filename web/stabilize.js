@@ -2,8 +2,12 @@
 // C_t = C_{t−1}·M_t（今のフレーム → 最初のフレーム）を積み、なめらかにした軌跡 S_t との差 W_t = S_t⁻¹·C_t でフレームを描き直す。
 // 周りを切り抜く（crop の割合だけ拡大）ので、W_t で動かしても画面の中は埋まっている。埋まらなくなる時は S_t を C_t の側へ寄せる
 //
-//   なめらか: S_t = S_{t−1} + α (C_t − S_{t−1})（要素ごと。小さい回転なら相似変換・ホモグラフィとも近似として足りる）
-//   三脚:     S_t = 最初のフレーム（I）のまま。切り抜きの外に出る時だけ寄せる
+//   なめらか: 二重指数平滑（位置 L と速さ B。L_t = α C_t + (1−α)(L_{t−1} + B_{t−1})、B_t = β (L_t − L_{t−1}) + (1−β) B_{t−1}）。
+//             要素ごと（小さい回転なら相似変換・ホモグラフィとも近似として足りる）。速さも追うので、歩く・振るなど一定の速さの動きに
+//             遅れずについていき、細かい揺れだけを消す（ただの指数移動平均は速さ × (1−α)/α だけ遅れ、切り抜きの余白を使い切った）
+//   なめらか＋先読み L: 表示を L フレーム遅らせ、前後 L フレームの軌跡のガウス平均を使う（遅れの問題が無く、歩いても強くなめらかにできる）
+//   三脚:     S_t = 最初のフレーム（I）のまま
+//   切り抜きの外に出る時は S を C の側へ寄せる（端の手前から少しずつ寄せる案は、寄せる先の C の揺れを持ち込んで逆効果だった）
 //
 // 指標（どちらも元のフレームの px と度。補正後は D_t = W_{t−1}·M_t·W_t⁻¹ で、切り抜きの拡大は入れない。入れると補正しきれない動きが
 // 拡大の分だけ大きく見え、補正前と比べられない）:
@@ -60,49 +64,82 @@ export function affineOf(m, w, h) {
   return [a, b, c, d, e, f];
 }
 
-export const STAB_ALPHA = { weak: 0.3, mid: 0.1, strong: 0.03 }; // なめらかにする強さ（指数移動平均の係数。小さいほど強い）
+export const STAB_ALPHA = { weak: 0.3, mid: 0.1, strong: 0.03 }; // なめらかにする強さ（位置の係数。小さいほど強い）
+const BETA = 0.5; // 速さの係数 = α × BETA
 
 export class Stabilizer {
   constructor() { this.reset(); }
   reset() {
-    this.C = I.slice(); this.S = I.slice(); this.W = I.slice(); this.mode = null;
-    this.hist = []; this.raws = []; this.outs = []; this.lost = 0; this.frames = 0; this.clamped = 0;
+    this.C = I.slice(); this.S = I.slice(); this.B = [0, 0, 0, 0, 0, 0, 0, 0, 0]; this.W = I.slice(); this.queue = [];
+    this.key = null; this.hist = []; this.raws = []; this.outs = []; this.lost = 0; this.frames = 0; this.clamped = 0;
   }
-  // r: Worker の結果（kind: motion）。opts = { mode: "smooth" | "tripod", strength: "weak" | "mid" | "strong", crop: 0〜0.4 }
+  // r: Worker の結果（kind: motion）。opts = { mode: "smooth" | "tripod", strength: "weak" | "mid" | "strong", crop: 0〜0.4,
+  // lookahead: 先読みのフレーム数（0 なら今のフレームを出す。L なら L フレーム前のフレームを、前後 L フレームの軌跡で）}。
+  // r.stab に、表示するフレーム（frame）と補正（W・Z）、揺れの指標を付ける
   update(r, opts) {
-    const w = r.w, h = r.h;
-    if (r.first || this.mode !== opts.mode || this.w !== w || this.h !== h) { this.reset(); this.mode = opts.mode; this.w = w; this.h = h; }
+    const w = r.w, h = r.h, L = opts.mode === "tripod" ? 0 : opts.lookahead || 0;
+    const key = `${opts.mode}:${L}:${w}x${h}`;
+    if (r.first || this.key !== key) { this.reset(); this.key = key; }
     this.frames++;
     const M = r.ok ? norm(r.M) : I;
     if (!r.first && !r.ok) this.lost++;
-    const Wprev = this.W;
     this.C = norm(mul3(this.C, M));
-    let S = opts.mode === "tripod" ? this.S : lerp(this.S, this.C, STAB_ALPHA[opts.strength] ?? 0.1);
+    const alpha = STAB_ALPHA[opts.strength] ?? 0.1;
+    let item, S;
+    if (L === 0) {
+      item = { r, C: this.C, M, first: r.first };
+      if (opts.mode === "tripod") S = this.S;
+      else {
+        S = this.S.map((v, i) => alpha * this.C[i] + (1 - alpha) * (v + this.B[i]));
+        this.B = this.B.map((b, i) => alpha * BETA * (S[i] - this.S[i]) + (1 - alpha * BETA) * b);
+      }
+    } else {
+      // 先読み: L フレーム前のフレームを出す。軌跡は前後 L フレーム（σ = L/2）のガウス平均。
+      // 始めの L フレームは先がまだ無いので、補正せずに今のフレームを出す（先が無いまま決めた補正は、そろった時に大きく飛ぶ）
+      this.queue.push({ r, C: this.C, M, first: r.first });
+      if (this.queue.length <= L) {
+        r.stab = { W: I.slice(), Z: zoom(1 / (1 - opts.crop), w, h), crop: opts.crop, mode: opts.mode, strength: opts.strength, delay: L, warmup: true,
+          frame: r.frame, pairs: r.pairs, hist: this.hist.slice(), lost: this.lost, clamped: this.clamped, frames: this.frames, jitter: { n: 0 } };
+        return r.stab;
+      }
+      const t = this.queue.length - 1 - L, sig = L / 2;
+      item = this.queue[t];
+      let ws = 0;
+      S = new Array(9).fill(0);
+      for (let j = Math.max(0, t - L); j < this.queue.length; j++) {
+        const g = Math.exp(-((j - t) ** 2) / (2 * sig * sig));
+        S = S.map((v, i) => v + g * this.queue[j].C[i]); ws += g;
+      }
+      S = S.map((v) => v / ws);
+      if (t > L) this.queue.splice(0, t - L);
+    }
+    const Ct = item.C, z = 1 / (1 - opts.crop), Z = zoom(z, w, h); // crop は幅・高さのうち切り抜く割合（両側の合計）
     // 切り抜いた枠（画面全体）を元のフレームに戻した四隅が、フレームの中に入るまで S を C の側へ寄せる（二分探索）
-    const z = 1 / (1 - opts.crop), Z = zoom(z, w, h); // crop は幅・高さのうち切り抜く割合（両側の合計）
     const inside = (Sx) => {
-      const back = inv3(mul3(Z, mul3(inv3(Sx), this.C)));
+      const back = inv3(mul3(Z, mul3(inv3(Sx), Ct)));
       return [[0, 0], [w, 0], [w, h], [0, h]].every(([x, y]) => { const [u, v] = apply3(back, x, y); return u >= -0.5 && v >= -0.5 && u <= w + 0.5 && v <= h + 0.5; });
     };
     if (!inside(S)) {
       this.clamped++; // 切り抜きの端に当たった（補正を元の動きの側へ寄せた）フレーム
       let lo = 0, hi = 1;
-      for (let k = 0; k < 20; k++) { const mid = (lo + hi) / 2; if (inside(lerp(S, this.C, mid))) hi = mid; else lo = mid; }
-      S = lerp(S, this.C, hi);
+      for (let k = 0; k < 20; k++) { const mid = (lo + hi) / 2; if (inside(lerp(S, Ct, mid))) hi = mid; else lo = mid; }
+      S = lerp(S, Ct, hi);
     }
-    this.S = norm(S);
-    this.W = norm(mul3(inv3(this.S), this.C));
-    this.Z = Z;
-    // 補正前は M、補正後は D = W_{t−1}·M·W_t⁻¹（元のフレームの px）
-    if (!r.first) {
-      const raw = motionAt(M, w, h), out = motionAt(norm(mul3(Wprev, mul3(M, inv3(this.W)))), w, h);
+    if (L === 0) this.S = norm(S);
+    const Wprev = this.W;
+    this.W = norm(mul3(inv3(norm(S)), Ct));
+    // 補正前は M、補正後は D = W_{t−1}·M·W_t⁻¹（元のフレームの px。出すフレームの動きで）
+    if (!item.first && this.shown) {
+      const raw = motionAt(item.M, w, h), out = motionAt(norm(mul3(Wprev, mul3(item.M, inv3(this.W)))), w, h);
       this.raws.push(raw); this.outs.push(out);
       if (this.raws.length > 5000) { this.raws.shift(); this.outs.shift(); }
       this.hist.push({ raw: Math.hypot(raw.x, raw.y), out: Math.hypot(out.x, out.y) });
       if (this.hist.length > 240) this.hist.shift();
     }
+    this.shown = item;
     const a = metrics(this.raws), b = metrics(this.outs);
-    r.stab = { W: this.W, Z, crop: opts.crop, mode: opts.mode, strength: opts.strength, hist: this.hist.slice(), lost: this.lost, clamped: this.clamped, frames: this.frames,
+    r.stab = this.lastStab = { W: this.W, Z, crop: opts.crop, mode: opts.mode, strength: opts.strength, delay: L,
+      frame: item.r.frame, pairs: item.r.pairs, hist: this.hist.slice(), lost: this.lost, clamped: this.clamped, frames: this.frames,
       jitter: { raw_px: a.jit_px, raw_deg: a.jit_deg, out_px: b.jit_px, out_deg: b.jit_deg, move_raw_px: a.move_px, move_out_px: b.move_px, n: this.raws.length } };
     return r.stab;
   }

@@ -637,7 +637,7 @@ function makeRecord(m, r, mode, extra = {}) {
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind,
     ...(r.kind === "matches" || r.kind === "motion" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
     ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3),
-      move_raw_px: +r.stab.jitter.move_raw_px.toFixed(2), move_out_px: +r.stab.jitter.move_out_px.toFixed(2), stab_mode: r.stab.mode, stab_strength: r.stab.strength, stab_crop: r.stab.crop, stab_clamped: r.stab.clamped, frames_total: r.stab.frames } : {}),
+      move_raw_px: +r.stab.jitter.move_raw_px.toFixed(2), move_out_px: +r.stab.jitter.move_out_px.toFixed(2), stab_mode: r.stab.mode, stab_strength: r.stab.strength, stab_crop: r.stab.crop, stab_delay: r.stab.delay, stab_clamped: r.stab.clamped, frames_total: r.stab.frames } : {}),
     ...extra,
   };
 }
@@ -845,7 +845,7 @@ function paramsFor(key, w, auto) {
 }
 
 // ---------- 手ぶれ補正 ----------
-const stabOpts = () => ({ mode: $("stab-mode").value, strength: $("stab-strength").value, crop: parseFloat($("stab-crop").value) });
+const stabOpts = () => ({ mode: $("stab-mode").value, strength: $("stab-strength").value, crop: parseFloat($("stab-crop").value), lookahead: parseInt($("stab-look").value, 10) });
 
 // ---------- テンプレートマッチング: 探す物（テンプレート） ----------
 // 画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。Worker はテンプレートの特徴を id ごとに持って使い回すので、

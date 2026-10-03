@@ -415,7 +415,25 @@ function updateModelNote() {
   $("model-note").textContent = notes.filter(Boolean).join(" / ");
 }
 
+// 連続実行・カメラの間は、画面を消さないよう頼む（Screen Wake Lock）。スマホは画面が消えるとページが裏に回り、WebGPU が
+// リセットされたりタブが捨てられたりして、戻るとモデルを GPU に載せ直していた。止めたら外す。裏に回ると自動で外れるので、
+// 表に戻った時に頼み直す
+let wakeLock = null;
+async function syncWakeLock() {
+  const want = state.live || !!stream;
+  try {
+    if (want && !wakeLock && document.visibilityState === "visible" && navigator.wakeLock) {
+      wakeLock = await navigator.wakeLock.request("screen");
+      wakeLock.addEventListener("release", () => { wakeLock = null; });
+    } else if (!want && wakeLock) {
+      await wakeLock.release(); wakeLock = null;
+    }
+  } catch { /* 省電力モードなどで断られることがある */ }
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") syncWakeLock(); });
+
 function updateButtons() {
+  syncWakeLock();
   // クリックで点を置くタスク（tasks[].click）は、静止画ではクリックが実行の合図なので実行ボタンを出さない
   $("run").hidden = !!curTask().click && !state.video && !state.auto;
   $("auto").checked = state.auto;

@@ -5,6 +5,7 @@ import { Tracker } from "./tracker.js";
 import { APPS, COMBOS } from "./apps.js";
 import { INTERACT, toFrame } from "./interact.js";
 import { Stabilizer } from "./stabilize.js";
+import { JUDGE_DEFAULT, Judges, judgePrompts, parseJudges } from "./judge.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -40,6 +41,7 @@ const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
 const state = {
   task: "detect",
+  judges: new Judges(), // 判定（ゼロショット分類のスコアから。連続実行ごとに作り直す）
   stab: new Stabilizer(), // 手ぶれ補正の軌跡（連続実行ごとに作り直す）
   motionSeq: 0,
   template: null,    // テンプレートマッチングの探す物 {id, bitmap, blob, w, h}
@@ -317,6 +319,7 @@ function selectTask(id) {
   const def = t.defaults || {};
   if (def.threshold != null) { $("threshold").value = def.threshold; $("th-out").textContent = def.threshold; }
   if (def.labels) $("labels").value = def.labels;
+  if (t.params.includes("judge") && !$("judge").value) $("judge").value = JUDGE_DEFAULT;
   if (def.top_k) $("top-k").value = def.top_k;
   setTplSelect(false);
   renderApps(t);
@@ -641,6 +644,7 @@ function makeRecord(m, r, mode, extra = {}) {
     frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind,
     ...(r.kind === "matches" || r.kind === "motion" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
+    ...(r.decisions ? { decisions: r.decisions.map((d) => `${d.value}(${d.p})`).join(" ") } : {}),
     ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3),
       move_raw_px: +r.stab.jitter.move_raw_px.toFixed(2), move_out_px: +r.stab.jitter.move_out_px.toFixed(2), stab_mode: r.stab.mode, stab_strength: r.stab.strength, stab_crop: r.stab.crop, stab_delay: r.stab.delay, stab_clamped: r.stab.clamped, frames_total: r.stab.frames } : {}),
     ...extra,
@@ -844,6 +848,7 @@ function paramsFor(key, w, auto) {
   return {
     threshold: parseFloat($("threshold").value),
     labels: $("labels").value,
+    judge: $("judge").value, // 判定（ゼロショット分類）
     prompt: $("prompt").value,
     points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
     input_size: parseInt($("input-size").value, 10), // 入力サイズ可変のモデルの長辺
@@ -859,6 +864,12 @@ function paramsFor(key, w, auto) {
 // 毎フレーム params.text_embeds で渡す（画像エンコーダだけを回す）。文エンコーダは transformers.js の Worker（トークナイザが要るため）
 const textEmbCache = new Map(); // `${text_model}:${候補}` → { data, labels }
 async function attachTextEmbeds(m, params) {
+  // 判定の言い方も、候補と一緒に 1 回で文の埋め込みにする（判定は候補を変えた時だけ作り直す）
+  const judges = TASKS.find((x) => x.id === m.task)?.params.includes("judge") ? parseJudges(params.judge) : [];
+  const shown = params.labels.split(",").map((x) => x.trim()).filter(Boolean);
+  const all = [...new Set([...shown, ...judgePrompts(judges)])];
+  params._judges = judges; params._shown = shown;
+  params = Object.assign(params, { labels: all.join(", ") });
   const key = `${m.text_model}:${params.labels}`;
   if (!textEmbCache.has(key)) {
     const te = MODELS.find((x) => x.key === m.text_model && x.where.includes("browser"));
@@ -872,6 +883,20 @@ async function attachTextEmbeds(m, params) {
   const c = textEmbCache.get(key);
   params.text_embeds = c.data; params.text_labels = c.labels;
   if (params._textNew) params.text_ms = c.ms;
+}
+
+// ゼロショット分類の結果を、画面に出す候補（items）と判定の言い方の logit（judgeLogit）に分ける。棒は候補の中だけで softmax
+function splitJudge(r, params) {
+  const logit = Object.fromEntries((params.text_labels || []).map((l, i) => [l, r.logits[i]]));
+  const sh = params._shown.filter((l) => l in logit), mx = Math.max(...sh.map((l) => logit[l]));
+  const ex = sh.map((l) => Math.exp(logit[l] - mx)), sum = ex.reduce((a, b) => a + b, 0);
+  r.items = sh.map((l, i) => ({ label: l, score: ex[i] / sum, abs: 1 / (1 + Math.exp(-logit[l])) })).sort((a, b) => b.score - a.score);
+  r.judgeLogit = logit; r.judgeDefs = params._judges;
+}
+function applyJudges(r, live) {
+  if (r.kind !== "labels" || !r.judgeDefs?.length) return;
+  r.decisions = state.judges.update(r.judgeDefs, r.judgeLogit, live);
+  r.judgeLog = state.judges.log.slice(-6);
 }
 
 // ---------- 手ぶれ補正 ----------
@@ -976,7 +1001,11 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     const img = image instanceof ImageBitmap ? await createImageBitmap(image) : image;
     // 入力サイズ可変の役割のモデル（深度）は、そのモデルの既定の長辺で
     const pp = { ...params, show: wdef.show, ...(wdef.params || {}), ...(mm.pre?.dynamic ? { input_size: mm.pre.size[0] } : {}) };
-    extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => { (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x; })]);
+    if (mm.text_model) await attachTextEmbeds(mm, pp); // 場面の役割（ゼロショット分類）は、判定の言い方の文の埋め込みも
+    extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => {
+      if (x.kind === "labels" && pp._judges) splitJudge(x, pp);
+      (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x;
+    })]);
   }
   if (m.text_model) await attachTextEmbeds(m, params);
   const usesTemplate = TASKS.find((x) => x.id === m.task)?.params.includes("template"); // ベンチは別のタブのまま回るので、モデルのタスクで見る
@@ -989,8 +1018,9 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     throw new Error("テンプレートを送り直す。もう一度実行する");
   }
   if (usesTemplate) { if (m.where === "browser") tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
-  if (r.kind === "motion") r.frame = frameCanvas;
-  if (params._textNew) r.text_ms = params.text_ms; // 文の埋め込みを作った時（候補を変えた時）の時間 // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
+  if (r.kind === "motion") r.frame = frameCanvas; // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
+  if (params._textNew) r.text_ms = params.text_ms; // 文の埋め込みを作った時（候補を変えた時）の時間
+  if (r.kind === "labels" && params._judges) splitJudge(r, params);
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};
@@ -1023,6 +1053,7 @@ async function run() {
     state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 静止画の 1 回は前のフレームが無い
     const r = await runOnce(m);
     if (r.kind === "motion") state.stab.update(r, stabOpts());
+    state.judges.reset(); applyJudges(r, false);
     await applyCascade(m, r, null);
     await applyCombo(r, null);
     state.apps = createApps();
@@ -1065,6 +1096,7 @@ async function liveLoop() {
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();
   state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 手ぶれ補正: 連続実行ごとに前のフレームと軌跡を捨てる
+  state.judges.reset(); // 判定: 連続実行ごとにならし直す
   state.comboCache = {}; state.comboTick = 0; COMBOS[curTask().combo?.app]?.reset?.(); // 組み合わせの前の結果・履歴を捨てる
   KINDS.depth.resetRange(); // 深度の「範囲を固定」は連続実行ごとに取り直す
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
@@ -1076,7 +1108,8 @@ async function liveLoop() {
   const nextPrompt = () => (samTrack?.prompt ? { points: [[...samTrack.prompt.point, 1]], box: samTrack.prompt.box } : {});
   // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
   const handle = async (r) => {
-    if (r.kind === "motion") state.stab.update(r, stabOpts()); // フレームの順に（パイプライン化しても handle は順に呼ばれる）
+    if (r.kind === "motion") state.stab.update(r, stabOpts());
+    applyJudges(r, true); // フレームの順に（パイプライン化しても handle は順に呼ばれる）
     if (samTrack) updateSamTrack(samTrack, r);
     if (tracker) {
       const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;
@@ -1210,7 +1243,7 @@ function syncInteract() {
   if (sinks.size && state.result) pushInteract(currentModel(), state.result);
 }
 function pushInteract(m, r) {
-  if (!sinks.size || r.kind !== "boxes") return;
+  if (!sinks.size || (r.kind !== "boxes" && r.kind !== "labels")) return;
   const frame = toFrame(r, { task: state.task, model: m?.key });
   for (const s of sinks.values()) s.onFrame(frame);
 }
@@ -1248,8 +1281,17 @@ async function applyCombo(r, seqStore) {
     await applyCascade(mm, sub, seqStore);
     r.cascade_ms = (r.cascade_ms || 0) + (sub.cascade_ms || 0);
   }
+  r.uiOpts = { gostop: gostopOpts() }; // 組み合わせのタブの設定欄の値（進む・止まるの条件）
   COMBOS[c.app]?.combine(r);
+  if (r.gostop) r.decisions = r.gostop.decisions;
 }
+// 進む・止まるの条件（設定欄）
+const gostopOpts = () => ({
+  front: $("gs-front").checked, frontH: parseFloat($("gs-front-h").value) / 100,
+  approach: $("gs-approach").checked, ttc: parseFloat($("gs-ttc").value),
+  near: $("gs-near").checked, nearP: parseFloat($("gs-near-p").value) / 100,
+  scene: $("gs-scene").checked,
+});
 
 // 検出のあと、models.json の cascade に書いたクラスの枠を切り出して小さな分類モデルにかけ、枠の表示に状態を足す
 // （例: 目 → OCEC で開/閉）。seq のモデルは追跡の ID ごとに切り出しをためて、T 枚そろったら判定する

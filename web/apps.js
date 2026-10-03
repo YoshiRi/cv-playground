@@ -4,6 +4,7 @@
 // models.json の post）とは別物で、モデルの結果の見せ方（renderers.js の KINDS）とも別に、集計の状態と表示だけを持つ
 import { esc, labelColor, limbColor } from "./renderers.js";
 import { SKELETON } from "./catalog.js";
+import { Judges } from "./judge.js";
 
 // APPS[id] = {
 //   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（応用欄の値）
@@ -146,7 +147,86 @@ function kfPredict(k, t) {
 const MOTION = { approach: { word: "接近", color: "#ef4444", arrow: "↓" }, recede: { word: "後退", color: "#3b82f6", arrow: "↑" }, steady: { word: "", color: "#9ca3af", arrow: "" } };
 const SEEN = { approach: new Map(), recede: new Map() }; // クラス → 一度でも接近・後退と判定した ID
 
+// 進む・止まる（物体検出＋深度＋場面）: ロボットのような簡易センサの判断。止まる条件（設定欄で選ぶ）のどれか 1 つでも当たれば止まる。
+//   前に人・物: 画面の中央の帯（幅 40%）に枠の中心があり、枠の高さが画面の frontH 以上
+//   近づいてくる: 接近・後退（このファイルの approach と同じカルマンフィルタ）で接近中、届くまで ttc 秒以内
+//   前が近い: 中央下（x 30〜70%・y 40〜100%）で、深度が場面の中央値の 2 倍以上（距離が半分以下）の画素が nearP 以上
+//   場面: 場面の役割（ゼロショット分類）の判定のどれかが「いいえ」側（通れない・危険・埋まっている など）
+// 止まるにはすぐ（1 フレーム）、進むに戻るのは条件が GO_K フレーム続けて外れてから（止まる側に倒す）
+const GO_K = 5, BAND = 0.4, NEAR_RATIO = 2;
+const GS = { value: "進む", clear: 0, log: [], t0: performance.now(), judges: new Judges(), near: null, scene: [] };
+function nearFraction(d) {
+  const m = d.m, med = rawMedian(d), x0 = 0.3 * m.W, x1 = 0.7 * m.W, y0 = 0.4 * m.H, y1 = m.H;
+  let n = 0, k = 0;
+  for (let y = y0; y < y1; y += m.H / 60) for (let x = x0; x < x1; x += m.W / 60) {
+    const gx = Math.min(d.w - 1, Math.max(0, Math.floor(((x * m.sx + m.ox) * d.w) / m.iw)));
+    const gy = Math.min(d.h - 1, Math.max(0, Math.floor(((y * m.sy + m.oy) * d.h) / m.ih)));
+    n++; if (d.data[gy * d.w + gx] >= NEAR_RATIO * med) k++;
+  }
+  return n ? k / n : 0;
+}
+
+// 「person ×2・car」のように数える
+const countText = (ls) => Object.entries(ls.reduce((c, l) => ((c[l] = (c[l] || 0) + 1), c), {})).map(([l, n]) => (n > 1 ? `${l} ×${n}` : l)).join("・");
+
 export const COMBOS = {
+  gostop: {
+    reset() { COMBOS.approach.reset(); Object.assign(GS, { value: "進む", clear: 0, log: [], t0: performance.now(), near: null, scene: [] }); GS.judges.reset(); },
+    combine(r) {
+      COMBOS.approach.combine(r); // 枠の色（接近は赤）と、ID ごとの速さ
+      const o = r.uiOpts?.gostop || {}, reasons = [], conds = {};
+      // 前に人・物
+      const front = r.items.filter((it) => { const cx = (it.box[0] + it.box[2]) / 2; return Math.abs(cx - r.w / 2) <= (BAND / 2) * r.w && it.box[3] - it.box[1] >= (o.frontH ?? 0.4) * r.h; });
+      conds.front = { on: o.front, hit: front.length > 0, text: countText(front.map((it) => it.label)) };
+      // 近づいてくる
+      const appr = r.items.map((it) => ({ it, k: it.id != null ? KF.get(it.id) : null })).filter(({ k }) => k?.cls === "approach").map(({ it, k }) => ({ it, ttc: -1 / k.v })).filter(({ ttc }) => ttc < (o.ttc ?? 3));
+      conds.approach = { on: o.approach, hit: appr.length > 0, text: appr.map(({ it, ttc }) => `${it.label} あと ${ttc.toFixed(1)} 秒`).join("・") };
+      // 前が近い（深度を回したフレームだけ計り直す）
+      const dr = r.withResults?.depth;
+      if (dr?.depthRaw && !dr.reused) GS.near = nearFraction(dr.depthRaw);
+      conds.near = { on: o.near, hit: GS.near != null && GS.near >= (o.nearP ?? 0.3), text: GS.near != null ? `${(GS.near * 100).toFixed(0)}%` : "深度なし" };
+      // 場面（ゼロショット分類を回したフレームだけ判定をならし直す）
+      const sr = r.withResults?.scene;
+      if (sr?.judgeDefs?.length && !sr.reused) GS.scene = GS.judges.update(sr.judgeDefs, sr.judgeLogit, true);
+      const bad = GS.scene.filter((d) => d.decided === false);
+      conds.scene = { on: o.scene, hit: bad.length > 0, text: GS.scene.map((d) => d.value).join("・") };
+      const words = { front: (c) => `前に${c.text}`, approach: (c) => `${c.text}で接近中`, near: (c) => `前が近い（${c.text}）`, scene: (c) => c.text && bad.map((d) => d.value).join("・") };
+      for (const [k, c] of Object.entries(conds)) if (c.on && c.hit) reasons.push(words[k](c));
+      const now = performance.now(), prev = GS.value;
+      if (reasons.length) { GS.value = "止まる"; GS.clear = 0; }
+      else if (GS.value === "止まる" && ++GS.clear >= GO_K) GS.value = "進む";
+      const changed = prev !== GS.value;
+      if (changed) { GS.log.push({ t: (now - GS.t0) / 1000, value: GS.value, reason: reasons.join("・") }); if (GS.log.length > 50) GS.log.shift(); }
+      r.gostop = { value: GS.value, reasons, conds, log: GS.log.slice(-6), scene: GS.scene,
+        decisions: [{ name: "進む・止まる", value: GS.value, decided: GS.value === "進む", p: GS.value === "進む" ? 1 : 0, conf: 1, changed, reason: reasons.join("・") || "条件に当たらない" }, ...GS.scene] };
+    },
+    draw(ctx, r, b) {
+      const g = r.gostop;
+      if (!g) return;
+      const sx = b.w / r.w, sy = b.h / r.h, size = Math.max(18, Math.round(b.w / 22));
+      // 前の帯と、前が近いを見る範囲
+      ctx.save(); ctx.setLineDash([8, 6]); ctx.lineWidth = Math.max(1.5, b.w / 500); ctx.strokeStyle = "rgba(255,255,255,.7)";
+      for (const f of [0.5 - BAND / 2, 0.5 + BAND / 2]) { ctx.beginPath(); ctx.moveTo(f * b.w, 0); ctx.lineTo(f * b.w, b.h); ctx.stroke(); }
+      ctx.strokeStyle = "rgba(250,204,21,.8)"; ctx.strokeRect(0.3 * b.w, 0.4 * b.h, 0.4 * b.w, 0.6 * b.h - 2);
+      ctx.restore();
+      const stop = g.value === "止まる", text = stop ? `止まる  ${g.reasons.join("・")}` : "進む";
+      ctx.save(); ctx.font = `700 ${size}px system-ui, sans-serif`;
+      const w = Math.min(b.w - 16, ctx.measureText(text).width + size), x = (b.w - w) / 2;
+      ctx.fillStyle = stop ? "rgba(220,38,38,.92)" : "rgba(22,163,74,.92)"; ctx.beginPath(); ctx.roundRect(x, 10, w, size * 1.5, size * 0.3); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.textBaseline = "middle"; ctx.textAlign = "center"; ctx.fillText(text, b.w / 2, 10 + size * 0.75, w - size * 0.5);
+      ctx.restore();
+    },
+    panel: (r) => {
+      const g = r.gostop;
+      if (!g) return "";
+      const names = { front: "前に人・物", approach: "近づいてくる", near: "前が近い", scene: "場面" };
+      const rows = Object.entries(g.conds).map(([k, c]) => `<span class="chip"><i style="background:${!c.on ? "#cbd5e1" : c.hit ? "#ef4444" : "#22c55e"}"></i>${names[k]}${c.on ? "" : "（使わない）"} <small class="muted">${esc(c.text || "－")}</small></span>`).join("");
+      return `<div class="sub"><b style="color:${g.value === "止まる" ? "#dc2626" : "#16a34a"}">${g.value}</b>${g.reasons.length ? `（${esc(g.reasons.join("・"))}）` : ""}。止まる条件（赤 = 当たっている）:</div><div class="chips">${rows}</div>`
+        + (g.log.length ? `<div class="sub">切り替わり: ${g.log.map((l) => `${l.t.toFixed(1)}s ${l.value}${l.reason ? `（${esc(l.reason)}）` : ""}`).join(" ・ ")}</div>` : "")
+        + `<div class="sub muted">ブラウザとスマホのカメラによる簡易の判断。見落としや遅れがあるので、安全に関わる用途には使わない</div>`;
+    },
+    summary: (r) => (r.gostop ? `${r.gostop.value}${r.gostop.reasons.length ? `（${r.gostop.reasons.join("・")}）` : ""}` : ""),
+  },
   // 接近・後退（物体検出＋深度）: 追跡の ID ごとに ROI（枠の大きさ）と深度の変化から距離の変化の速さを推定し、
   // 接近（赤）・後退（青）・変化なし（灰）に分けて、クラスごとに接近した・遠ざかった ID の数（通算）を数える。
   // 接近中は距離 ÷ 縮む速さ（あと何秒で届くか）も出す。深度は相対値（DA3 は比が保たれるので深度 ÷ 画像全体の中央値を使う）

@@ -496,6 +496,33 @@ async function renderCameraSelect(choice) {
   sel.hidden = false;
 }
 
+// 見本の画像・動画は、サーバー版ならサーバーの写し（/mirror/）を経由する（Mac に保存して、2 回目からはネットに取りに行かない）
+function sampleUrl(url) {
+  const root = mirrorRoot();
+  if (!root) return url;
+  for (const [pre, site] of [["https://huggingface.co/", "hf/"], ["https://raw.githubusercontent.com/", "gh/"]]) if (url.startsWith(pre)) return root + site + url.slice(pre.length);
+  return url;
+}
+// 見本の動画を取得して、ファイルを選んだ時と同じに開く（Blob にするので、canvas に描いても読み出せる）
+async function openSampleVideo(url, name) {
+  stopLive();
+  setStatus(`動画「${name}」を取得中…`);
+  try {
+    const res = await fetch(sampleUrl(url));
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const total = +res.headers.get("content-length") || 0, reader = res.body.getReader(), chunks = [];
+    let got = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value); got += value.length;
+      if (total) setStatus(`動画「${name}」を取得中… ${(got / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)}MB`);
+    }
+    await setVideoFile(new Blob(chunks, { type: "video/mp4" }));
+    setStatus("");
+  } catch (e) { setStatus(`動画を取得できない: ${e.message}`, "err"); }
+}
+
 async function setVideoFile(file) {
   stopVideo();
   const v = $("video");
@@ -1468,7 +1495,8 @@ async function init() {
     f.type.startsWith("video/") ? setVideoFile(f) : setImage(f);
     e.target.value = "";
   };
-  for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(b.dataset.sample);
+  for (const b of document.querySelectorAll("[data-sample]")) b.onclick = () => setImage(sampleUrl(b.dataset.sample));
+  for (const b of document.querySelectorAll("[data-sample-video]")) b.onclick = () => openSampleVideo(b.dataset.sampleVideo, b.textContent);
   $("clear-cache").onclick = clearDownloads;
   $("save-image").onclick = saveImage;
   $("save-data").onclick = saveResultData;
@@ -1502,7 +1530,7 @@ async function init() {
     if (!state.live) run();
   });
   selectTask("detect");
-  await setImage(document.querySelector("[data-sample]").dataset.sample);
+  await setImage(sampleUrl(document.querySelector("[data-sample]").dataset.sample));
   refreshServer();
   if (state.hasServer) setInterval(refreshServer, 15000);
 }

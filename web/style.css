@@ -199,3 +199,4 @@ td small { color: var(--muted); margin-left: 2px; }
 .prof .num { text-align: right; }
 
 #judge { width: 100%; font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; resize: vertical; }
+.num-s { width: 4.2em; padding: 1px 4px; }

@@ -1001,7 +1001,11 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     const img = image instanceof ImageBitmap ? await createImageBitmap(image) : image;
     // 入力サイズ可変の役割のモデル（深度）は、そのモデルの既定の長辺で
     const pp = { ...params, show: wdef.show, ...(wdef.params || {}), ...(mm.pre?.dynamic ? { input_size: mm.pre.size[0] } : {}) };
-    extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => { (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x; })]);
+    if (mm.text_model) await attachTextEmbeds(mm, pp); // 場面の役割（ゼロショット分類）は、判定の言い方の文の埋め込みも
+    extra.push([wdef.role, mm, run1(mm, img, pp).then((x) => {
+      if (x.kind === "labels" && pp._judges) splitJudge(x, pp);
+      (state.comboCache ??= {})[wdef.role] = { id: mm.id, x }; return x;
+    })]);
   }
   if (m.text_model) await attachTextEmbeds(m, params);
   const usesTemplate = TASKS.find((x) => x.id === m.task)?.params.includes("template"); // ベンチは別のタブのまま回るので、モデルのタスクで見る
@@ -1014,9 +1018,9 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     throw new Error("テンプレートを送り直す。もう一度実行する");
   }
   if (usesTemplate) { if (m.where === "browser") tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
-  if (r.kind === "motion") r.frame = frameCanvas;
-  if (params._textNew) r.text_ms = params.text_ms;
-  if (r.kind === "labels" && params._judges) splitJudge(r, params); // 文の埋め込みを作った時（候補を変えた時）の時間 // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
+  if (r.kind === "motion") r.frame = frameCanvas; // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
+  if (params._textNew) r.text_ms = params.text_ms; // 文の埋め込みを作った時（候補を変えた時）の時間
+  if (r.kind === "labels" && params._judges) splitJudge(r, params);
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};
@@ -1277,8 +1281,17 @@ async function applyCombo(r, seqStore) {
     await applyCascade(mm, sub, seqStore);
     r.cascade_ms = (r.cascade_ms || 0) + (sub.cascade_ms || 0);
   }
+  r.uiOpts = { gostop: gostopOpts() }; // 組み合わせのタブの設定欄の値（進む・止まるの条件）
   COMBOS[c.app]?.combine(r);
+  if (r.gostop) r.decisions = r.gostop.decisions;
 }
+// 進む・止まるの条件（設定欄）
+const gostopOpts = () => ({
+  front: $("gs-front").checked, frontH: parseFloat($("gs-front-h").value) / 100,
+  approach: $("gs-approach").checked, ttc: parseFloat($("gs-ttc").value),
+  near: $("gs-near").checked, nearP: parseFloat($("gs-near-p").value) / 100,
+  scene: $("gs-scene").checked,
+});
 
 // 検出のあと、models.json の cascade に書いたクラスの枠を切り出して小さな分類モデルにかけ、枠の表示に状態を足す
 // （例: 目 → OCEC で開/閉）。seq のモデルは追跡の ID ごとに切り出しをためて、T 枚そろったら判定する

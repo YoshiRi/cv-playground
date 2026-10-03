@@ -87,6 +87,13 @@
         <label class="field" data-param="labels">候補（カンマ区切り）
           <input id="labels" type="text" autocomplete="off">
         </label>
+        <div class="field" data-param="gostop">止まる条件（どれか 1 つでも当たれば止まる）
+          <label class="check"><input type="checkbox" id="gs-front" checked> 前に人・物（中央の帯に、枠の高さが画面の <input id="gs-front-h" type="number" value="40" min="10" max="90" step="5" class="num-s">% 以上）</label>
+          <label class="check"><input type="checkbox" id="gs-approach" checked> 近づいてくる（あと <input id="gs-ttc" type="number" value="3" min="0.5" max="10" step="0.5" class="num-s"> 秒以内）</label>
+          <label class="check"><input type="checkbox" id="gs-near" checked> 前が近い（中央下の <input id="gs-near-p" type="number" value="30" min="5" max="90" step="5" class="num-s">% 以上が、場面の中央値の半分以下の距離）</label>
+          <label class="check"><input type="checkbox" id="gs-scene" checked> 場面（下の判定のどれかが「いいえ」側）</label>
+          <p class="hint">止まるにはすぐ、進むに戻るのは条件が 5 フレーム続けて外れてから。ブラウザとスマホのカメラによる簡易の判断で、見落としや遅れがあるので、安全に関わる用途には使わない</p>
+        </div>
         <label class="field" data-param="judge">判定（1 行に 1 つ。「はい | いいえ : はい側の言い方, … | いいえ側の言い方, …」。英語の言い方で）
           <textarea id="judge" rows="4" autocomplete="off" spellcheck="false"></textarea>
         </label>

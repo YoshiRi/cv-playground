@@ -231,6 +231,49 @@
    }
   },
   {
+   "id": "gostop",
+   "name": "進む・止まる（検出＋深度＋場面）",
+   "category": "3d",
+   "result": "boxes",
+   "hint": "ロボットのような簡易センサの判断。物体検出（追跡つき）・深度（3 フレームに 1 回）・場面のゼロショット分類（5 フレームに 1 回）を同じフレームで回し、止まる条件（前に人・物、近づいてくる、前が近い、場面が「いいえ」側）のどれかに当たれば「止まる」、外れて 5 フレーム続けば「進む」。理由も出し、インタラクトの出口で外にも流せる",
+   "params": [
+    "threshold",
+    "track",
+    "gostop",
+    "judge"
+   ],
+   "defaults": {
+    "threshold": 0.4
+   },
+   "combo": {
+    "base": "detect",
+    "app": "gostop",
+    "track": "bytetrack",
+    "with": [
+     {
+      "role": "depth",
+      "name": "組み合わせる深度のモデル",
+      "task": "depth",
+      "every": 3,
+      "default": "da3-small",
+      "params": {
+       "depth_raw": true
+      }
+     },
+     {
+      "role": "scene",
+      "name": "場面のモデル（ゼロショット分類）",
+      "task": "classify",
+      "every": 5,
+      "default": "siglip2-base-onnx",
+      "params": {
+       "labels": ""
+      }
+     }
+    ]
+   }
+  },
+  {
    "id": "pose3d",
    "name": "3D の姿勢（姿勢＋深度）",
    "category": "3d",
@@ -2124,7 +2167,8 @@
     "zsdetect",
     "approach",
     "pose3d",
-    "classify"
+    "classify",
+    "gostop"
    ],
    "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"
   },
@@ -2140,7 +2184,8 @@
     "zsdetect",
     "approach",
     "pose3d",
-    "classify"
+    "classify",
+    "gostop"
    ],
    "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"
   },

@@ -1055,6 +1055,8 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
       const x = await pr;
       r.with[role] = x.items || []; r.withModels[role] = mm; r.withResults[role] = x;
       if (x.reused) continue; // 前のフレームの結果を使った時は時間を足さない
+      // 組み合わせの役割のモデルも「ダウンロード済み」に（覚えていなかったので、実行のたびに大きいモデルの確認が出ていた）
+      if (mm.where === "browser" && !downloaded().has(mm.key)) markDownloaded(mm.key);
       r.infer_ms += x.infer_ms || 0;
       if (r.roundtrip_ms != null || x.roundtrip_ms != null) r.roundtrip_ms = (r.roundtrip_ms || 0) + (x.roundtrip_ms || 0);
       for (const k of Object.keys(x.breakdown || {})) if (r.breakdown) r.breakdown[k] = (r.breakdown[k] || 0) + x.breakdown[k];

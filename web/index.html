@@ -127,12 +127,24 @@
       <div class="images">
         <span class="muted">画像:</span>
         <!-- サンプル画像は transformers.js のドキュメント用データセットから実行時に読む（同梱しない） -->
-        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg">街</button>
-        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/football-match.jpg">サッカー</button>
-        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/cats.jpg">猫</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg" title="道路と車・人（物体検出・深度・セグメンテーション）">街</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/football-match.jpg" title="走る選手（姿勢・追跡なし）">サッカー</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/young-man-standing-and-leaning-on-car.jpg" title="全身の人と車（姿勢・背景除去）">人物</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/portrait-of-woman_small.jpg" title="正面の顔（顔・表情・Live2D 風のキャラ）">顔</button>
+        <button type="button" class="ghost" data-sample="https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/airport.jpg" title="屋内で人がいる（判定・進む止まる）">空港</button>
         <label class="ghost button">ファイル（画像・動画）<input type="file" id="file" accept="image/*,video/*" hidden></label>
         <button type="button" class="ghost" id="camera-btn">カメラ（ライブ）</button>
         <select id="camera-select" hidden title="使うカメラ"></select>
+      </div>
+      <div class="images">
+        <span class="muted">動画:</span>
+        <!-- サンプル動画は intel-iot-devkit/sample-videos（CC BY 4.0）から実行時に読む（同梱しない） -->
+        <button type="button" class="ghost" data-sample-video="https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/people-detection.mp4" title="廊下を歩く人（追跡・姿勢・接近と後退・進む止まる）。5.5MB">廊下</button>
+        <button type="button" class="ghost" data-sample-video="https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/person-bicycle-car-detection.mp4" title="駐車場の人・自転車・車（追跡・数える）。6.0MB">駐車場</button>
+        <button type="button" class="ghost" data-sample-video="https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/face-demographics-walking.mp4" title="歩いてくる人の顔（顔・表情・追跡）。6.4MB">歩く顔</button>
+        <button type="button" class="ghost" data-sample-video="https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/store-aisle-detection.mp4" title="店の通路（判定・進む止まる）。9.2MB">店の通路</button>
+        <button type="button" class="ghost" data-sample-video="https://raw.githubusercontent.com/intel-iot-devkit/sample-videos/master/classroom.mp4" title="教室の人（空いている・埋まっている・数える）。13.5MB">教室</button>
+        <small class="muted">出典: <a href="https://github.com/intel-iot-devkit/sample-videos" target="_blank" rel="noopener">intel-iot-devkit/sample-videos</a>（CC BY 4.0）</small>
       </div>
 
       <div class="stage-row">

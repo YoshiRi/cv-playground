@@ -29,7 +29,7 @@
   - 画像と言語: ゼロショット分類（「通れる | 通れない」のような、はい・いいえの判定も。動画では時間でならして切り替わりを記録）/ 画像の説明・質問（VLM）
 - **応用**（枠を返すタブ＝物体検出・人物の姿勢・手と目・テキスト物体検知に後付けで重ねる）: クラスごとに数える（今の数と、追跡を選ぶと見えた ID の数の通算）。URL に `?apps=count` を付けると最初から選んだ状態で開く
 - **インタラクト**（結果を決まった形のフレームにして外に流す層。枠を返すタブすべて）: 別のタブへ（BroadcastChannel）、WebSocket へ（サーバー版は `/ws` が中継。`tools/ws_receiver.py` で受け取れる）。ブラウザだけで動く CV のセンサーとして、外のツールから使える。届いたフレームは `web/receiver.html` で確かめられ、一番大きく写っている人に合わせて動く Live2D 風のキャラ（頭・体・腕・表情）を確認用に出す（元の画面にも出せる）。URL に `?interact=broadcast,websocket,puppet` を付けると最初から選んだ状態で開く
-- **入力**: 画像、動画ファイル、カメラのライブ映像（背面・前面（インカメラ）や端末のカメラの一覧から選べる）。動画・カメラは連続実行して結果を重ね、fps と処理の内訳（取り込み・前処理・モデル実行・後処理）を出す
+- **入力**: 画像、動画ファイル、見本の画像・動画（ボタンで選ぶ）、カメラのライブ映像（背面・前面（インカメラ）や端末のカメラの一覧から選べる）。動画・カメラは連続実行して結果を重ね、fps と処理の内訳（取り込み・前処理・モデル実行・後処理）を出す
 - **追跡**: ByteTrack / BoT-SORT / BoT-SORT + ReID（Ultralytics の実装を移植し、同じ検出列で結果が一致することを確認）
 - **実行設定**: 汎用 ONNX のモデルは既定で fp16（fp16 版がある時）と WebGPU の graph capture（使えないモデルは自動で外す）。fp32・graph capture なし・CPU（WASM）にも切り替えられる。入力サイズ可変のモデルは入力の長辺（320〜960）を選べる。入力の大きさが決まっているモデルは、ONNX の可変の次元を固定して動かす
 - **比べる**: 同じモデルをブラウザとサーバーで（汎用 ONNX は前処理・後処理を共通の部品で組むので同じ手順）。実行履歴に時間が残る
@@ -115,4 +115,4 @@ scripts/serve.sh                # http://127.0.0.1:8010（--bg で裏で起動�
 ## ライセンス
 
 コードは MIT License（LICENSE）。**モデルの重みは原則として同梱せず、実行時に各配布元から取得する。各モデルのライセンスはそれぞれの配布元を確認すること**（例: YOLO26 は Ultralytics の AGPL-3.0）。
-例外として `web/pinto/` に PINTO_model_zoo のモデル（MIT）を出典つきで同梱している。サンプル画像は Hugging Face の [Xenova/transformers.js-docs](https://huggingface.co/datasets/Xenova/transformers.js-docs) から実行時に読み込む。README のデモ画像は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0）のフレームに結果を重ねたもの。
+例外として `web/pinto/` に PINTO_model_zoo のモデル（MIT）を出典つきで同梱している。サンプル画像（街・サッカー・人物・顔・空港）は Hugging Face の [Xenova/transformers.js-docs](https://huggingface.co/datasets/Xenova/transformers.js-docs) から、サンプル動画（廊下・駐車場・歩く顔・店の通路・教室）は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0。画面にも出典を出す）から、実行時に読み込む（リポジトリには入れない）。README のデモ画像は [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos)（CC BY 4.0）のフレームに結果を重ねたもの。

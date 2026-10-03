@@ -196,12 +196,12 @@ function collinear(P, idx, eps = 1e-3) {
   }
   return false;
 }
-// インライア全部で解き直し、インライアが減らない間（最大 rounds 回）くり返す（LO-RANSAC の局所最適化）
-function refine(a, b, n, Hm, cur, th, rounds = 5) {
+// インライア全部で解き直し、インライアが減らない間（最大 rounds 回）くり返す（LO-RANSAC の局所最適化）。fit(a, b, idx) → 3×3
+function refine(a, b, n, Hm, cur, th, fit, rounds = 5) {
   for (let r = 0; r < rounds && cur.k >= 5; r++) {
     const idx = [];
     for (let i = 0; i < n; i++) if (cur.inl[i]) idx.push(i);
-    const Hr = homographyDlt(a, b, idx);
+    const Hr = fit(a, b, idx);
     if (!Hr) break;
     const nx = inliersOf(Hr, a, b, n, th);
     if (nx.k < cur.k) break;
@@ -211,28 +211,68 @@ function refine(a, b, n, Hm, cur, th, rounds = 5) {
   }
   return { Hm, cur };
 }
-// 4 点の DLT で仮説を立て、再投影の誤差 th 以下の数が一番多いものを選ぶ。良い仮説ごとに解き直す（LO-RANSAC）
-export function ransacHomography(a, b, n, th = 3, iters = 1000, conf = 0.995, seed = 1) {
+// RANSAC（m 点で仮説を立て、再投影の誤差 th 以下の数が一番多いものを選ぶ。良い仮説ごとに解き直す LO-RANSAC）
+function ransac(a, b, n, m, fit, degenerate, th, iters, conf, seed) {
   let best = null, bestIn = { inl: new Uint8Array(n), k: 0 };
-  if (n < 4) return { H: null, ...bestIn };
+  if (n < m) return { H: null, ...bestIn };
   const rnd = mulberry32(seed);
   let k = iters, it = 0;
   while (it < k) {
     it++;
     const idx = [];
-    while (idx.length < 4) { const i = Math.floor(rnd() * n); if (!idx.includes(i)) idx.push(i); }
-    if (collinear(a, idx) || collinear(b, idx)) continue;
-    let Hm = homographyDlt(a, b, idx);
+    while (idx.length < m) { const i = Math.floor(rnd() * n); if (!idx.includes(i)) idx.push(i); }
+    if (degenerate(idx)) continue;
+    let Hm = fit(a, b, idx);
     if (!Hm) continue;
     let cur = inliersOf(Hm, a, b, n, th);
     if (cur.k > bestIn.k) {
-      ({ Hm, cur } = refine(a, b, n, Hm, cur, th));
+      ({ Hm, cur } = refine(a, b, n, Hm, cur, th, fit));
       best = Hm; bestIn = cur;
       const w = cur.k / n;
-      k = w < 1 ? Math.min(iters, Math.ceil(Math.log(1 - conf) / Math.log(Math.max(1e-12, 1 - w ** 4)))) : it;
+      k = w < 1 ? Math.min(iters, Math.ceil(Math.log(1 - conf) / Math.log(Math.max(1e-12, 1 - w ** m)))) : it;
     }
   }
   return { H: best, ...bestIn };
+}
+// ホモグラフィ: 4 点の DLT（サーバーの adapters.py の ransac_homography と同じ）
+export function ransacHomography(a, b, n, th = 3, iters = 1000, conf = 0.995, seed = 1) {
+  return ransac(a, b, n, 4, homographyDlt, (idx) => collinear(a, idx) || collinear(b, idx), th, iters, conf, seed);
+}
+
+// 相似変換（回転・拡大縮小・平行移動の 4 自由度）。複素数で b = c·a + d と書き、最小二乗で c と d を求める（2 点なら厳密に通る）。
+// cv2.estimateAffinePartial2D と同じ動きのモデル。手ぶれ補正のフレーム間の動きに使う（ホモグラフィより安定）
+export function similarityFit(a, b, idx) {
+  let ax = 0, ay = 0, bx = 0, by = 0;
+  for (const i of idx) { ax += a[2 * i]; ay += a[2 * i + 1]; bx += b[2 * i]; by += b[2 * i + 1]; }
+  const n = idx.length;
+  ax /= n; ay /= n; bx /= n; by /= n;
+  let re = 0, im = 0, den = 0;
+  for (const i of idx) {
+    const zx = a[2 * i] - ax, zy = a[2 * i + 1] - ay, wx = b[2 * i] - bx, wy = b[2 * i + 1] - by;
+    re += wx * zx + wy * zy; im += wy * zx - wx * zy; den += zx * zx + zy * zy; // w · conj(z)
+  }
+  if (den < 1e-9) return null;
+  const cr = re / den, ci = im / den;
+  return [cr, -ci, bx - (cr * ax - ci * ay), ci, cr, by - (ci * ax + cr * ay), 0, 0, 1];
+}
+export function ransacSimilarity(a, b, n, th = 2, iters = 500, conf = 0.995, seed = 1) {
+  // 近すぎる 2 点は回転・拡大縮小が決まらない
+  const degenerate = (idx) => Math.hypot(a[2 * idx[0]] - a[2 * idx[1]], a[2 * idx[0] + 1] - a[2 * idx[1] + 1]) < 4
+    || Math.hypot(b[2 * idx[0]] - b[2 * idx[1]], b[2 * idx[0] + 1] - b[2 * idx[1] + 1]) < 4;
+  return ransac(a, b, n, 2, similarityFit, degenerate, th, iters, conf, seed);
+}
+
+// 前のフレームとの動き（手ぶれ補正）: 今のフレームの点 → 前のフレームの点 の変換 M（3×3）。prev・fr は xfeatExtract の形、
+// i0 は prev の番号、i1 は fr の番号。インライアが minInliers より少なければ ok = false（補正の側は動きなしとして扱う）
+export function estimateMotion(prev, fr, i0, i1, post, params) {
+  const n = i0.length, a = new Float64Array(2 * n), b = new Float64Array(2 * n);
+  i0.forEach((pi, k) => { a[2 * k] = fr.pts[2 * i1[k]]; a[2 * k + 1] = fr.pts[2 * i1[k] + 1]; b[2 * k] = prev.pts[2 * pi]; b[2 * k + 1] = prev.pts[2 * pi + 1]; });
+  const homog = params.motion_model === "homography", th = post.ransac_px ?? 2;
+  const r = homog ? ransacHomography(a, b, n, th, 1000, 0.995, params.seed ?? 1) : ransacSimilarity(a, b, n, th, 500, 0.995, params.seed ?? 1);
+  const ok = !!r.H && r.k >= (post.min_inliers ?? 12);
+  const pairs = [];
+  for (let k = 0; k < n && pairs.length < 400; k++) pairs.push([b[2 * k], b[2 * k + 1], a[2 * k], a[2 * k + 1], r.inl[k]]);
+  return { model: homog ? "homography" : "similarity", ok, M: ok ? r.H : [1, 0, 0, 0, 1, 0, 0, 0, 1], inliers: r.k, matches: n, pairs };
 }
 
 // 凸で、つぶれていない四角形か

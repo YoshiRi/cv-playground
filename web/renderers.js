@@ -10,6 +10,7 @@
 //
 // 結果 r の座標は、推論に渡した画像（r.w × r.h）のピクセル。画面の大きさ（base.w × base.h）へは各 draw で縮尺を合わせる。
 import { SKELETON } from "./catalog.js";
+import { affineOf, apply3, inv3, mul3 } from "./stabilize.js";
 
 export const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const clamp01 = (v) => Math.min(1, Math.max(0, v));
@@ -283,6 +284,58 @@ export const KINDS = {
     summary: (r) => `${r.found ? "見つかった" : "見つからない"}（インライア ${r.inliers}/対応 ${r.matches}）`,
   },
 
+  // 手ぶれ補正: Worker の動き（M）と、画面側の stabilize.js が付ける r.stab（補正 W・拡大 Z・揺れ）、解析したフレーム r.frame
+  motion: {
+    views: () => [["stab", "補正後"], ["side", "並べる（元・補正後）"], ["orig", "元＋切り抜く枠"]],
+    draw(ctx, r, b, view) {
+      const st = r.stab, f = st?.frame ?? r.frame; // 先読みの時は数フレーム前のフレーム
+      if (!f) return;
+      const k = b.w / r.w, lw = Math.max(2, b.w / 360), size = Math.max(12, Math.round(b.w / 55));
+      ctx.fillStyle = "#0b0f14"; ctx.fillRect(0, 0, b.w, b.h);
+      const T = st ? mul3(st.Z, st.W) : [1, 0, 0, 0, 1, 0, 0, 0, 1];
+      const drawStab = (ox, oy, sc) => {
+        const [a, bb, c, d, e, ff] = affineOf(T, r.w, r.h);
+        ctx.save();
+        ctx.beginPath(); ctx.rect(ox, oy, r.w * sc, r.h * sc); ctx.clip();
+        ctx.setTransform(a * sc, bb * sc, c * sc, d * sc, ox + e * sc, oy + ff * sc);
+        ctx.drawImage(f, 0, 0, r.w, r.h);
+        ctx.restore();
+      };
+      if (view === "side") {
+        const sc = (b.w / 2 - 4) / r.w, oy = (b.h - r.h * sc) / 2;
+        ctx.drawImage(f, 0, oy, r.w * sc, r.h * sc);
+        drawStab(b.w / 2 + 4, oy, sc);
+        tag(ctx, 4, oy + 4, "元", "#64748b", size); tag(ctx, b.w / 2 + 8, oy + 4, "補正後", "#16a34a", size);
+      } else if (view === "orig") {
+        ctx.drawImage(f, 0, 0, b.w, b.h);
+        // 補正後に見える範囲（画面全体を元のフレームに戻した四角形）と、前のフレームとの対応（インライアは緑）
+        const back = inv3(T), q = [[0, 0], [r.w, 0], [r.w, r.h], [0, r.h]].map(([x, y]) => apply3(back, x, y));
+        ctx.lineWidth = lw; ctx.strokeStyle = "#facc15"; ctx.beginPath();
+        q.forEach(([x, y], i) => (i ? ctx.lineTo(x * k, y * k) : ctx.moveTo(x * k, y * k))); ctx.closePath(); ctx.stroke();
+        for (const [xp, yp, xc, yc, inl] of st?.pairs ?? r.pairs) {
+          ctx.strokeStyle = inl ? "rgba(34,197,94,.9)" : "rgba(239,68,68,.5)"; ctx.lineWidth = Math.max(1, lw / 2);
+          ctx.beginPath(); ctx.moveTo(xp * k, yp * k); ctx.lineTo(xc * k, yc * k); ctx.stroke();
+        }
+      } else {
+        drawStab(0, 0, k);
+      }
+      if (st?.hist.length > 1) drawJitter(ctx, st.hist, b, lw);
+      if (!r.ok && !r.first) tag(ctx, 4, b.h - size * 2.2, `動きを推定できない（インライア ${r.inliers}）`, "#dc2626", size);
+    },
+    panel(r) {
+      if (r.first && !r.stab?.frames) return `<div class="sub">動画かカメラを選んで「▶ 連続実行」で補正する（前のフレームとの動きを使うので、静止画では補正しない）</div>`;
+      const j = r.stab?.jitter, d = r.post_detail || {};
+      const f = (v, u, n = 1) => `${v.toFixed(n)}${u}`;
+      const jit = j?.n ? `<div class="sub">揺れ（細かい成分。フレーム間の動きから前後 9 フレームの平均を引いた残りの二乗平均、${j.n} フレーム）: 補正前 <b>${f(j.raw_px, "px")}・${f(j.raw_deg, "°", 2)}</b> → 補正後 <b>${f(j.out_px, "px")}・${f(j.out_deg, "°", 2)}</b></div>`
+        + `<div class="sub">動き（全体。カメラを振った・歩いた動きも入る）: 補正前 ${f(j.move_raw_px, "px")} → 補正後 ${f(j.move_out_px, "px")}（どちらも元のフレームの px）</div>` : "";
+      const times = [["点の取り出し", d.extract], ["対応", d.match], ["RANSAC", d.ransac]].filter(([, v]) => v != null).map(([k, v]) => `${k} ${fmtMs(v)}`).join(" ・ ");
+      return `<div class="chips"><span class="chip"><i style="background:${r.ok || r.first ? "#22c55e" : "#dc2626"}"></i>${r.model === "homography" ? "ホモグラフィ" : "相似変換"}・インライア ${r.inliers}/${r.matches}</span>`
+        + `<span class="chip">${r.stab?.mode === "tripod" ? "三脚" : r.stab?.delay ? `なめらか（先読み ${r.stab.delay} フレーム${r.stab.warmup ? "。ためている所" : ""}）` : `なめらか${{ weak: "弱", mid: "中", strong: "強" }[r.stab?.strength] ?? ""}`}・切り抜き ${Math.round((r.stab?.crop ?? 0) * 100)}%</span>${r.stab?.lost ? `<span class="chip">推定できなかった ${r.stab.lost} フレーム</span>` : ""}${r.stab?.clamped ? `<span class="chip">切り抜きの端に当たった ${r.stab.clamped} フレーム（多ければ切り抜きを大きく）</span>` : ""}</div>`
+        + jit + (times ? `<div class="sub">後処理の内訳: ${times}</div>` : "");
+    },
+    summary: (r) => { const j = r.stab?.jitter; return j?.n ? `揺れ ${j.raw_px.toFixed(1)}px→${j.out_px.toFixed(1)}px（動き ${j.move_raw_px.toFixed(1)}→${j.move_out_px.toFixed(1)}）` : "補正なし"; },
+  },
+
   // 文章（画像の説明・質問）
   text: {
     views: () => [],
@@ -291,6 +344,19 @@ export const KINDS = {
     summary: (r) => r.text.slice(0, 24) + "…",
   },
 };
+
+// 揺れのグラフ（画面の下の帯）: フレーム間の動きの大きさ（px）。赤が補正前、緑が補正後
+function drawJitter(ctx, hist, b, lw) {
+  const H = b.h * 0.18, y0 = b.h - H, n = hist.length, max = Math.max(4, ...hist.map((x) => x.raw));
+  ctx.fillStyle = "rgba(11,15,20,.55)"; ctx.fillRect(0, y0, b.w, H);
+  for (const [key, col, wd] of [["raw", "#f87171", lw * 0.6], ["out", "#4ade80", lw]]) {
+    ctx.strokeStyle = col; ctx.lineWidth = wd; ctx.beginPath();
+    hist.forEach((h, i) => { const x = (i / Math.max(1, 239)) * b.w, y = y0 + H - (h[key] / max) * (H - 4) - 2; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#e5e7eb"; ctx.font = `${Math.max(10, Math.round(b.w / 70))}px sans-serif`;
+  ctx.fillText(`フレーム間の動き（元のフレームの px、最大 ${max.toFixed(0)}）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
+}
 
 // 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用
 function drawPairs(ctx, r, b, lw, size) {

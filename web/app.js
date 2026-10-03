@@ -4,6 +4,7 @@ import { collectEnv, composeImage, download, resultData, safeName, shareOrDownlo
 import { Tracker } from "./tracker.js";
 import { APPS, COMBOS } from "./apps.js";
 import { INTERACT, toFrame } from "./interact.js";
+import { Stabilizer } from "./stabilize.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_SIDE = 1280;      // 静止画の長辺。スマホ写真をそのまま送ると重いので縮める
@@ -39,6 +40,8 @@ const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
 const state = {
   task: "detect",
+  stab: new Stabilizer(), // 手ぶれ補正の軌跡（連続実行ごとに作り直す）
+  motionSeq: 0,
   template: null,    // テンプレートマッチングの探す物 {id, bitmap, blob, w, h}
   tplSelect: false,  // 「枠で切り出す」を押して、画像の上で枠をドラッグするのを待っている
   tplDrag: null,     // ドラッグ中の枠 [x1, y1, x2, y2]（canvas の座標）
@@ -632,7 +635,9 @@ function makeRecord(m, r, mode, extra = {}) {
     device: r.device, runtime: m.where === "browser" ? r.dtype || "" : "", input_size: m.pre?.dynamic ? parseInt($("input-size").value, 10) : "",
     frame_w: r.w, frame_h: r.h, load_ms: r.load_ms, infer_ms: r.infer_ms, grab_ms: bd.grab, pre_ms: bd.pre, run_ms: bd.run, post_ms: bd.post,
     roundtrip_ms: r.roundtrip_ms, reid_ms: r.reid_ms, cascade_ms: r.cascade_ms, summary: KINDS[r.kind]?.summary(r) ?? r.kind,
-    ...(r.kind === "matches" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
+    ...(r.kind === "matches" || r.kind === "motion" ? { extract_ms: r.post_detail?.extract, match_ms: r.post_detail?.match, ransac_ms: r.post_detail?.ransac, inliers: r.inliers, matches: r.matches } : {}),
+    ...(r.stab?.jitter?.n ? { jitter_raw_px: +r.stab.jitter.raw_px.toFixed(2), jitter_out_px: +r.stab.jitter.out_px.toFixed(2), jitter_raw_deg: +r.stab.jitter.raw_deg.toFixed(3), jitter_out_deg: +r.stab.jitter.out_deg.toFixed(3),
+      move_raw_px: +r.stab.jitter.move_raw_px.toFixed(2), move_out_px: +r.stab.jitter.move_out_px.toFixed(2), stab_mode: r.stab.mode, stab_strength: r.stab.strength, stab_crop: r.stab.crop, stab_delay: r.stab.delay, stab_clamped: r.stab.clamped, frames_total: r.stab.frames } : {}),
     ...extra,
   };
 }
@@ -707,7 +712,7 @@ function benchQuadErr(r) {
 // 測れるモデル: クリックで点を置くタブ（条件が決まらない）以外の、使えるモデル全部。
 // 既定で選ぶのは models.json で bench: true の軽い代表（ブラウザ実行のみ）
 function benchCandidates() {
-  return TASKS.filter((t) => !t.click && !t.combo).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
+  return TASKS.filter((t) => !t.click && !t.combo && !t.video).flatMap((t) => variants(t.id).filter((v) => !v.avoid && v.ready).map((v) => ({ t, v })));
 }
 
 function renderBench() {
@@ -832,11 +837,15 @@ function paramsFor(key, w, auto) {
     prompt: $("prompt").value,
     points: state.points.map(([x, y, l]) => [x * k, y * k, l]),
     input_size: parseInt($("input-size").value, 10), // 入力サイズ可変のモデルの長辺
-    top_k: parseInt($("top-k").value, 10), // テンプレートマッチングの特徴点の数
+    top_k: parseInt($("top-k").value, 10), // テンプレートマッチング・手ぶれ補正の特徴点の数
+    motion_model: $("stab-model").value, motion_seq: state.motionSeq, // 手ぶれ補正の動きのモデルと、連続実行の通し番号（変わったら前のフレームを捨てる）
     auto,
     _imageKey: key,
   };
 }
+
+// ---------- 手ぶれ補正 ----------
+const stabOpts = () => ({ mode: $("stab-mode").value, strength: $("stab-strength").value, crop: parseFloat($("stab-crop").value), lookahead: parseInt($("stab-look").value, 10) });
 
 // ---------- テンプレートマッチング: 探す物（テンプレート） ----------
 // 画像・フレームの上で枠をドラッグして切り出すか、ファイルで選ぶ。Worker はテンプレートの特徴を id ごとに持って使い回すので、
@@ -917,6 +926,7 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
   const [w, h] = inferSize();
   const tg = performance.now();
   const { image, key } = await grabFrame(m.where === "server");
+  const frameCanvas = state.video ? state.lastFrame : state.image?.bitmap;
   const grabMs = performance.now() - tg;
   const params = { ...paramsFor(key, w, state.auto), ...overrides };
   if (params.auto && m.where === "server") throw new Error("全体の自動分割はブラウザの SAM 系モデルのみ");
@@ -948,6 +958,7 @@ async function runOnce(m, overrides = {}, { commit = true } = {}) {
     throw new Error("テンプレートを送り直す。もう一度実行する");
   }
   if (usesTemplate) { if (m.where === "browser") tplSent.set(workers[workerLib(m)], state.template?.id); r.templateImage = state.template?.bitmap; }
+  if (r.kind === "motion") r.frame = frameCanvas; // 手ぶれ補正は解析したフレームそのものを描き直す（画面の動画は先に進んでいる）
   r.w = w; r.h = h;
   if (extra.length) {
     r.with = {}; r.withModels = {}; r.withResults = {};
@@ -977,7 +988,9 @@ async function run() {
   $("run").disabled = true;
   setStatus(m.where === "browser" ? "ブラウザで実行中…（初回はモデルを取得）" : "サーバーで実行中…（初回はモデルを読み込み）");
   try {
+    state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 静止画の 1 回は前のフレームが無い
     const r = await runOnce(m);
+    if (r.kind === "motion") state.stab.update(r, stabOpts());
     await applyCascade(m, r, null);
     await applyCombo(r, null);
     state.apps = createApps();
@@ -1019,6 +1032,7 @@ async function liveLoop() {
   const ids = new Set();
   const seqStore = new Map(); // 追跡の ID → 切り出しの履歴（フレーム列を使う分類モデル用）
   state.apps = createApps();
+  state.motionSeq = (state.motionSeq || 0) + 1; state.stab.reset(); // 手ぶれ補正: 連続実行ごとに前のフレームと軌跡を捨てる
   state.comboCache = {}; state.comboTick = 0; COMBOS[curTask().combo?.app]?.reset?.(); // 組み合わせの前の結果・履歴を捨てる
   KINDS.depth.resetRange(); // 深度の「範囲を固定」は連続実行ごとに取り直す
   setStatus(m.where === "browser" ? "連続実行中…（初回はモデルを取得）" : "連続実行中…（サーバー）");
@@ -1030,6 +1044,7 @@ async function liveLoop() {
   const nextPrompt = () => (samTrack?.prompt ? { points: [[...samTrack.prompt.point, 1]], box: samTrack.prompt.box } : {});
   // 1フレームの結果を追跡・cascade にかけて表示する（フレームの順に呼ぶ）
   const handle = async (r) => {
+    if (r.kind === "motion") state.stab.update(r, stabOpts()); // フレームの順に（パイプライン化しても handle は順に呼ばれる）
     if (samTrack) updateSamTrack(samTrack, r);
     if (tracker) {
       const feats = reid ? await reidFeatures(reid, r.items, tracker.args.track_low_thresh) : null;

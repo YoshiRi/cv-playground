@@ -366,6 +366,18 @@ function ortRuntime(e, session, device) {
   return `onnxruntime-web ${g.fp16 ? "fp16" : "fp32"}${g.graph ? " graph" : ""}${pre}${g.postGpu ? " 後処理GPU" : ""}${g.graphFallback ? "（このモデルは graph capture 不可）" : ""}`;
 }
 
+// 読み込み済みのモデルを捨てる（ベンチで測り終えたモデル。スマホでは何個も載せると GPU のメモリが足りなくなる）
+async function release(key) {
+  const p = loaded.get(key);
+  if (!p) return;
+  loaded.delete(key);
+  try {
+    const st = await p;
+    await st.session?.release?.(); await st.tplSession?.release?.();
+    for (const k of ["model", "pipe"]) await st[k]?.dispose?.();
+  } catch (err) { console.warn("モデルを捨てられない", key, err); }
+}
+
 // 詳細計測（?profile=1）: 最後の last 回の記録をまとめて返す。profiler は一度止めると再開できないので、モデルは捨てて次の実行で読み直す
 async function profile(id, e, last) {
   try {
@@ -383,6 +395,7 @@ async function profile(id, e, last) {
 self.onmessage = async (ev) => {
   if (ev.data.type === "embed") return embed(ev.data.id, ev.data.model, ev.data.crops);
   if (ev.data.type === "profile") return profile(ev.data.id, ev.data.model, ev.data.last);
+  if (ev.data.type === "release") return release(ev.data.key);
   const { id, model: e, image, params } = ev.data;
   try {
     await libReady;

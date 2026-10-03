@@ -103,6 +103,11 @@ function embedInBrowser(model, crops) {
   });
 }
 
+// Worker の読み込み済みのモデルを捨てる（その Worker が無ければ何もしない）
+function releaseInBrowser(model) {
+  workers[workerLib(model)]?.postMessage({ type: "release", key: model.key });
+}
+
 function runInBrowser(model, image, params) {
   const id = ++seq;
   return new Promise((resolve, reject) => {
@@ -782,6 +787,8 @@ async function runBench() {
     }));
     done.push(v.name);
     renderResult(v, r);
+    // 測り終えたブラウザのモデルは、画面で選んでいるもの以外を捨てる（スマホで何個も載せるとメモリが足りなくなり、ページが落ちた）
+    if (v.where === "browser" && currentModel()?.id !== v.id) releaseInBrowser(v);
     draw();
   }
   if (state.benchSavedTemplate !== undefined) { // ベンチの前のテンプレートに戻す
@@ -791,6 +798,9 @@ async function runBench() {
   }
   $("bench-progress").textContent = state.bench ? `完了: ${done.length} モデル（結果は実行履歴に「ベンチ」として追加。CSV で書き出せる）` : `中止した（${done.length} モデル分を記録）`;
   state.bench = false;
+  // 文エンコーダ（text_model）も、画面で選んでいるモデルが使っていなければ捨てて、文の埋め込みの写しも消す
+  const keepText = currentModel()?.text_model;
+  for (const tm of new Set(list.map(({ v }) => v.text_model).filter(Boolean))) if (tm !== keepText) { releaseInBrowser(MODELS.find((x) => x.key === tm)); textEmbCache.clear(); }
   $("bench-start").textContent = "▶ 測る";
 }
 

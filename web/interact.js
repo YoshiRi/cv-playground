@@ -5,6 +5,7 @@
 //
 // フレーム（v: 1）: 座標は画像の幅・高さで割った 0〜1
 //   { v, seq, t, wall, w, h, task, model,   （seq は通し番号、t は送り手の performance.now()、wall は Date.now()。受け手は wall で遅れを測れる）
+//     labels?: [{label, score}]（ゼロショット分類）, decisions?: [{name, value, p, conf, changed, reason}]（判定。p ははい側、conf は value の側の確からしさ、changed は切り替わったフレーム）
 //     items: [{ id?, label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度]], emotion?, state? }] }
 //   keypoints は 17 点なら COCO の順（鼻・左目・右目・左耳・右耳・左肩・右肩・左肘・右肘・左手首・右手首・…）、
 //   5 点なら顔（右目・左目・鼻・口の右端・左端。YuNet）。左右は写っている人から見た向き
@@ -23,7 +24,9 @@ export function toFrame(r, meta = {}) {
   const w = r.w || 1, h = r.h || 1;
   return {
     v: 1, seq: ++seq, t: performance.now(), wall: Date.now(), w, h, ...meta,
-    items: (r.items || []).map((it) => ({
+    ...(r.kind === "labels" ? { labels: r.items.map((it) => ({ label: it.label, score: +it.score.toFixed(4) })) } : {}),
+    ...(r.decisions ? { decisions: r.decisions.map(({ name, value, p, conf, changed, reason }) => ({ name, value, p, conf, changed, reason })) } : {}),
+    items: (r.kind === "labels" ? [] : r.items || []).map((it) => ({
       ...(it.id != null ? { id: it.id } : {}), label: it.label, score: it.score,
       box: [it.box[0] / w, it.box[1] / h, it.box[2] / w, it.box[3] / h],
       ...(it.keypoints ? { keypoints: it.keypoints.map(([x, y, v]) => [x / w, y / h, v ?? 1]) } : {}),

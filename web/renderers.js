@@ -236,11 +236,18 @@ export const KINDS = {
 
   // 分類: items: [{label, score, abs?}]（score の大きい順）
   labels: {
-    views: () => [],
-    draw() {},
-    panel: (r) => r.items.map((it, i) => `<div class="bar${i === 0 ? " top" : ""}"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${pct(it.score, 1)}"></span></span><span class="num">${pct(it.score, 1)}</span></div>`).join("")
+    views: (r) => (r.decisions?.length ? [["judge", "判定を重ねる"], ["original", "元画像"]] : []),
+    // 判定（はい = 緑、いいえ = 赤、不明 = 灰）を左上に大きく
+    draw(ctx, r, b) {
+      const size = Math.max(16, Math.round(b.w / 28));
+      // tag は y の上側に描くので、行の下端の位置を渡す
+      r.decisions.forEach((d, i) => tag(ctx, 8, 8 + (i + 1) * size * 1.6, `${d.value}  ${(d.conf * 100).toFixed(0)}%${d.decided !== null && d.conf < 0.5 ? "（保持）" : ""}`, d.decided === null ? "#64748b" : d.decided ? "#16a34a" : "#dc2626", size));
+    },
+    panel: (r) => (r.decisions?.length ? `<div class="chips">${r.decisions.map((d) => `<span class="chip"><i style="background:${d.decided === null ? "#94a3b8" : d.decided ? "#22c55e" : "#ef4444"}"></i>${esc(d.value)} <b>${(d.conf * 100).toFixed(0)}%</b>${d.decided !== null && d.conf < 0.5 ? "（保持）" : ""} <small class="muted">${esc(d.reason)}</small></span>`).join("")}</div>`
+      + (r.judgeLog?.length ? `<div class="sub">切り替わり: ${r.judgeLog.map((l) => `${l.t.toFixed(1)}s ${esc(l.value)}`).join(" ・ ")}</div>` : "") : "")
+      + r.items.map((it, i) => `<div class="bar${i === 0 ? " top" : ""}"><span>${esc(it.label)}</span><span class="track"><span class="fill" style="width:${pct(it.score, 1)}"></span></span><span class="num">${pct(it.score, 1)}</span></div>`).join("")
       + (r.items[0]?.abs != null ? `<div class="sub">モデルの絶対スコア: ${r.items.map((it) => `${esc(it.label)} ${pct(it.abs, 1)}`).join("、")}</div>` : ""),
-    summary: (r) => r.items[0]?.label ?? "",
+    summary: (r) => (r.decisions?.length ? r.decisions.map((d) => d.value).join("・") + " / " : "") + (r.items[0]?.label ?? ""),
   },
 
   // テンプレートマッチング: テンプレートの四隅を写した四角形 quad、対応 pairs: [[xt, yt, xf, yf, インライアか]]、

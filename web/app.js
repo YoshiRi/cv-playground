@@ -5,6 +5,7 @@ import { Tracker } from "./tracker.js";
 import { APPS, COMBOS } from "./apps.js";
 import { INTERACT, toFrame } from "./interact.js";
 import { Stabilizer } from "./stabilize.js";
+import { LANG, addCatalog, setLang, startTranslate, tx } from "./i18n.js";
 import { JUDGE_DEFAULT, Judges, judgePrompts, parseJudges } from "./judge.js";
 
 const $ = (id) => document.getElementById(id);
@@ -193,7 +194,7 @@ function markDownloaded(key) {
 function confirmDownload(m) {
   if (m.where !== "browser" || !(m.mb >= CONFIRM_MB) || downloaded().has(m.key)) return true;
   const size = m.mb >= 1000 ? `${(m.mb / 1000).toFixed(1)}GB` : `${m.mb}MB`;
-  return confirm(`「${m.name}」を初めて使うので、この端末にモデルをダウンロードします（約${size}）。\nモバイル回線では通信量に注意してください。2回目以降はダウンロードしません。\n\n続けますか？`);
+  return confirm(tx("「{name}」を初めて使うので、この端末にモデルをダウンロードします（約{size}）。\nモバイル回線では通信量に注意してください。2回目以降はダウンロードしません。\n\n続けますか？", { name: tx(m.name), size }));
 }
 
 async function showStorage() {
@@ -207,7 +208,7 @@ async function showStorage() {
   } catch { $("storage").textContent = ""; }
 }
 async function clearDownloads() {
-  if (!confirm("ダウンロード済みのモデル（ブラウザのキャッシュ）を消します。次に使う時にまたダウンロードします。")) return;
+  if (!confirm(tx("ダウンロード済みのモデル（ブラウザのキャッシュ）を消します。次に使う時にまたダウンロードします。"))) return;
   stopLive();
   for (const lib of Object.keys(workers)) restartWorker(lib);
   try { for (const k of await caches.keys()) await caches.delete(k); } catch { /* Cache API が無い環境 */ }
@@ -870,8 +871,8 @@ async function saveImage() {
   const m = currentModel(), r = state.result;
   if (!r || !m) return;
   const lines = $("caption").checked ? [
-    `${TASKS.find((t) => t.id === m.task).name} ・ ${m.name}`,
-    `${m.where === "browser" ? "ブラウザ" : "サーバー"} ${r.device}${r.dtype ? " " + r.dtype : ""} ・ 推論 ${fmt(r.infer_ms)} ・ ${new Date().toLocaleString()} ・ CV Playground`,
+    `${tx(TASKS.find((t) => t.id === m.task).name)} · ${tx(m.name)}`,
+    `${tx(m.where === "browser" ? "ブラウザ" : "サーバー")} ${r.device}${r.dtype ? " " + tx(r.dtype) : ""} · ${tx("推論")} ${fmt(r.infer_ms)} · ${new Date().toLocaleString()} · CV Playground`,
   ] : null;
   const blob = await composeImage($("canvas"), lines);
   const how = await shareOrDownload(blob, `cv-playground_${safeName(TASKS.find((t) => t.id === m.task).name)}_${safeName(m.key)}_${stamp()}.png`);
@@ -1461,6 +1462,11 @@ async function refreshServer() {
 }
 
 async function init() {
+  // 画面の言語（英語の時は、ページの文字を辞書で置き換え続ける）。切り替えボタンは、今と違う言語の名前を出す
+  addCatalog(CATALOG);
+  startTranslate();
+  $("lang-btn").textContent = LANG === "ja" ? "English" : "日本語";
+  $("lang-btn").onclick = () => setLang(LANG === "ja" ? "en" : "ja");
   // サーバーの有無（API に 3 秒で届かなければ無しとみなす）
   if (!STANDALONE) {
     try {
@@ -1524,7 +1530,7 @@ async function init() {
   $("export-json").onclick = () => exportRuns("json");
   $("export-md").onclick = () => exportRuns("md");
   $("clear-runs").onclick = () => {
-    if (!state.runs.length || !confirm("実行の記録（この端末に保存している分）を消します。")) return;
+    if (!state.runs.length || !confirm(tx("実行の記録（この端末に保存している分）を消します。"))) return;
     state.runs = []; saveRuns(); renderHistory();
   };
   $("bench-start").onclick = runBench;

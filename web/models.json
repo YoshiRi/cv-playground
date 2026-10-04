@@ -5,19 +5,23 @@
  "categories": [
   {
    "id": "detect",
-   "name": "検出・追跡"
+   "name": "検出・追跡",
+   "name_en": "Detection & tracking"
   },
   {
    "id": "seg",
-   "name": "セグメンテーション"
+   "name": "セグメンテーション",
+   "name_en": "Segmentation"
   },
   {
    "id": "3d",
-   "name": "深度・3D"
+   "name": "深度・3D",
+   "name_en": "Depth & 3D"
   },
   {
    "id": "vl",
-   "name": "画像と言語"
+   "name": "画像と言語",
+   "name_en": "Vision & language"
   }
  ],
  "tasks": [
@@ -33,7 +37,9 @@
     "threshold": 0.4
    },
    "category": "detect",
-   "result": "boxes"
+   "result": "boxes",
+   "name_en": "Object detection",
+   "hint_en": "80 COCO classes, filtered by the threshold. On video or camera you can also track objects (assign IDs)"
   },
   {
    "id": "pose",
@@ -47,7 +53,9 @@
     "threshold": 0.4
    },
    "category": "detect",
-   "result": "boxes"
+   "result": "boxes",
+   "name_en": "Human pose",
+   "hint_en": "17 keypoints (COCO). On video or camera you can also track people (assign IDs)"
   },
   {
    "id": "face",
@@ -62,7 +70,9 @@
    ],
    "defaults": {
     "threshold": 0.6
-   }
+   },
+   "name_en": "Face",
+   "hint_en": "Face detection, with tracking on video or camera. YuNet also outputs 5 face landmarks (eyes, nose, mouth corners), and the cropped faces are classified by HSEmotion into 8 expressions plus valence and arousal. With tracking, expression probabilities are smoothed per ID. You can also compare with the face class of PINTO's DEIMv2"
   },
   {
    "id": "wholebody",
@@ -77,7 +87,9 @@
     "threshold": 0.35
    },
    "category": "detect",
-   "result": "boxes"
+   "result": "boxes",
+   "name_en": "Hands & eyes (PINTO)",
+   "hint_en": "PINTO's ultra-light models. Detects body, head, face, eyes and hands, and small classifiers judge eye open/closed, pointing, and waving. Waving works only with tracking on video or camera"
   },
   {
    "id": "gesture",
@@ -113,11 +125,14 @@
        "left-side",
        "left-front"
       ],
-      "default": "deimv2-atto"
+      "default": "deimv2-atto",
+      "name_en": "Combined model (PINTO parts)"
      }
     ],
     "app": "gesture"
-   }
+   },
+   "name_en": "Gestures (pose + PINTO)",
+   "hint_en": "Runs two models on the same frame and combines them. From the pose keypoints (YOLO26n-pose) and PINTO's head, eyes, hands and face direction, judges per person: hand raised, face direction, eyes closed, pointing. Choose the PINTO model under \"Combined model\""
   },
   {
    "id": "zsdetect",
@@ -133,7 +148,9 @@
     "labels": "person, bus, bag"
    },
    "category": "detect",
-   "result": "boxes"
+   "result": "boxes",
+   "name_en": "Text-prompted detection",
+   "hint_en": "English nouns, comma-separated (e.g., cat, remote control)"
   },
   {
    "id": "template",
@@ -147,7 +164,9 @@
    ],
    "defaults": {
     "top_k": 512
-   }
+   },
+   "name_en": "Template matching",
+   "hint_en": "Select the object to find (the template) by dragging a box on the image or frame, or choose an image file. A homography is estimated from XFeat keypoint matches, and the template's corners are drawn as a quad. The \"Matches\" view shows the matches between template and frame as lines"
   },
   {
    "id": "stabilize",
@@ -166,7 +185,9 @@
    ],
    "defaults": {
     "top_k": 512
-   }
+   },
+   "name_en": "Video stabilization",
+   "hint_en": "In continuous runs on video or camera, estimates frame-to-frame motion with XFeat and re-renders each frame along a smoothed camera path (cropping the edges). \"Smooth\" also follows the speed of the motion and removes only small shakes; \"Look-ahead\" delays the display a little to stabilize strongly even while walking. \"Tripod\" locks to the first frame. The result panel shows jitter (fine component) and motion (overall) before and after"
   },
   {
    "id": "segment",
@@ -176,28 +197,36 @@
     "points"
    ],
    "click": true,
-   "category": "seg"
+   "category": "seg",
+   "name_en": "Promptable (SAM)",
+   "hint_en": "Cuts out the object at the clicked point (promptable segmentation). Exclusion points: Shift+click or the checkbox. \"Segment everything\" colors the whole image object by object from a grid of points (no class names; browser only)"
   },
   {
    "id": "semantic",
    "name": "セマンティック",
    "category": "seg",
    "hint": "画素ごとにクラスを塗り分ける（ADE20K の 150 クラス。道路・建物・空・人など）。同じクラスの物は1つの領域になる",
-   "params": []
+   "params": [],
+   "name_en": "Semantic",
+   "hint_en": "Colors each pixel by class (150 ADE20K classes: road, building, sky, person, …). Objects of the same class form one region"
   },
   {
    "id": "panoptic",
    "name": "パノプティック",
    "category": "seg",
    "hint": "数えられる物（人・車など）は1つずつ、数えられない領域（道路・空など）はまとめて塗り分ける（COCO の 133 クラス）",
-   "params": []
+   "params": [],
+   "name_en": "Panoptic",
+   "hint_en": "Countable things (people, cars, …) one by one, and stuff (road, sky, …) as regions (133 COCO classes)"
   },
   {
    "id": "depth",
    "name": "深度推定",
    "hint": "赤いほど近い（相対深度）",
    "params": [],
-   "category": "3d"
+   "category": "3d",
+   "name_en": "Depth estimation",
+   "hint_en": "Redder is nearer (relative depth)"
   },
   {
    "id": "approach",
@@ -225,10 +254,13 @@
       "default": "da3-small",
       "params": {
        "depth_raw": true
-      }
+      },
+      "name_en": "Combined depth model"
      }
     ]
-   }
+   },
+   "name_en": "Approach / recede (detection + depth)",
+   "hint_en": "Combines object detection and depth to judge, per track ID, whether each object is approaching or receding. A Kalman filter estimates the rate of distance change from box size (ROI) and depth; approaching objects are red and receding blue, counted per class. Also estimates the time to contact. Uses ByteTrack if tracking is \"None\""
   },
   {
    "id": "gostop",
@@ -258,7 +290,8 @@
       "default": "da3-small",
       "params": {
        "depth_raw": true
-      }
+      },
+      "name_en": "Combined depth model"
      },
      {
       "role": "scene",
@@ -268,10 +301,13 @@
       "default": "siglip2-base-onnx",
       "params": {
        "labels": ""
-      }
+      },
+      "name_en": "Scene model (zero-shot classification)"
      }
     ]
-   }
+   },
+   "name_en": "Go / stop (detection + depth + scene)",
+   "hint_en": "A rough sensor-style judgment for a robot. Runs object detection (with tracking), depth (every 3 frames) and a zero-shot scene judgment (every 5 frames) on the same frame; \"Stop\" if any stop condition applies (something ahead, approaching, too close, scene on its \"no\" side), and \"Go\" again after 5 clear frames. Shows the reason and can stream it out through Interaction"
   },
   {
    "id": "pose3d",
@@ -298,10 +334,13 @@
       "default": "dav2-small",
       "params": {
        "depth_raw": true
-      }
+      },
+      "name_en": "Combined depth model"
      }
     ]
-   }
+   },
+   "name_en": "3D pose (pose + depth)",
+   "hint_en": "Combines human pose and depth: keypoints get depth, and the skeleton rotates in a lower-right inset. Depth is rough (relative)"
   },
   {
    "id": "classify",
@@ -314,14 +353,18 @@
    "defaults": {
     "labels": "bus, truck, tram, street, office, cat"
    },
-   "category": "vl"
+   "category": "vl",
+   "name_en": "Zero-shot classification",
+   "hint_en": "Labels comma-separated (English). Bars are relative among labels; the numbers in parentheses are the model's absolute scores. Write yes/no phrases under \"Judgments\" (e.g., Passable | Blocked) to overlay judgments on the image; on video they are smoothed over time and changes are logged. Can be streamed out through Interaction"
   },
   {
    "id": "matting",
    "name": "背景除去",
    "hint": "前景だけを残す",
    "params": [],
-   "category": "seg"
+   "category": "seg",
+   "name_en": "Background removal",
+   "hint_en": "Keeps only the foreground"
   },
   {
    "id": "vlm",
@@ -333,7 +376,9 @@
    "defaults": {
     "prompt": "この画像を日本語で詳しく説明してください。"
    },
-   "category": "vl"
+   "category": "vl",
+   "name_en": "Captioning & VQA",
+   "hint_en": "SmolVLM is English-only. Use Qwen for Japanese"
   }
  ],
  "apps": [
@@ -346,7 +391,9 @@
    "params": [
     "classes"
    ],
-   "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）"
+   "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）",
+   "name_en": "Count",
+   "hint_en": "Current count per class (median of the last 5 frames). With tracking on video or camera, also shows the cumulative number of track IDs seen (overcounts when IDs switch)"
   }
  ],
  "models": [
@@ -416,7 +463,9 @@
     "type": "ultra_e2e_detect",
     "classes": "coco"
    },
-   "license": "AGPL-3.0（Ultralytics）"
+   "license": "AGPL-3.0（Ultralytics）",
+   "name_en": "YOLO26n (dynamic input, this server only)",
+   "note_en": "ONNX exported from Ultralytics with dynamic input and no NMS (tools/export_yolo26_dynamic.py). The weights are AGPL, so only this server serves them"
   },
   {
    "key": "yolo26s",
@@ -633,7 +682,9 @@
    "post": {
     "type": "ultra_e2e_pose"
    },
-   "license": "AGPL-3.0（Ultralytics）"
+   "license": "AGPL-3.0（Ultralytics）",
+   "name_en": "YOLO26n-pose (dynamic input, this server only)",
+   "note_en": "ONNX exported from Ultralytics with dynamic input and no NMS (tools/export_yolo26_dynamic.py). The weights are AGPL, so only this server serves them"
   },
   {
    "key": "yolo26x-pose",
@@ -745,7 +796,8 @@
     "webgpu": "fp16",
     "wasm": "q8"
    },
-   "license": "SAM License（Meta）"
+   "license": "SAM License（Meta）",
+   "name_en": "SAM 3 (points)"
   },
   {
    "key": "sam2.1-large",
@@ -1001,7 +1053,8 @@
     "199": "wall-other-merged",
     "200": "rug-merged"
    },
-   "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）"
+   "label_map_source": "cocodataset/panopticapi の panoptic_coco_categories.json（元の config に名前が無い stuff クラス）",
+   "name_en": "DETR ResNet-50 (COCO panoptic)"
   },
   {
    "key": "eomt-coco-panoptic",
@@ -1013,7 +1066,8 @@
    "adapter": "hf-segment",
    "subtask": "panoptic",
    "repo": "tue-mps/eomt-dinov3-coco-panoptic-base-640",
-   "license": "MIT（バックボーンは DINOv3 License）"
+   "license": "MIT（バックボーンは DINOv3 License）",
+   "name_en": "EoMT DINOv3 base (COCO panoptic)"
   },
   {
    "key": "dav2-small",
@@ -1060,7 +1114,8 @@
    },
    "license": "Apache-2.0",
    "bench": true,
-   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める（transformers.js の既定は短辺 518）。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"
+   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める（transformers.js の既定は短辺 518）。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる",
+   "note_en": "Scales the long side to \"Model input (long side)\" and pads to a multiple of 14 (transformers.js defaults to a short side of 518). The default long side is 320 (for continuous runs on phones). Raise it to 518 or more for finer detail or DA3's field of view. Smaller is faster and coarser"
   },
   {
    "key": "da3-small",
@@ -1117,7 +1172,8 @@
    },
    "license": "Apache-2.0",
    "bench": true,
-   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる"
+   "note": "長辺を「モデル入力（長辺）」に合わせ、14 の倍数まで余白で埋める。既定は長辺 320（スマホの連続実行向け）。細かさや DA3 の画角を見たい時は 518 以上に上げる。小さくするほど速く、深度の細かさは粗くなる",
+   "note_en": "Scales the long side to \"Model input (long side)\" and pads to a multiple of 14. The default long side is 320 (for continuous runs on phones). Raise it to 518 or more for finer detail or DA3's field of view. Smaller is faster and coarser"
   },
   {
    "key": "dav2-large",
@@ -1178,7 +1234,8 @@
    },
    "text_model": "siglip2-base-text",
    "license": "Apache-2.0",
-   "note": "画像エンコーダ（vision_model、fp16 186MB）を汎用 ONNX で回し、候補の文の埋め込み（文エンコーダ int8 283MB、wasm）は候補を変えた時だけ作る。スコアは cos × exp(logit_scale) + logit_bias（google/siglip2-base-patch16-224 の重みの値）。前処理は preprocessor_config.json（224×224 に引き伸ばし、平均・標準偏差 0.5）"
+   "note": "画像エンコーダ（vision_model、fp16 186MB）を汎用 ONNX で回し、候補の文の埋め込み（文エンコーダ q4f16 443MB、transformers.js）は候補を変えた時だけ作る。スコアは cos × exp(logit_scale) + logit_bias（google/siglip2-base-patch16-224 の重みの値）。前処理は preprocessor_config.json（224×224 に引き伸ばし、平均・標準偏差 0.5）",
+   "note_en": "Runs the image encoder (vision_model, fp16, 186 MB) as generic ONNX, and computes the label text embeddings (text encoder q4f16, 443 MB, in transformers.js) only when the labels change. Score = cos × exp(logit_scale) + logit_bias (values from the google/siglip2-base-patch16-224 weights). Preprocessing follows preprocessor_config.json (stretch to 224×224, mean/std 0.5)"
   },
   {
    "key": "siglip2-base-text",
@@ -1194,7 +1251,8 @@
     "webgpu": "q4f16",
     "wasm": "q8"
    },
-   "license": "Apache-2.0"
+   "license": "Apache-2.0",
+   "name_en": "SigLIP2 base text encoder"
   },
   {
    "key": "birefnet-lite",
@@ -1259,7 +1317,8 @@
    },
    "prompt": "Describe this image in detail.",
    "license": "Apache-2.0",
-   "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32"
+   "note": "fp16 だと WebGPU で画像によって意味のない文章になる（2026-09-28 確認）ので fp32",
+   "note_en": "fp32, because fp16 on WebGPU produces meaningless text for some images (checked 2026-09-28)"
   },
   {
    "key": "qwen3vl-2b",
@@ -1330,7 +1389,8 @@
       "驚き"
      ],
      "va": true,
-     "expand": 0.1
+     "expand": 0.1,
+     "name_en": "Expression (HSEmotion MobileFaceNet, light)"
     },
     {
      "id": "emo-b0",
@@ -1349,9 +1409,12 @@
      ],
      "va": true,
      "expand": 0.1,
-     "default": false
+     "default": false,
+     "name_en": "Expression (HSEmotion EfficientNet-B0, more accurate)"
     }
-   ]
+   ],
+   "name_en": "YuNet (OpenCV, with 5 face landmarks)",
+   "note_en": "OpenCV's face detector (for faces of about 10–300 px). Input is BGR 0–255. Output decoding and NMS follow OpenCV's FaceDetectorYN"
   },
   {
    "key": "deimv2-atto-face",
@@ -1423,7 +1486,9 @@
    "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）",
    "server": {
     "providers": "cpu"
-   }
+   },
+   "name_en": "DEIMv2 Atto faces (PINTO, 320×320)",
+   "note_en": "The same model as Hands & eyes (PINTO), showing only the face class"
   },
   {
    "key": "deimv2-atto192",
@@ -1505,7 +1570,8 @@
      "model": "ocec-p",
      "name": "目の開閉（OCEC）",
      "yes": "開",
-     "no": "閉"
+     "no": "閉",
+     "name_en": "Eye open/closed (OCEC)"
     },
     {
      "id": "pgc",
@@ -1513,7 +1579,8 @@
      "model": "pgc-s",
      "name": "指差し（PGC）",
      "yes": "指差し",
-     "no": ""
+     "no": "",
+     "name_en": "Pointing (PGC)"
     },
     {
      "id": "whc",
@@ -1522,10 +1589,12 @@
      "name": "手を振る（WHC、要追跡）",
      "yes": "手を振る",
      "no": "",
-     "seq": 4
+     "seq": 4,
+     "name_en": "Waving (WHC, needs tracking)"
     }
    ],
-   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
+   "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）",
+   "name_en": "DEIMv2 Atto (192×192, lightest)"
   },
   {
    "key": "deimv2-atto",
@@ -1608,7 +1677,8 @@
      "model": "ocec-p",
      "name": "目の開閉（OCEC）",
      "yes": "開",
-     "no": "閉"
+     "no": "閉",
+     "name_en": "Eye open/closed (OCEC)"
     },
     {
      "id": "pgc",
@@ -1616,7 +1686,8 @@
      "model": "pgc-s",
      "name": "指差し（PGC）",
      "yes": "指差し",
-     "no": ""
+     "no": "",
+     "name_en": "Pointing (PGC)"
     },
     {
      "id": "whc",
@@ -1625,11 +1696,13 @@
      "name": "手を振る（WHC、要追跡）",
      "yes": "手を振る",
      "no": "",
-     "seq": 4
+     "seq": 4,
+     "name_en": "Waving (WHC, needs tracking)"
     }
    ],
    "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）",
-   "bench": true
+   "bench": true,
+   "note_en": "An ultra-light model detecting 34 classes (body, head, face, eyes, hands, …) in one model. Resizing is inside the model; input is BGR 0–255"
   },
   {
    "key": "deimv2-femto",
@@ -1711,7 +1784,8 @@
      "model": "ocec-p",
      "name": "目の開閉（OCEC）",
      "yes": "開",
-     "no": "閉"
+     "no": "閉",
+     "name_en": "Eye open/closed (OCEC)"
     },
     {
      "id": "pgc",
@@ -1719,7 +1793,8 @@
      "model": "pgc-s",
      "name": "指差し（PGC）",
      "yes": "指差し",
-     "no": ""
+     "no": "",
+     "name_en": "Pointing (PGC)"
     },
     {
      "id": "whc",
@@ -1728,7 +1803,8 @@
      "name": "手を振る（WHC、要追跡）",
      "yes": "手を振る",
      "no": "",
-     "seq": 4
+     "seq": 4,
+     "name_en": "Waving (WHC, needs tracking)"
     }
    ],
    "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
@@ -1813,7 +1889,8 @@
      "model": "ocec-p",
      "name": "目の開閉（OCEC）",
      "yes": "開",
-     "no": "閉"
+     "no": "閉",
+     "name_en": "Eye open/closed (OCEC)"
     },
     {
      "id": "pgc",
@@ -1821,7 +1898,8 @@
      "model": "pgc-s",
      "name": "指差し（PGC）",
      "yes": "指差し",
-     "no": ""
+     "no": "",
+     "name_en": "Pointing (PGC)"
     },
     {
      "id": "whc",
@@ -1830,7 +1908,8 @@
      "name": "手を振る（WHC、要追跡）",
      "yes": "手を振る",
      "no": "",
-     "seq": 4
+     "seq": 4,
+     "name_en": "Waving (WHC, needs tracking)"
     }
    ],
    "license": "MIT（PINTO_model_zoo、元の DEIMv2 は Apache-2.0）"
@@ -1871,7 +1950,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"
+   "license": "Apache-2.0（EmotiEffLib・HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）",
+   "name_en": "HSEmotion MobileFaceNet (8 expressions + valence/arousal)"
   },
   {
    "key": "hsemotion-b0",
@@ -1909,7 +1989,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "Apache-2.0（EmotiEffLib / HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）"
+   "license": "Apache-2.0（EmotiEffLib・HSEmotion のコードと重み。学習データの AffectNet は研究用途のライセンス）",
+   "name_en": "HSEmotion EfficientNet-B0 (8 expressions + valence/arousal)"
   },
   {
    "key": "ocec-p",
@@ -1937,7 +2018,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "MIT"
+   "license": "MIT",
+   "name_en": "OCEC P (eye open/closed)"
   },
   {
    "key": "pgc-s",
@@ -1965,7 +2047,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "MIT"
+   "license": "MIT",
+   "name_en": "PGC S (pointing)"
   },
   {
    "key": "whc-4",
@@ -1993,7 +2076,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "MIT"
+   "license": "MIT",
+   "name_en": "WHC (waving, 4 frames)"
   },
   {
    "key": "osnet-x025",
@@ -2035,7 +2119,8 @@
    "post": {
     "type": "embedding"
    },
-   "license": "MIT（torchreid）"
+   "license": "MIT（torchreid）",
+   "note_en": "Person ReID features for tracking (BoT-SORT + ReID). torchreid's OSNet converted to ONNX (input 256×128, 512 dims, fixed batch of 16)"
   },
   {
    "key": "ollama-vlm",
@@ -2047,7 +2132,9 @@
    "adapter": "ollama-vlm",
    "ollama": "qwen3-vl:8b",
    "note": "Ollama で画像入力に対応したモデルを使う（環境変数 CVPG_OLLAMA_MODEL で変更）。大きいモデルはメモリに注意",
-   "license": "モデルによる（qwen3-vl は Apache-2.0）"
+   "license": "モデルによる（qwen3-vl は Apache-2.0）",
+   "name_en": "Ollama VLM",
+   "note_en": "Uses an image-capable model on Ollama (change it with the CVPG_OLLAMA_MODEL environment variable). Watch memory with large models"
   },
   {
    "key": "xfeat",
@@ -2101,7 +2188,9 @@
    "note": "学習ベースの軽い特徴点（CVPR 2024、verlab/accelerated_features）。kornia の ONNX（2.8MB）。後処理は kornia の detectAndCompute と相互最近傍のマッチングに合わせ、ホモグラフィは 4 点の DLT ＋ RANSAC を自前で書いた。入力は 32 の倍数に切り下げる（画素の値の倍率は効かない。中で濃淡にして正規化する）",
    "server": {
     "providers": "cpu"
-   }
+   },
+   "name_en": "XFeat (keypoints + matching + RANSAC)",
+   "note_en": "Light learned keypoints (CVPR 2024, verlab/accelerated_features), kornia's ONNX (2.8 MB). Post-processing follows kornia's detectAndCompute and mutual-nearest-neighbor matching; the homography is our own 4-point DLT + RANSAC. Input is floored to a multiple of 32 (pixel scale doesn't matter; it's converted to grayscale and normalized inside)"
   },
   {
    "key": "xfeat-motion",
@@ -2151,7 +2240,9 @@
     "ransac_px": 2.0
    },
    "license": "Apache-2.0",
-   "note": "前のフレームと XFeat の点を対応させ、RANSAC で動き（既定は相似変換）を求める。補正（軌跡をなめらかにして描き直す）は画面側の stabilize.js。テンプレートマッチングと同じ ONNX"
+   "note": "前のフレームと XFeat の点を対応させ、RANSAC で動き（既定は相似変換）を求める。補正（軌跡をなめらかにして描き直す）は画面側の stabilize.js。テンプレートマッチングと同じ ONNX",
+   "name_en": "XFeat (frame-to-frame motion)",
+   "note_en": "Matches XFeat keypoints with the previous frame and estimates motion with RANSAC (similarity by default). Stabilization (smoothing the path and re-rendering) is done on the page side in stabilize.js. Same ONNX as template matching"
   }
  ],
  "interact": [
@@ -2170,7 +2261,9 @@
     "classify",
     "gostop"
    ],
-   "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる"
+   "hint": "結果のフレームを同じブラウザの別のタブへ流す。受け手のページ（receiver.html）でキャラとフレームの中身を見られる",
+   "name_en": "Stream to other tabs (BroadcastChannel)",
+   "hint_en": "Streams result frames to other tabs in the same browser. The receiver page (receiver.html) shows the character and the frame contents"
   },
   {
    "id": "websocket",
@@ -2187,7 +2280,9 @@
     "classify",
     "gostop"
    ],
-   "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける"
+   "hint": "結果のフレームを WebSocket で送る。既定はサーバー版の /ws（つないだ相手どうしに配る。tools/ws_receiver.py で受け取れる）。TouchDesigner などの URL も書ける",
+   "name_en": "Stream over WebSocket",
+   "hint_en": "Sends result frames over WebSocket. Defaults to /ws on the server (relayed to all connected clients; receive with tools/ws_receiver.py). You can also enter a URL such as TouchDesigner's"
   },
   {
    "id": "puppet",
@@ -2198,7 +2293,9 @@
     "gesture",
     "pose3d"
    ],
-   "hint": "一番大きく写っている人（顔）に合わせてキャラが動く。姿勢のタブなら頭の向き・体の傾き・腕、顔のタブなら頭の向きと表情。推論の合間は画面の更新ごとにばねでなめらかにつなぐ"
+   "hint": "一番大きく写っている人（顔）に合わせてキャラが動く。姿勢のタブなら頭の向き・体の傾き・腕、顔のタブなら頭の向きと表情。推論の合間は画面の更新ごとにばねでなめらかにつなぐ",
+   "name_en": "Animate a character (Live2D-style, for checking)",
+   "hint_en": "A character follows the largest person (face): head direction, body tilt and arms in pose tabs, head direction and expression in the face tab. Between inferences it is smoothed with springs at the display rate"
   }
  ]
 }

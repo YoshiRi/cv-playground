@@ -10,6 +10,7 @@
 //
 // 結果 r の座標は、推論に渡した画像（r.w × r.h）のピクセル。画面の大きさ（base.w × base.h）へは各 draw で縮尺を合わせる。
 import { SKELETON } from "./catalog.js";
+import { tx } from "./i18n.js";
 import { affineOf, apply3, inv3, mul3 } from "./stabilize.js";
 
 export const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -84,9 +85,11 @@ function checker(ctx, w, h) {
 
 // 枠のラベル（角丸の札。枠が画面の上端にかかる時は枠の内側に置く）
 function tag(ctx, x, y, text, color, size) {
+  text = tx(text); // canvas の文字は辞書で置き換えられないので、ここで訳す
   ctx.font = `600 ${size}px system-ui, -apple-system, "Hiragino Sans", sans-serif`;
   const pad = size * 0.35, tw = ctx.measureText(text).width + pad * 2, th = size + pad * 1.2;
   const ty = y - th < 0 ? y : y - th;
+  x = Math.max(0, Math.min(x, ctx.canvas.width - tw)); // 右の端からはみ出す時は左へずらす（長いラベル・英語）
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.roundRect(x, ty, tw, th, size * 0.3); ctx.fill();
   ctx.fillStyle = "#fff"; ctx.textBaseline = "middle";
@@ -137,7 +140,9 @@ export const KINDS = {
         ctx.lineWidth = lw + 2; ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
         ctx.lineWidth = lw; ctx.strokeStyle = col; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
         if (it.keypoints) drawPose(ctx, it.keypoints.map(([x, y, v]) => [x * sx, y * sy, v]), lw);
-        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${pct(it.score)}${it.state ? " · " + it.state : ""}`;
+        // 状態（「開 98%・指差し 80%」など）は「・」で区切って訳す
+        const state = it.state ? it.state.split("・").map((s) => tx(s)).join(" · ") : "";
+        const text = `${it.id != null ? "#" + it.id + " " : ""}${it.label} ${pct(it.score)}${state ? " · " + state : ""}`;
         tag(ctx, x1, y1, text, col, size);
       }
     },
@@ -362,7 +367,7 @@ function drawJitter(ctx, hist, b, lw) {
     ctx.stroke();
   }
   ctx.fillStyle = "#e5e7eb"; ctx.font = `${Math.max(10, Math.round(b.w / 70))}px sans-serif`;
-  ctx.fillText(`フレーム間の動き（元のフレームの px、最大 ${max.toFixed(0)}）  赤: 補正前  緑: 補正後`, 6, y0 + Math.max(12, b.w / 60));
+  ctx.fillText(tx("フレーム間の動き（元のフレームの px、最大 {max}）  赤: 補正前  緑: 補正後", { max: max.toFixed(0) }), 6, y0 + Math.max(12, b.w / 60));
 }
 
 // 対応点: 左にテンプレート、右にフレームを並べ、対応を線で結ぶ（インライアは緑、外れは薄い赤）。XFeat の動作確認用

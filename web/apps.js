@@ -5,6 +5,7 @@
 import { esc, labelColor, limbColor } from "./renderers.js";
 import { SKELETON } from "./catalog.js";
 import { Judges } from "./judge.js";
+import { tx } from "./i18n.js";
 
 // APPS[id] = {
 //   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（応用欄の値）
@@ -43,7 +44,7 @@ export const APPS = {
       if (!rows.length) return;
       const size = Math.max(16, Math.round(ctx.canvas.width / 32)), pad = size * 0.5, lh = size * 1.35;
       ctx.font = `600 ${size}px system-ui, sans-serif`;
-      const lines = rows.map(({ label, now, total }) => `${label}  ${now}${total != null ? `（通算 ${total}）` : ""}`);
+      const lines = rows.map(({ label, now, total }) => `${label}  ${now}${total != null ? tx("（通算 {n}）", { n: total }) : ""}`);
       const w = Math.max(...lines.map((s) => ctx.measureText(s).width)) + size * 1.2 + pad * 2;
       ctx.fillStyle = "rgba(0,0,0,.6)";
       ctx.fillRect(pad, pad, w, lh * lines.length + pad);
@@ -209,7 +210,7 @@ export const COMBOS = {
       for (const f of [0.5 - BAND / 2, 0.5 + BAND / 2]) { ctx.beginPath(); ctx.moveTo(f * b.w, 0); ctx.lineTo(f * b.w, b.h); ctx.stroke(); }
       ctx.strokeStyle = "rgba(250,204,21,.8)"; ctx.strokeRect(0.3 * b.w, 0.4 * b.h, 0.4 * b.w, 0.6 * b.h - 2);
       ctx.restore();
-      const stop = g.value === "止まる", text = stop ? `止まる  ${g.reasons.join("・")}` : "進む";
+      const stop = g.value === "止まる", text = stop ? `${tx("止まる")}  ${g.reasons.map((x) => tx(x)).join(" · ")}` : tx("進む");
       ctx.save(); ctx.font = `700 ${size}px system-ui, sans-serif`;
       const w = Math.min(b.w - 16, ctx.measureText(text).width + size), x = (b.w - w) / 2;
       ctx.fillStyle = stop ? "rgba(220,38,38,.92)" : "rgba(22,163,74,.92)"; ctx.beginPath(); ctx.roundRect(x, 10, w, size * 1.5, size * 0.3); ctx.fill();
@@ -274,7 +275,7 @@ export const COMBOS = {
       const rows = r.approach?.rows || [];
       if (!rows.length) return;
       const size = Math.max(14, Math.round(b.w / 38)), pad = size * 0.5, lh = size * 1.35;
-      const lines = rows.map((x) => `${x.label}  ↓接近 ${x.approach}  ↑後退 ${x.recede}`);
+      const lines = rows.map((x) => tx("{label}  ↓接近 {a}  ↑後退 {r}", { label: x.label, a: x.approach, r: x.recede }));
       ctx.save();
       ctx.font = `600 ${size}px system-ui, sans-serif`;
       const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2;
@@ -343,7 +344,7 @@ export const COMBOS = {
         }
       }
       ctx.fillStyle = "#e6e9ef"; ctx.font = `${Math.max(11, Math.round(b.w / 60))}px system-ui, sans-serif`; ctx.textBaseline = "top";
-      ctx.fillText("3D（相対深度、回転）", X0 + 6, Y0 + 5);
+      ctx.fillText(tx("3D（相対深度、回転）"), X0 + 6, Y0 + 5);
       ctx.restore();
     },
     panel: (r) => `<div class="sub">3D の姿勢（${r.pose3d?.length ?? 0} 人）: 右下の小窓に、関節点に深度で奥行きを付けた骨格を回して描く。奥行きは相対深度からの大まかなもの</div>`

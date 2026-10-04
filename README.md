@@ -7,7 +7,7 @@ On the same screen you can choose **"run in the browser" (WebGPU / WASM on your 
 
 Open it at **https://yoshiri.github.io/cv-playground/** (no server; browser-only models; works on phones).
 
-> The UI text is currently in Japanese (an English UI is on the [TODO list](docs/TODO.md)). The developer docs under `docs/` are also in Japanese.
+The UI is in **English or Japanese**: it follows your browser's language, and the button at the top switches it (remembered per browser; `?lang=en` / `?lang=ja` in the URL also works). The developer docs under `docs/` are in Japanese.
 
 ![Screenshot](docs/images/hero.jpg)
 
@@ -18,30 +18,56 @@ Open it at **https://yoshiri.github.io/cv-playground/** (no server; browser-only
 | ![Pose and tracking](docs/images/pose-track.jpg)<br>**Human pose + tracking** (YOLO26n-pose + ByteTrack, with IDs and trails) | ![Object detection](docs/images/detect.jpg)<br>**Object detection** (YOLO26n) | ![Hands and eyes](docs/images/wholebody.jpg)<br>**Hands and eyes** (PINTO's DEIMv2 + OCEC eye open/closed) |
 | ![Semantic](docs/images/semantic.jpg)<br>**Semantic segmentation** (EoMT DINOv3, ADE20K) | ![Panoptic](docs/images/panoptic.jpg)<br>**Panoptic segmentation** (EoMT DINOv3, COCO; each chair and desk separately) | ![Prompt](docs/images/segment.jpg)<br>**Promptable segmentation** (SAM 2.1, clicked person) |
 | ![Automatic mask generation](docs/images/segment-auto.jpg)<br>**Segment everything** (EdgeTAM, from a 144-point grid) | ![Depth estimation](docs/images/depth.jpg)<br>**Depth estimation** (Depth Anything 3, also estimates the field of view) | ![Text-prompted detection](docs/images/zsdetect.jpg)<br>**Text-prompted object detection** (Grounding DINO, "orange, lemon") |
-| ![Zero-shot classification](docs/images/classify.jpg)<br>**Zero-shot classification** (SigLIP2) | ![Background removal](docs/images/matting.jpg)<br>**Background removal** (BiRefNet lite) | |
+| ![Zero-shot classification](docs/images/classify.jpg)<br>**Zero-shot classification** (SigLIP2) | ![Background removal](docs/images/matting.jpg)<br>**Background removal** (BiRefNet lite) | ![Facial expressions](docs/images/face-emotion.jpg)<br>**Faces + expressions** (YuNet + HSEmotion; expression, valence V and arousal A) |
+| ![Template matching](docs/images/template.jpg)<br>**Template matching** (XFeat + RANSAC; the shelf cut from an earlier frame, found again with people in front) | ![Go / stop](docs/images/gostop.jpg)<br>**Go / stop** (detection + depth + scene judgment; stops with the reason) | |
 
 The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/intel-iot-devkit/sample-videos) (CC BY 4.0).
 
 ## Features
 
-- **Tasks** (grouped into four categories)
-  - Detection & tracking: object detection / human pose / faces (YuNet, with 5 landmarks, plus facial expressions — 8 classes with valence and arousal — from HSEmotion) / hands & eyes (PINTO's ultra-light models) / gestures (pose + PINTO run together on each frame: hand raised, face direction, eyes closed, pointing) / text-prompted object detection / template matching (drag a box or pick an image of the object, then find it in the image or video with XFeat keypoint matches and a homography; the matches can be shown as lines) / video stabilization (estimates frame-to-frame motion with XFeat and re-renders each frame along a smoothed or locked camera path, with jitter before and after shown as numbers and a graph)
-  - Segmentation: promptable (SAM; click points or segment everything) / semantic / panoptic / background removal
-  - Depth & 3D: depth estimation / approaching / receding (object detection + depth: a small Kalman filter per track fuses box size and depth to classify each object as approaching or receding, colors it, estimates time to contact, and counts per class) / 3D pose (pose + depth: a rotating skeleton with depth) / go or stop (object detection, depth and a scene judgment run on the same frame; stops when something is in front, approaching, too close, or the scene is judged blocked, with the reason)
-  - Vision & language: zero-shot classification (also yes/no judgments such as passable / blocked, smoothed over time on video with the changes logged) / image captioning and VQA (VLM)
-- **Applications** (add-ons in any tab that returns boxes — detection, pose, hands & eyes, text-prompted detection): counting per class (current count and, with tracking, a cumulative count of track IDs). Add `?apps=count` to the URL to turn it on from the start
-- **Interaction** (a separate layer that streams results out in a fixed frame format, in every tab that returns boxes): to other tabs (BroadcastChannel) or over WebSocket (the server relays it at `/ws`; see `tools/ws_receiver.py`), so other tools can use the playground as a browser-based vision sensor. `web/receiver.html` shows the incoming frames, and a Live2D-style character that follows the largest person (head, body, arms, facial expression) serves as a visual check, also usable in the main page. `?interact=broadcast,websocket,puppet` turns them on from the start
-- **Input**: sample images and videos (one click), images, video files, and live camera (switch between the back and front cameras, or pick any camera on the device). Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess)
+### Tasks (tabs, in four categories)
+
+| Category | Tab | What it does |
+| --- | --- | --- |
+| Detection & tracking | Object detection | 80 COCO classes (YOLO26, RF-DETR), with tracking on video and camera |
+| | Human pose | 17 keypoints, with tracking |
+| | Face | YuNet with 5 landmarks; cropped faces classified by HSEmotion into 8 expressions plus valence and arousal |
+| | Hands & eyes (PINTO) | PINTO's ultra-light models: body, head, face, eyes, hands, plus eye open/closed, pointing and waving |
+| | Gestures (pose + PINTO) | Both run on each frame: hand raised, face direction, eyes closed, pointing, per person |
+| | Text-prompted detection | Grounding DINO with English nouns |
+| | Template matching | Drag a box (or pick an image) and find it with XFeat keypoint matches and a homography; matches can be drawn as lines |
+| | Video stabilization | Frame-to-frame motion from XFeat, re-rendered along a smoothed (or locked) camera path; jitter before and after as numbers and a graph |
+| Segmentation | Promptable (SAM) | SAM 2.1 / SAM 3 / EdgeTAM: click points, or segment everything from a grid |
+| | Semantic / Panoptic | SegFormer / EoMT (ADE20K), DETR / EoMT (COCO panoptic, each object separately) |
+| | Background removal | BiRefNet |
+| Depth & 3D | Depth estimation | Depth Anything V2 / 3 |
+| | Approach / recede | Detection + depth: a small Kalman filter per track classifies approaching or receding, estimates time to contact and counts per class |
+| | 3D pose | Pose + depth: a rotating skeleton with depth |
+| | Go / stop | Detection, depth and a scene judgment on the same frame; stops when something is ahead, approaching, too close, or the scene is judged blocked, and shows why |
+| Vision & language | Zero-shot classification | SigLIP2; also yes/no judgments (see below) |
+| | Captioning & VQA | SmolVLM / Qwen3-VL, or any image-capable model on Ollama (server) |
+
+### Layers on top of the tasks
+
+| Layer | What it does |
+| --- | --- |
+| **Judgments** | Yes/no phrases such as `Passable \| Blocked` or `Safe \| Dangerous` in the zero-shot tab are overlaid on the image; on video they are smoothed over time (with hysteresis) and changes are logged. Go / stop combines them with detection and depth |
+| **Applications** | Add-ons for any tab that returns boxes: counting per class (current count and, with tracking, a cumulative count of IDs). `?apps=count` turns it on from the start |
+| **Interaction** | Streams results out in a fixed frame format: to other tabs (BroadcastChannel) or over WebSocket (the server relays it at `/ws`; see `tools/ws_receiver.py`), so other tools can use the page as a browser-based vision sensor. `web/receiver.html` shows the incoming frames, and a Live2D-style character that follows the largest person serves as a visual check. `?interact=broadcast,websocket,puppet` turns them on from the start |
+
+### Everything else
+
+- **Input**: sample images and videos (one click), images, video files, and live camera (back, front, or any camera on the device). Video and camera run continuously with results overlaid, showing fps and a breakdown (grab, preprocess, model, postprocess). The screen stays awake during continuous runs
 - **Tracking**: ByteTrack / BoT-SORT / BoT-SORT + ReID (ported from Ultralytics; verified to give identical results on the same detection sequence)
-- **Runtime options**: by default, generic ONNX models run with fp16 (when the model has an fp16 file) and WebGPU graph capture, which is dropped automatically for models that cannot use it. You can switch to fp32, no graph capture, or CPU (WASM), and pick the input long side (320–960) for models with dynamic input. Fixed-size models also get their symbolic input dimensions pinned
+- **Runtime options**: by default, generic ONNX models run with fp16 (when the model has an fp16 file) and WebGPU graph capture, which is dropped automatically for models that cannot use it. You can switch to fp32, no graph capture, or CPU (WASM), and pick the input long side (320–960) for models with dynamic input
 - **Compare**: the same model in the browser and on the server (generic ONNX models build pre/post-processing from shared blocks, so both sides follow the same steps). Timings are kept in the run history
-- **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 / 100 measured runs, recording median, p90, p95, and fps. Compare devices under identical conditions. Add `?profile=1` to the URL to also get per-operator GPU time for generic ONNX models (see [docs/NOTES.md](docs/NOTES.md))
+- **Benchmark**: on a fixed sample image, 3 warm-up runs followed by 5 / 20 / 50 / 100 measured runs, recording median, p90, p95, and fps. `?profile=1` also gives per-operator GPU time for generic ONNX models (see [docs/NOTES.md](docs/NOTES.md))
 - **Use local ONNX files**: if you already have a published model's file, pick it and use it without downloading (only files whose SHA-256 matches exactly; generic ONNX models only)
-- **Export**: the displayed image (with an optional caption strip; on phones, the share sheet lets you save to Photos), result data (JSON), and run records (CSV / JSON / Markdown table). Records include device, browser, and GPU info, so CSVs from different devices can be concatenated and compared as is
+- **Export**: the displayed image (with an optional caption strip; on phones, the share sheet lets you save to Photos), result data (JSON), and run records (CSV / JSON / Markdown table, in the UI language). Records include device, browser, and GPU info, so CSVs from different devices can be concatenated and compared as is
 
 ## Data, network usage, and licenses
 
-- **Models that run in the browser are downloaded to your device on first use** (from a few MB up to about 1.4 GB; the size is shown next to each model name). **Watch your data usage on mobile networks.** Models over 100 MB ask for confirmation before downloading, and later runs load from the browser cache. "ダウンロード済みのモデルを消す" (clear downloaded models) at the bottom of the page removes them. The browser cache is per site (origin) and may be evicted when the device runs low on storage. **With the server, model files are fetched through the server, which keeps a copy in `models/mirror/`**, so other devices on the same tailnet/LAN, or a device whose cache was cleared, load them from the server instead of the internet (`?mirror=0` turns this off). The result panel shows where the model was loaded from (browser cache, server, or download)
+- **Models that run in the browser are downloaded to your device on first use** (from a few MB up to about 1.4 GB; the size is shown next to each model name). **Watch your data usage on mobile networks.** Models over 100 MB ask for confirmation before downloading, and later runs load from the browser cache. "Clear downloaded models" at the bottom of the page removes them. The browser cache is per site (origin) and may be evicted when the device runs low on storage. **With the server, model files are fetched through the server, which keeps a copy in `models/mirror/`**, so other devices on the same tailnet/LAN, or a device whose cache was cleared, load them from the server instead of the internet (`?mirror=0` turns this off). The result panel shows where the model was loaded from (browser cache, server, or download)
 - **Images, videos, and camera frames never leave your device as long as you run in the browser** (the only network traffic is fetching models and libraries). Only when you choose "run on the server" is the image sent to the server
 - **Each model has its own license**, and some do not allow commercial use (e.g., YOLO26 is AGPL-3.0; Depth Anything V2 Large and SegFormer are non-commercial). The license is shown in each model's description on screen
 - Supported browsers: Chrome / Edge / Safari (iOS 26 or later) with WebGPU are recommended. Without WebGPU it falls back to WASM, which is slower
@@ -99,6 +125,8 @@ In most cases, adding one entry to `web/models.json` is enough (for plain ONNX m
 | `web/models.json` | **Definitions of tabs (tasks) and models, shared by browser and server** |
 | `web/app.js` | UI, continuous video/camera runs, wiring for tracking and cascades, run history, benchmark |
 | `web/renderers.js` | How each result kind is shown (boxes, masks, depth, segment maps, labels, text) |
+| `web/judge.js` | Judgments: yes/no from zero-shot scores, smoothing and hysteresis over time, and the go / stop conditions |
+| `web/i18n.js`, `web/i18n_en.js` | UI language. Japanese is the source text; English comes from a dictionary (exact strings, patterns with numbers, and phrases) applied to the page as it changes, plus `*_en` fields in `models.json` |
 | `web/apps.js` | Applications added on top of a tab's results (stateful aggregation across frames and its overlay, e.g. counting) |
 | `web/interact.js` | Interaction layer: the fixed frame format, outputs (BroadcastChannel, WebSocket) and the Live2D-style character |
 | `web/receiver.html` | A receiver page that shows the streamed frames (debugging) |
@@ -107,10 +135,11 @@ In most cases, adding one entry to `web/models.json` is enough (for plain ONNX m
 | `web/onnx_generic.js` | Browser-side generic ONNX (pre/post-processing blocks) |
 | `web/tracker.js` | ByteTrack / BoT-SORT (+ ReID) |
 | `adapters.py` | Server-side adapters (the generic ONNX blocks mirror onnx_generic.js) |
-| `server.py` | FastAPI. Serves `web/`, `/api/run`, `/api/status`, `/api/unload`, and `/local-models/` |
+| `server.py` | FastAPI. Serves `web/`, `/api/run`, `/api/status`, `/api/unload`, `/local-models/`, `/mirror/` (a disk cache of model files and sample videos) and `/ws` (the WebSocket relay for Interaction) |
 | `build.py` | Builds the single-file version (a stale build is caught by `.github/workflows/check-dist.yml`) |
 | `web/pinto/` | Bundled models from PINTO_model_zoo (MIT) |
 | `web/stabilize.js` | Video stabilization on the page side (camera path, smoothing, cropping, jitter metrics) |
+| `web/xfeat_gpu.js` | XFeat post-processing on the GPU (WebGPU compute shaders reading the model's output buffers directly) |
 | `web/xfeat.js` | XFeat post-processing and template matching (keypoints, descriptors, mutual nearest neighbours, homography; same steps as `adapters.py` on the server) |
 | `tools/` | Tracker comparison against Ultralytics, YOLO26 export, fetching model file SHA-256 hashes, XFeat comparison against kornia and OpenCV (`xfeat_check.py`, needs `requirements-dev.txt`) |
 

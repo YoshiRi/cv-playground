@@ -278,6 +278,15 @@ export const EN = {
   "埋まっている": "Occupied",
   "不明": "Unknown",
   "（保持）": "(held)",
+  // 線を越えた数
+  "線を引き直す": "Redraw the line",
+  "真ん中に戻す": "Reset to the middle",
+  "画像の上でドラッグして線を引く。線の両側の矢印が、越えた向きと数": "Drag on the image to draw the line. The arrows on both sides show each direction and its count",
+  "画像の上で、線を引くようにドラッグする": "Drag on the image to draw a line",
+  "線が短すぎる（20 画素以上）": "The line is too short (20 px or more)",
+  "追跡の ID で数えるので、動画・カメラの「▶ 連続実行」で働く（追跡が「なし」なら ByteTrack を使う）": "Counts by track ID, so it works with \"▶ Run continuously\" on video or camera (uses ByteTrack if tracking is \"None\")",
+  "まだ越えていない": "Nothing has crossed yet",
+  "足元（枠の下端の中央）が線を越えた回数。ID が切り替わると数え漏れ・二重に数えることがある": "Times the feet (bottom center of the box) crossed the line. ID switches can cause missed or double counts",
   // 受け手のページ（receiver.html）
   "CV Playground 受け手": "CV Playground receiver",
   "CV Playground 受け手（フレームの確認）": "CV Playground receiver (frame check)",
@@ -387,6 +396,8 @@ export const RULES = [
   // 実行履歴の結果欄（「連続 144回 12.1fps p90 36ms ・ …」）
   [/^(\d+)人・手を挙げた (\d+)・正面 (\d+)$/, "$1 people · hand raised $2 · facing front $3"],
   [/^3D (\d+)人$/, "3D $1 people"],
+  [/^最近: (.*)$/, "Recent: $1"],
+  [/^越えた (.*)$/, "crossed $1"],
   [/^(連続|ベンチ) ?(\d+)回(.*)$/, (m, tr) => `${tr(m[1])} ${m[2]} runs${m[3].split(" ・ ").map((x, i) => (i ? tr(x.trim()) : x)).join(" · ")}`],
   [/^(\S+) 接近(\d+)・後退(\d+)$/, "$1 approaching $2 · receding $3"],
   // canvas の文字（renderers.js の tag など）
@@ -424,7 +435,7 @@ export const RULES = [
   [/^サーバーの adapters\.py（(.*)）$/, "server adapters.py ($1)"],
   [/^(.*) ・ (\d+) 回の平均$/, (m, tr) => `${tr(m[1])} · average of ${m[2]} runs`],
   [/^(\d+) 個$/, "$1"],
-  [/^追跡中 (\d+) 件 ・ これまでの ID (\d+) 個（(.*)$/, (m, tr) => `Tracking ${m[1]} · ${m[2]} IDs so far (${tr(m[3])}`],
+  [/^追跡中 (\d+) 件 ・ これまでの ID (\d+) 個（(.*)）$/, (m, tr) => `Tracking ${m[1]} · ${m[2]} IDs so far (${tr(m[3]).replace(/（/g, " (").replace(/）/g, ")")})`],
   [/^ID (\d+)個$/, "$1 IDs"],
   [/^入力 (\d+)$/, "input $1"],
   [/^(ブラウザ|サーバー) (.*)$/, (m, tr) => `${tr(m[1])} ${tr(m[2])}`],

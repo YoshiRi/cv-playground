@@ -394,6 +394,21 @@
    "hint": "クラスごとの今の数（直近5フレームの中央値）。動画・カメラで追跡を選ぶと、見えた ID の数を通算として出す（ID が切り替わると多めに出る）",
    "name_en": "Count",
    "hint_en": "Current count per class (median of the last 5 frames). With tracking on video or camera, also shows the cumulative number of track IDs seen (overcounts when IDs switch)"
+  },
+  {
+   "id": "line",
+   "name": "線を越えた数",
+   "accepts": [
+    "boxes"
+   ],
+   "params": [
+    "classes",
+    "line"
+   ],
+   "track": "bytetrack",
+   "hint": "画面に引いた線を、追跡の ID の足元（枠の下端の中央）が越えた回数を、向きとクラスごとに数える。動画・カメラの連続実行で働く（追跡が「なし」なら ByteTrack を使う）。越えた時の出来事はインタラクトのフレームの events で外に流れる",
+   "name_en": "Line crossing",
+   "hint_en": "Counts, per direction and class, how many times a track's feet (bottom center of the box) cross a line you draw on the image. Works in continuous runs on video or camera (uses ByteTrack if tracking is \"None\"). Each crossing is also streamed out as an event in the Interaction frame"
   }
  ],
  "models": [

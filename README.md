@@ -52,7 +52,7 @@ The demo frames come from [intel-iot-devkit/sample-videos](https://github.com/in
 | Layer | What it does |
 | --- | --- |
 | **Judgments** | Yes/no phrases such as `Passable \| Blocked` or `Safe \| Dangerous` in the zero-shot tab are overlaid on the image; on video they are smoothed over time (with hysteresis) and changes are logged. Go / stop combines them with detection and depth |
-| **Applications** | Add-ons for any tab that returns boxes: counting per class (current count and, with tracking, a cumulative count of IDs). `?apps=count` turns it on from the start |
+| **Applications** | Add-ons for any tab that returns boxes: counting per class (current count and, with tracking, a cumulative count of IDs), and line crossing (draw a line on the image; counts how many tracks cross it, per direction and class, and streams each crossing as an event). `?apps=count,line` turns them on from the start |
 | **Interaction** | Streams results out in a fixed frame format: to other tabs (BroadcastChannel) or over WebSocket (the server relays it at `/ws`; see `tools/ws_receiver.py`), so other tools can use the page as a browser-based vision sensor. `web/receiver.html` shows the incoming frames, and a Live2D-style character that follows the largest person serves as a visual check. `?interact=broadcast,websocket,puppet` turns them on from the start |
 
 ### Everything else

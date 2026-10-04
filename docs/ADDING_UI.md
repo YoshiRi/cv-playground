@@ -98,13 +98,15 @@ KINDS.mykind = {
 | --- | --- |
 | `accepts` | 受け付ける結果の種類。タブの `result`（そのタブのモデルが返す種類。今は物体検出・人物の姿勢・手と目・テキスト物体検知が `"boxes"`）と照らす |
 | `params` | 選んだ時だけ出す設定欄。`web/index.html` の `#apps-row` の中に `data-app-param="名前"` の要素を置き、`createApps()` で値を渡す |
+| `track` | 追跡が前提の応用（線を越えた数）。追跡の欄が「なし」の時に使う追跡（`"bytetrack"` など） |
 
 中身は `web/apps.js` の `APPS` に1件書く（形は `KINDS` と同じ考え方で、集計の状態を持つ点が違う）。
 
 ```js
 APPS.myapp = {
-  create: (opts) => ({ ... }),          // 状態。連続実行の開始時と、静止画の1回ごとに作り直す。opts = { classes }（応用欄の値）
-  update(st, r, { tracked }) { ... },   // 1フレームごと（フレームの順）。r.items を絞り込んでよい（枠の表示・結果データにも反映される）
+  create: (opts) => ({ ... }),          // 状態。連続実行の開始時と、静止画の1回ごとに作り直す。opts = { classes, line }（応用欄の値。line() は今の線）
+  update(st, r, { tracked }) { ... },   // 1フレームごと（フレームの順）。r.items を絞り込んでよい（枠の表示・結果データにも反映される）。
+                                        // 出来事は r.events に足すと、インタラクトのフレームの events で外に流れる
   draw(ctx, st, r, base) { ... },       // canvas に重ねる（元画像と結果の枠は描画済み）
   panel: (st) => "<div>…</div>",        // 結果欄に足す HTML
   summary: (st) => "person 12",         // 実行履歴の「結果」欄に足す文字
@@ -112,7 +114,8 @@ APPS.myapp = {
 ```
 
 - 呼び出しは `web/app.js` の `createApps()` / `applyApps()`（`run()` と、連続実行の `handle()`）、`draw()` と `renderResult()` だけ。追跡の設定はモデルのタブの1か所
-- URL の `?apps=count` で最初から選んだ状態で開ける（「物体カウント」を入口にしたい時のリンク）
+- URL の `?apps=count` で最初から選んだ状態で開ける（「物体カウント」を入口にしたい時のリンク。`?apps=count,line` で複数）
+- **例: 線を越えた数（`line`）** — 画面にドラッグで引いた線（0〜1 の座標、ブラウザに覚える）を、追跡の ID の足元（枠の下端の中央）が越えた回数を向きとクラスごとに数える。線からの符号付きの距離で側を決め、線のそば（対角線の 1%）では前の側のままにして、ふらつきで何度も数えない。側が替わった時、前の点と今の点を結んだ所が線分の中なら 1 回（端の外を回り込んだ物は数えない）。向きは画面の上の矢印 1 字（↓・↑ など）で出す
 - 複数のモデルを組み合わせるものは、次の「組み合わせのタブ」にする
 
 ### 組み合わせのタブ（`tasks[].combo` と `web/apps.js` の `COMBOS`）
@@ -167,8 +170,11 @@ COMBOS.mycombo = {
 
 ```js
 { v: 1, t, w, h, task, model,
+  events?: [{ type: "line", id, label, dir: "a" | "b", arrow: "↓" }],
   items: [{ id?, label, score, box: [x1, y1, x2, y2], keypoints?: [[x, y, 可視度]], emotion?, state? }] }
 ```
+
+- `events` はそのフレームで起きた出来事（受け手が毎フレーム判定しなくてよいように）。今は線を越えた数の `line` だけ。`dir` の a は引いた線の左手側から右手側へ、`arrow` は画面の上での向き
 
 - `keypoints` は 17 点なら COCO の順（鼻・左目・右目・左耳・右耳・左肩・右肩・左肘・右肘・左手首・右手首・左腰・…）、5 点なら顔（右目・左目・鼻・口の右端・左端）。左右は写っている人から見た向き
 - `emotion` は顔の表情（`{ label, prob, probs, valence, arousal }`）

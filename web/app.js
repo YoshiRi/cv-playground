@@ -2,7 +2,7 @@ import { CATALOG, MODELS, TASKS } from "./catalog.js";
 import { esc, fmtMs as fmt, KINDS } from "./renderers.js";
 import { collectEnv, composeImage, download, resultData, safeName, shareOrDownload, stamp, stats, toCSV, toJSON, toMarkdown } from "./export.js";
 import { Tracker } from "./tracker.js";
-import { APPS, COMBOS } from "./apps.js";
+import { APPS, COMBOS, drawCountLine } from "./apps.js";
 import { INTERACT, toFrame } from "./interact.js";
 import { Stabilizer } from "./stabilize.js";
 import { LANG, addCatalog, setLang, startTranslate, tx } from "./i18n.js";
@@ -37,6 +37,17 @@ const PROFILE = new URLSearchParams(location.search).has("profile");
 // ?pre=gpu（縮小も GPU）/ ?pre=cpu（全部 CPU。?cpupre=1 も同じ）
 const POST_GPU = new URLSearchParams(location.search).get("postgpu") !== "0"; // 後処理も GPU で行うモデル（XFeat）。?postgpu=0 で JS の後処理
 const PRE_MODE = new URLSearchParams(location.search).has("cpupre") ? "cpu" : new URLSearchParams(location.search).get("pre") || "upload";
+// 線を越えた数の線。既定は横の真ん中より少し下
+const LINE_DEFAULT = [0.1, 0.6, 0.9, 0.6];
+function loadLine() {
+  try { const l = JSON.parse(localStorage.getItem("cvpg-line")); if (Array.isArray(l) && l.length === 4 && l.every(Number.isFinite)) return l; } catch { /* 保存できない環境 */ }
+  return LINE_DEFAULT;
+}
+function setLine(l) {
+  state.line = l;
+  try { localStorage.setItem("cvpg-line", JSON.stringify(l)); } catch { /* 保存できない環境 */ }
+  if (!state.live) draw();
+}
 // ?nopipe=1: 連続実行をパイプライン化しない（1フレームずつ順番。比べる用）
 const NO_PIPE = new URLSearchParams(location.search).has("nopipe");
 
@@ -48,6 +59,9 @@ const state = {
   template: null,    // テンプレートマッチングの探す物 {id, bitmap, blob, w, h}
   tplSelect: false,  // 「枠で切り出す」を押して、画像の上で枠をドラッグするのを待っている
   tplDrag: null,     // ドラッグ中の枠 [x1, y1, x2, y2]（canvas の座標）
+  line: loadLine(),  // 線を越えた数の線 [x1, y1, x2, y2]（画像の幅・高さで割った 0〜1。このブラウザに覚えておく）
+  lineSelect: false, // 「線を引き直す」を押して、画像の上でドラッグするのを待っている
+  lineDrag: null,    // ドラッグ中の線（0〜1）
   image: null,       // 静止画 {blob, bitmap, width, height, key}
   video: false,      // 動画ファイルかカメラを表示中
   live: false,       // 連続実行中
@@ -640,6 +654,8 @@ function draw() {
     ctx.strokeStyle = "#fff"; ctx.lineWidth = lw; ctx.stroke();
   }
   if (r) for (const a of state.apps) APPS[a.id].draw?.(ctx, a.st, r, b);
+  if (state.lineDrag) drawCountLine(ctx, state.lineDrag, b);
+  else if (checkedApps().some((a) => a.id === "line") && !(r && state.apps.some((a) => a.id === "line"))) drawCountLine(ctx, state.line, b);
   if (r) COMBOS[curTask().combo?.app]?.draw?.(ctx, r, b); // 組み合わせのタブの重ね描き（3D の姿勢の小窓など）
   if (state.tplDrag) { // テンプレートを切り出す枠
     const [x1, y1, x2, y2] = state.tplDrag;
@@ -976,6 +992,7 @@ function clearTemplate() {
 }
 function setTplSelect(on) {
   state.tplSelect = on; state.tplDrag = null;
+  if (on && state.lineSelect) setLineSelect(false);
   $("canvas-wrap").classList.toggle("selecting", on);
   $("tpl-drag").textContent = on ? "やめる" : "枠で切り出す";
   if (on) setStatus("画像の上で、探す物を囲むようにドラッグする");
@@ -1019,6 +1036,40 @@ function bindTemplateDrag() {
   };
   cv.addEventListener("pointerup", end);
   cv.addEventListener("pointercancel", () => { start = null; state.tplDrag = null; draw(); });
+}
+
+// 線を引く（pointer イベント）。押した所から離した所までを線にする
+function setLineSelect(on) {
+  state.lineSelect = on; state.lineDrag = null;
+  if (on && state.tplSelect) setTplSelect(false);
+  $("canvas-wrap").classList.toggle("selecting", on);
+  $("line-draw").textContent = on ? "やめる" : "線を引き直す";
+  if (on) setStatus("画像の上で、線を引くようにドラッグする");
+}
+function bindLineDraw() {
+  const cv = $("canvas"), norm = (ev) => { const [x, y] = canvasPoint(ev); return [Math.min(1, Math.max(0, x / cv.width)), Math.min(1, Math.max(0, y / cv.height))]; };
+  let start = null;
+  cv.addEventListener("pointerdown", (ev) => {
+    if (!state.lineSelect || (!state.image && !state.video)) return;
+    ev.preventDefault();
+    cv.setPointerCapture(ev.pointerId);
+    start = norm(ev);
+    state.lineDrag = [...start, ...start];
+  });
+  cv.addEventListener("pointermove", (ev) => {
+    if (!start) return;
+    state.lineDrag = [...start, ...norm(ev)];
+    if (!state.live) draw();
+  });
+  cv.addEventListener("pointerup", (ev) => {
+    if (!start) return;
+    const l = [...start, ...norm(ev)];
+    start = null; state.lineDrag = null;
+    if (Math.hypot((l[2] - l[0]) * cv.width, (l[3] - l[1]) * cv.height) < 20) { setStatus("線が短すぎる（20 画素以上）", "warn"); draw(); return; }
+    setLineSelect(false); setStatus("");
+    setLine(l);
+  });
+  cv.addEventListener("pointercancel", () => { start = null; state.lineDrag = null; draw(); });
 }
 
 // 1回分。結果を state.result に入れ（commit: false なら入れない。パイプライン化した連続実行で、前のフレームの結果を表示中に
@@ -1133,7 +1184,8 @@ async function liveLoop() {
   const times = []; // 1フレーム目（モデルの読み込み・初期化を含む）を除いた、フレームごとの推論時間
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   // 組み合わせのタブの combo.track は、追跡が前提のタブで追跡の欄が「なし」の時に使う追跡
-  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value || curTask().combo?.track || "" : "";
+  // 追跡が前提の応用（線を越えた数など、models.json の apps[].track）を選んだ時も、追跡が「なし」ならそれを使う
+  const trackType = TASKS.find((t) => t.id === state.task).params.includes("track") ? $("tracker").value || curTask().combo?.track || checkedApps().find((a) => a.track)?.track || "" : "";
   const th = parseFloat($("threshold").value);
   const reid = trackType === "botsort-reid" ? MODELS.find((e) => e.task === "reid") : null;
   const tracker = trackType
@@ -1252,6 +1304,8 @@ function onAppsChange(ev) {
   const c = ev.target.closest("[data-app]");
   if (c) c.checked ? chosenApps.add(c.dataset.app) : chosenApps.delete(c.dataset.app);
   showAppParams();
+  if (!checkedApps().some((a) => a.id === "line")) setLineSelect(false);
+  if (!state.live) draw();
 }
 // 選んだ応用が使う設定欄だけを出す（data-app-param）
 function showAppParams() {
@@ -1260,7 +1314,7 @@ function showAppParams() {
 }
 const checkedApps = () => [...document.querySelectorAll("[data-app]:checked")].map((c) => (CATALOG.apps || []).find((a) => a.id === c.dataset.app));
 function createApps() {
-  const opts = { classes: $("classes").value };
+  const opts = { classes: $("classes").value, line: () => state.line };
   return checkedApps().map((a) => ({ id: a.id, st: APPS[a.id].create(opts) }));
 }
 function applyApps(r, ctx) {
@@ -1493,6 +1547,9 @@ async function init() {
   $("tpl-clear").onclick = clearTemplate;
   $("tpl-file").onchange = async (ev) => { const f = ev.target.files[0]; ev.target.value = ""; if (f) await setTemplate(f); };
   bindTemplateDrag();
+  bindLineDraw();
+  $("line-draw").onclick = () => setLineSelect(!state.lineSelect);
+  $("line-reset").onclick = () => { setLineSelect(false); setLine(LINE_DEFAULT); };
   $("view").onchange = () => { KINDS.depth.resetRange(); draw(); };
   $("ort-opt").onchange = () => { stopLive(); restartWorker("ort"); }; // 設定を変えたらモデルを読み直す
   $("input-size").onchange = () => {
@@ -1549,7 +1606,7 @@ async function init() {
   renderBench();
   showStorage();
   $("canvas").addEventListener("click", (ev) => {
-    if (!curTask().click || state.auto || (!state.image && !state.video) || state.busy) return;
+    if (!curTask().click || state.auto || state.lineSelect || (!state.image && !state.video) || state.busy) return;
     const [x, y] = canvasPoint(ev);
     state.points.push([x, y, ev.shiftKey || $("negative").checked ? 0 : 1]);
     draw();

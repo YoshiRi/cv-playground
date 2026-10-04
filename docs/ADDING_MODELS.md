@@ -190,3 +190,4 @@ transformers.js の adapter（`tjs-*`）にはどれもかからない（1回ず
 3. Hugging Face のファイル（`repo` + `file`）を足した・変えたなら `python3 tools/update_hashes.py` で `sha256` を更新する
 4. `python3 build.py` で1ファイル版を作り直してコミットする（作り忘れは GitHub Actions が落とす）
 5. サーバーだけのモデル（`where: ["server"]` や `server_file`）が、静的版（サーバーなし）の画面に出ないこと
+6. 名前（`name`）や説明（`note`）に日本語を書いたなら、英語の画面向けに `name_en`・`note_en` も書く（[ADDING_UI.md](ADDING_UI.md) の「英語の表示」）

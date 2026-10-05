@@ -8,8 +8,9 @@ import { Judges } from "./judge.js";
 import { tx } from "./i18n.js";
 
 // APPS[id] = {
-//   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes }（応用欄の値）
-//   update(st, r, ctx)      → 1フレームごと。r.items を絞り込んでよい（絞った結果が枠の表示にも反映される）。ctx = { tracked }
+//   create(opts)            → 状態（連続実行の開始時と、静止画の1回ごとに作り直す）。opts = { classes, line }（応用欄の値。line() は今の線）
+//   update(st, r, ctx)      → 1フレームごと。r.items を絞り込んでよい（絞った結果が枠の表示にも反映される）。ctx = { tracked }。
+//                             出来事は r.events に足す（インタラクトのフレームの events で外に流れる）
 //   draw(ctx2d, st, r, base) → canvas に重ねる（元画像と結果の枠は描画済み）
 //   panel(st)               → 結果欄に足す HTML
 //   summary(st)             → 実行履歴の「結果」欄に足す文字
@@ -67,7 +68,101 @@ export const APPS = {
     },
     summary: (st) => countRows(st).map(({ label, now, total }) => `${label} ${total ?? now}`).join("・"),
   },
+
+  // 線を越えた数: 画面に引いた線を、追跡の ID の足元（枠の下端の中央）が越えた回数を、向きとクラスごとに数える。
+  // 線からの符号付きの距離で今どちら側にいるかを決め、線のそば（対角線の 1%）は前の側のままにする（線の上でふらついても
+  // 何度も数えない）。側が替わった時、前の点と今の点を結んだ所が線分の中（端の外を回り込んだのではない）なら 1 回
+  line: {
+    create: (opts) => ({
+      classes: (opts.classes || "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+      line: opts.line, key: "",
+      side: new Map(),   // ID → { s: ±1, d: 線からの距離, t: 線の上の位置 0〜1, seen: 最後に見たフレーム }
+      counts: new Map(), // ラベル → [a の向きの数, b の向きの数]
+      recent: [],        // 最近越えた物 { id, label, dir }
+      frame: 0, flash: 0, tracked: false, glyph: ["", ""],
+    }),
+    update(st, r, { tracked }) {
+      if (r.kind !== "boxes") return;
+      if (st.classes.length) r.items = r.items.filter((it) => st.classes.includes(it.label.toLowerCase()));
+      st.tracked = tracked; st.frame++;
+      const L = st.line(), key = L.join();
+      if (key !== st.key) { st.key = key; st.side.clear(); } // 線を引き直したら、どちら側にいたかを取り直す（数は残す）
+      const W = r.w || 1, H = r.h || 1, ax = L[0] * W, ay = L[1] * H, dx = (L[2] - L[0]) * W, dy = (L[3] - L[1]) * H;
+      const len2 = dx * dx + dy * dy, len = Math.sqrt(len2), margin = 0.01 * Math.hypot(W, H);
+      st.glyph = lineGlyphs(L, W, H);
+      if (!tracked || len < 1) return;
+      for (const it of r.items) {
+        if (it.id == null) continue;
+        const px = (it.box[0] + it.box[2]) / 2 - ax, py = it.box[3] - ay;
+        const d = (px * dy - py * dx) / len, t = (px * dx + py * dy) / len2, s = d > margin ? 1 : d < -margin ? -1 : 0;
+        const prev = st.side.get(it.id);
+        if (prev) prev.seen = st.frame;
+        if (!s) continue;
+        if (prev && prev.s !== s) {
+          const tc = prev.t + (t - prev.t) * (prev.d / (prev.d - d)); // 前の点と今の点を結んだ線が、引いた線と交わる所
+          if (tc >= 0 && tc <= 1) {
+            const dir = s < 0 ? 0 : 1, c = st.counts.get(it.label) || [0, 0];
+            c[dir]++; st.counts.set(it.label, c);
+            st.recent.unshift({ id: it.id, label: it.label, dir }); st.recent.length = Math.min(st.recent.length, 5);
+            st.flash = performance.now();
+            (r.events ||= []).push({ type: "line", id: it.id, label: it.label, dir: dir ? "b" : "a", arrow: st.glyph[dir] });
+          }
+        }
+        st.side.set(it.id, { s, d, t, seen: st.frame });
+      }
+      for (const [id, v] of st.side) if (st.frame - v.seen > 300) st.side.delete(id); // 長く見ていない ID は忘れる
+    },
+    draw(ctx, st, r, b) {
+      drawCountLine(ctx, st.line(), b, lineTotals(st), performance.now() - st.flash < 400);
+    },
+    panel(st) {
+      if (!st.tracked) return `<div class="sub">線を越えた数</div><div class="sub muted">追跡の ID で数えるので、動画・カメラの「▶ 連続実行」で働く（追跡が「なし」なら ByteTrack を使う）</div>`;
+      const [ga, gb] = st.glyph, rows = [...st.counts];
+      const chips = rows.length ? rows.map(([label, [a, b]]) =>
+        `<span class="chip"><i style="background:${labelColor(label)}"></i>${esc(label)} <b>${ga} ${a}</b> <b>${gb} ${b}</b></span>`).join("") : `<span class="muted small">まだ越えていない</span>`;
+      const recent = st.recent.length ? `<div class="sub muted">最近: ${st.recent.map((e) => `#${e.id} ${esc(e.label)} ${st.glyph[e.dir]}`).join(", ")}</div>` : "";
+      return `<div class="sub">線を越えた数</div><div class="chips">${chips}</div>${recent}`
+        + `<div class="sub muted">足元（枠の下端の中央）が線を越えた回数。ID が切り替わると数え漏れ・二重に数えることがある</div>`;
+    },
+    summary: (st) => (st.tracked ? `越えた ${[...st.counts].map(([label, [a, b]]) => `${label} ${st.glyph[0]}${a} ${st.glyph[1]}${b}`).join(" ") || "0"}` : ""),
+  },
 };
+
+// 線の向き: a は線の左手側（引いた向きに見て）から右手側へ、b はその逆。画面の上での動く向きを矢印 1 字で
+const ARROWS = ["→", "↘", "↓", "↙", "←", "↖", "↑", "↗"];
+function lineGlyphs(L, W = 1, H = 1) {
+  const dx = (L[2] - L[0]) * W, dy = (L[3] - L[1]) * H;
+  const g = (vx, vy) => ARROWS[(Math.round(Math.atan2(vy, vx) / (Math.PI / 4)) + 8) % 8];
+  return [g(-dy, dx), g(dy, -dx)];
+}
+function lineTotals(st) {
+  let a = 0, b = 0;
+  for (const [x, y] of st.counts.values()) { a += x; b += y; }
+  return [a, b];
+}
+// 線を描く（線を越えた数の応用と、線を引いている途中）。totals があれば向きごとの合計を線の両側に出す
+export function drawCountLine(ctx, L, b, totals = null, flash = false) {
+  const x1 = L[0] * b.w, y1 = L[1] * b.h, x2 = L[2] * b.w, y2 = L[3] * b.h, lw = Math.max(2, b.w / 300);
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.strokeStyle = "rgba(0,0,0,.55)"; ctx.lineWidth = lw * 2.6;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  ctx.strokeStyle = flash ? "#22c55e" : "#facc15"; ctx.lineWidth = flash ? lw * 2 : lw * 1.3;
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  for (const [x, y] of [[x1, y1], [x2, y2]]) { ctx.beginPath(); ctx.arc(x, y, lw * 2.2, 0, Math.PI * 2); ctx.fillStyle = "#facc15"; ctx.fill(); }
+  if (totals) {
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1, nx = -(y2 - y1) / len, ny = (x2 - x1) / len; // a の向き（左手側 → 右手側）の単位ベクトル
+    const g = lineGlyphs(L, b.w, b.h), size = Math.max(14, Math.round(b.w / 40)), off = size * 1.4, mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    ctx.font = `700 ${size}px system-ui, sans-serif`; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+    [[1, 0], [-1, 1]].forEach(([k, i]) => {
+      const text = `${g[i]} ${totals[i]}`, w = ctx.measureText(text).width + size * 0.8, h = size * 1.4;
+      const cx = Math.max(w / 2, Math.min(b.w - w / 2, mx + nx * off * k)), cy = Math.max(h / 2, Math.min(b.h - h / 2, my + ny * off * k));
+      ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.beginPath(); ctx.roundRect(cx - w / 2, cy - h / 2, w, h, size * 0.3); ctx.fill();
+      ctx.fillStyle = "#fff"; ctx.fillText(text, cx, cy + 1);
+    });
+  }
+  ctx.restore();
+}
 
 const HIST = 5;
 

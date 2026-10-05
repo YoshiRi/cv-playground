@@ -120,6 +120,10 @@
           <label class="field" data-app-param="classes" hidden>数えるクラス（カンマ区切り。空なら全部）
             <input id="classes" type="text" autocomplete="off" placeholder="person, car">
           </label>
+          <div class="field" data-app-param="line" hidden>
+            <div class="row wrap"><button type="button" class="ghost" id="line-draw">線を引き直す</button> <button type="button" class="ghost" id="line-reset">真ん中に戻す</button></div>
+            <span class="small muted">画像の上でドラッグして線を引く。線の両側の矢印が、越えた向きと数</span>
+          </div>
         </div>
         <label class="field row" data-param="threshold">閾値 <output id="th-out"></output>
           <input id="threshold" type="range" min="0.05" max="0.95" step="0.05">

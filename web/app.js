@@ -163,6 +163,13 @@ async function runOnServer(model, image, params) {
 
 // ---------- 画面 ----------
 
+// 明らかに遅いモデル（この端末で 1 回 SLOW_MS 以上、0.5fps 未満）は警告を出す。止めはしない。
+// 端末ごとに違うので、モデルに印を付けるのではなく、その端末で測った時間で決める（初回の読み込み・シェーダーの準備を含む 1 回目は見ない）
+const SLOW_MS = +new URLSearchParams(location.search).get("slowms") || 2000; // ?slowms= で変えられる（確かめる用）
+function slowWarning(m, ms) {
+  const alt = m.where === "browser" && state.hasServer && state.serverModels.has(m.key) ? "軽いモデルか、サーバーで実行を選ぶ" : "軽いモデルを選ぶ";
+  return `遅い: この端末では 1 回 ${(ms / 1000).toFixed(1)} 秒かかる（${(1000 / ms).toFixed(2)}fps）。連続実行には向かない（${alt}）`;
+}
 function setStatus(text, cls = "") {
   const el = $("status");
   el.textContent = text;
@@ -827,6 +834,9 @@ async function runBench() {
         $("bench-progress").textContent = `${i + 1}/${list.length} ${v.name}（${v.where === "browser" ? "ブラウザ" : "サーバー"}）: ${k < BENCH_WARMUP ? `ウォームアップ ${k + 1}/${BENCH_WARMUP}` : `${k - BENCH_WARMUP + 1}/${N} 回`}`;
         r = await runOnce(v, overrides);
         if (!first) first = r;
+        const ms = r.roundtrip_ms || r.infer_ms;
+        // 2 回目（読み込みの済んだ最初の回）が遅い時は、残りにかかる時間の目安を出す（止めはしない）
+        if (k === 1 && ms >= SLOW_MS) setStatus(`遅い: ${v.name} はこの端末で 1 回 ${(ms / 1000).toFixed(1)} 秒かかるので、残り ${BENCH_WARMUP + N - 2} 回で約 ${Math.ceil((ms * (BENCH_WARMUP + N - 2)) / 60000)} 分（「■ 中止」で止められる）`, "warn");
         if (k >= BENCH_WARMUP) {
           times.push(r.roundtrip_ms || r.infer_ms);
           for (const key of Object.keys(bd)) if (r.breakdown?.[key] != null) bd[key].push(r.breakdown[key]);
@@ -1160,7 +1170,9 @@ async function run() {
     pushInteract(m, r);
     renderResult(m, r);
     addRun(makeRecord(m, r, "single", appsSummary(KINDS[r.kind]?.summary(r))));
-    setStatus("");
+    // 読み込んだ回（1 回目）はシェーダーの準備などで遅く出るので見ない
+    if (!(r.load_ms > 1) && (r.roundtrip_ms || r.infer_ms) >= SLOW_MS) setStatus(slowWarning(m, r.roundtrip_ms || r.infer_ms), "warn");
+    else setStatus("");
     draw();
     if (m.where === "server") refreshServer();
   } catch (e) {
@@ -1180,7 +1192,7 @@ function failed(m, e) {
 // fps は2フレーム目以降で測る（1フレーム目はモデルの読み込みを含むため）
 async function liveLoop() {
   const m = currentModel();
-  let frames = 0, first = null, tStart = 0, fps = 0;
+  let frames = 0, first = null, tStart = 0, fps = 0, slowWarned = false;
   const times = []; // 1フレーム目（モデルの読み込み・初期化を含む）を除いた、フレームごとの推論時間
   // 追跡: 検出器には低スコア（0.1）まで出させ、閾値スライダーの値を「新しい ID を作る・1段目で使う」下限にする（Ultralytics と同じ構成）
   // 組み合わせのタブの combo.track は、追跡が前提のタブで追跡の欄が「なし」の時に使う追跡
@@ -1225,6 +1237,7 @@ async function liveLoop() {
     if (!first) { first = r; tStart = performance.now(); if (state.live) setStatus(""); } // 止めた後に遅れて届いた結果では、止めた時の表示を消さない
     frames++;
     if (frames > 1) times.push(r.roundtrip_ms || r.infer_ms);
+    if (!slowWarned && times.length && stats(times)?.median >= SLOW_MS && state.live) { slowWarned = true; setStatus(slowWarning(m, stats(times).median), "warn"); }
     fps = frames > 1 ? (frames - 1) / ((performance.now() - tStart) / 1000) : 0;
     renderResult(m, r, { fps, frames, ids: tracker ? ids.size : 0, trackerName });
     if ($("video").paused) draw();

@@ -278,6 +278,9 @@ export const EN = {
   "埋まっている": "Occupied",
   "不明": "Unknown",
   "（保持）": "(held)",
+  // 遅いモデルの警告
+  "軽いモデルか、サーバーで実行を選ぶ": "choose a lighter model, or run it on the server",
+  "軽いモデルを選ぶ": "choose a lighter model",
   // 線を越えた数
   "線を引き直す": "Redraw the line",
   "真ん中に戻す": "Reset to the middle",
@@ -397,6 +400,8 @@ export const RULES = [
   [/^(\d+)人・手を挙げた (\d+)・正面 (\d+)$/, "$1 people · hand raised $2 · facing front $3"],
   [/^3D (\d+)人$/, "3D $1 people"],
   [/^最近: (.*)$/, "Recent: $1"],
+  [/^遅い: この端末では 1 回 ([\d.]+) 秒かかる（([\d.]+)fps）。連続実行には向かない（(.+)）$/, (m, tr) => `Slow: one run takes ${m[1]} s on this device (${m[2]} fps). Not suited to continuous runs (${tr(m[3])})`],
+  [/^遅い: (.+) はこの端末で 1 回 ([\d.]+) 秒かかるので、残り (\d+) 回で約 (\d+) 分（「■ 中止」で止められる）$/, (m, tr) => `Slow: ${tr(m[1])} takes ${m[2]} s per run on this device, so the remaining ${m[3]} runs take about ${m[4]} min (press "■ Abort" to stop)`],
   [/^越えた (.*)$/, "crossed $1"],
   [/^(連続|ベンチ) ?(\d+)回(.*)$/, (m, tr) => `${tr(m[1])} ${m[2]} runs${m[3].split(" ・ ").map((x, i) => (i ? tr(x.trim()) : x)).join(" · ")}`],
   [/^(\S+) 接近(\d+)・後退(\d+)$/, "$1 approaching $2 · receding $3"],

@@ -5,7 +5,7 @@
 import { LANG, tx } from "./i18n.js";
 
 const LANG_EN = LANG === "en";
-export const APP_VERSION = "2026.09.28";
+export const APP_VERSION = "2026.10.05";
 
 // ---------- 統計 ----------
 

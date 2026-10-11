@@ -11,7 +11,8 @@ startTranslate();
 const $ = (id) => document.getElementById(id);
 const q = new URLSearchParams(location.search);
 const MODEL = CATALOG.models.find((m) => m.key === (q.get("model") || "yolo26n"));
-const IN_W = +q.get("w") || 640; // 検出に渡す画像の幅（高さはカメラの縦横比）
+// 検出に渡す画像の長辺。モデルの入力（YOLO26n は 640×640 に縮めて余白を足す）より大きく読み戻しても、縮める手間が増えるだけ
+const IN_LONG = +q.get("long") || MODEL?.pre?.size?.[0] || 640;
 const TH = +q.get("th") || 0.4;
 let flipY = q.get("flipy") !== "0";
 let align = false; // 位置合わせを確かめる: 検出に渡した画像を、枠と同じ写し方で画面に半透明で重ねる
@@ -138,7 +139,7 @@ function ensureFbo(w, h) {
 async function grab(view) {
   const cam = view.camera;
   const tex = binding.getCameraImage(cam);
-  const w = IN_W, h = Math.round((IN_W * cam.height) / cam.width);
+  const k = IN_LONG / Math.max(cam.width, cam.height), w = Math.round(cam.width * k), h = Math.round(cam.height * k);
   ensureFbo(w, h);
   const t0 = performance.now();
   gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);

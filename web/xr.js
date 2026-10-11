@@ -273,13 +273,14 @@ const COLLECT_P = +q.get("collect") || 0.9, COLLECT_N = 5, W_OBS = 0.3, MATCH_M 
 let objs = [], objSeq = 0;
 const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 function collect(list, t) {
+  if (floorY == null) return; // 床が決まるまで（ARCore の位置の推定が落ち着くまで）集めない。始めは床を映す
   for (const b of list) {
     if (b.depth == null || !b.center) continue;
     const r = Math.max(MATCH_M, dist3(b.world[0], b.world[1]) * 0.5);
     let o = null, od = Infinity;
     for (const x of objs) { const d = x.label === b.label ? dist3(x.pos, b.center) : Infinity; if (d < r && d < od) { o = x; od = d; } }
     if (!o) objs.push((o = { id: ++objSeq, label: b.label, pos: b.center.slice(), n: 0, p: 0, best: 0, thumb: "", first: t, collected: false }));
-    o.n++;
+    o.n++; o.sum = (o.sum || 0) + b.score;
     const k = 1 / Math.min(o.n, 10); // 位置は見えた回数で平均する（10 回目からは移動平均）
     o.pos = o.pos.map((v, i) => v + (b.center[i] - v) * k);
     o.p = 1 - (1 - o.p) * (1 - W_OBS * b.score);
@@ -320,8 +321,10 @@ function drawPins(ctx, W, H, u) {
 // ---------- 地図（上から見た間取り） ----------
 // ARCore の地図は WebXR から取れないので、位置・向きの分かった深度の画像を部屋の座標に戻して積む。
 // 上から見た CELL 角の升目ごとに、高さ 10 cm 刻みの点の数を持つ（床の高さの推定が後から変わっても塗り直せるように）。
-// 床は全部の点の高さの 3 パーセンタイル。床 ±10 cm を床、床から 10 cm〜1.8 m を障害物（壁・家具）として塗る。
-// 深度は 4 m まで（遠いほど粗い）。ARCore が後から自分の位置を直しても、積んだ点は直らない（壁が二重になることがある）
+// 床は、始めた時の端末の高さより 0.5 m 以上低い所で、点が一番集まる高さ（床は一番広い水平面）。下の方のパーセンタイルだと、
+// 遠くの深度の誤差で床より下に外れた点に引っぱられ、床を低く見積もって床全体が障害物になった（SCG32）。
+// 床 ±10 cm を床、床から 10 cm〜1.8 m で床の点より多い所を障害物（壁・家具）として塗る。
+// 深度は 3 m まで（遠いほど粗い）。ARCore が後から自分の位置を直しても、積んだ点は直らない（壁が二重になることがある）
 const CELL = 0.05, Y0 = -2.5, YB = 40, MAP_EVERY = 3; // 高さは −2.5〜+1.5 m（原点は始めた時の端末の高さ）
 let grid, yHist, mapTick, track, floorY, mapCache;
 function resetMap() { grid = new Map(); yHist = new Uint32Array(YB * 5); mapTick = 0; track = []; floorY = null; mapCache = null; }
@@ -333,7 +336,7 @@ function mapDepth(depth, view) {
     const x = (i + 0.5) / 40, y = (j + 0.5) / 24;
     let d;
     try { d = depth.getDepthInMeters(x, y); } catch { continue; }
-    if (!(d > 0.2 && d < 4)) continue;
+    if (!(d > 0.2 && d < 3)) continue;
     const p = unproject(cap, x, y, d), yb = Math.floor((p[1] - Y0) / 0.1);
     if (yb < 0 || yb >= YB) continue;
     yHist[Math.floor((p[1] - Y0) / 0.02)]++;
@@ -342,10 +345,11 @@ function mapDepth(depth, view) {
     if (!c) grid.set(key, (c = new Uint16Array(YB)));
     if (c[yb] < 65535) c[yb]++;
   }
-  if (mapTick % 30 === 0) { // 床の高さ: 点の高さの 3 パーセンタイル（点が 2000 個たまってから）
-    let n = 0;
-    for (const v of yHist) n += v;
-    if (n > 2000) { let acc = 0, i = 0; while (i < yHist.length && (acc += yHist[i]) < n * 0.03) i++; floorY = Y0 + i * 0.02; }
+  if (mapTick % 30 === 0) { // 床の高さ: −0.5 m より下で、点の数（前後 2 cm をならす）が一番多い高さ。その高さに 500 点たまってから
+    let best = -1, bi = -1;
+    const top = Math.floor((-0.5 - Y0) / 0.02);
+    for (let i = 2; i < top; i++) { const v = yHist[i - 1] + yHist[i] + yHist[i + 1]; if (v > best) { best = v; bi = i; } }
+    if (best >= 500) floorY = Y0 + (bi + 0.5) * 0.02;
     mapCache = null;
   }
 }
@@ -357,7 +361,7 @@ function cellKind(c) {
   let f = 0, o = 0;
   for (let b = Math.max(0, fb - 1); b <= fb + 1 && b < YB; b++) f += c[b];
   for (let b = fb + 2; b <= fb + 18 && b < YB; b++) o += c[b];
-  return o >= 3 && o >= f * 0.5 ? 2 : f >= 2 ? 1 : 0;
+  return o >= 4 && o > f ? 2 : f >= 2 ? 1 : 0;
 }
 // 地図を描く（x0, y0 から S 角）。間取りの升目は 0.5 秒ごとに描き直して取っておき、自分・物は毎回描く。
 // 向きは部屋に固定（始めた時の前が上）。x が右、z が下
@@ -413,7 +417,7 @@ function renderCollection() {
   mc.width = S; mc.height = S; map.cur = null; mapCache = null;
   drawMinimap(ctx, 0, 0, S, 1.4); map.cur = cur; mapCache = null;
   mc.hidden = !grid.size;
-  $("collection-list").innerHTML = list.map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption><b>${esc(o.label)}</b><br>${tx("{n} 回・確かさ {p}%・{d} m", { n: o.n, p: Math.round(o.p * 100), d: o.dist?.toFixed(2) ?? "-" })}</figcaption></figure>`).join("");
+  $("collection-list").innerHTML = list.map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption><b>${esc(o.label)}</b><br>${tx("{n} 回・確かさ {p}%・平均 {a}%・{d} m", { n: o.n, p: Math.round(o.p * 100), a: Math.round((o.sum / o.n) * 100), d: o.dist?.toFixed(2) ?? "-" })}</figcaption></figure>`).join("");
 }
 
 // 枠の中央 6 割の 5×5 点の深度の中央値（m）。背景を拾いにくくする（応用の rawOfBox と同じ考え方）
@@ -525,7 +529,7 @@ function updatePanel(view) {
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
-    `${tx("集めた")} ${collected().length}（${tx("候補")} ${objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
+    `${floorY == null ? tx("床を映す（床が決まるまで集めない）") : `${tx("床")} ${floorY.toFixed(2)} m`}  ${tx("集めた")} ${collected().length}（${tx("候補")} ${objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
 

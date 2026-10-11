@@ -15,6 +15,7 @@ const MODEL = CATALOG.models.find((m) => m.key === (q.get("model") || "yolo26n")
 const IN_LONG = +q.get("long") || MODEL?.pre?.size?.[0] || 640;
 const TH = +q.get("th") || 0.4;
 let flipY = q.get("flipy") !== "0";
+let stick = q.get("stick") !== "0"; // 張り付け: 枠を部屋の中の位置（3D）にして、今のカメラの向きで描き直す
 let align = false; // 位置合わせを確かめる: 検出に渡した画像を、枠と同じ写し方で画面に半透明で重ねる
 
 // ---------- 検出（worker.js をそのまま使う。前処理・後処理は普段の画面と同じ） ----------
@@ -190,10 +191,13 @@ function onFrame(t, frame) {
     try { depth = frame.getDepthInformation(view); } catch (e) { depthNote = e.message; }
     if (depth) depthNote = `${depth.width}×${depth.height}`;
   }
-  for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
-  // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ
+  map.cur = { proj: view.projectionMatrix, toCam: view.transform.inverse.matrix, pos: view.transform.position };
+  // 張り付けない時は、今のフレームの深度で枠ごとの距離を引き直す（張り付ける時は 3D の点と今のカメラの距離）
+  if (!stick) for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
+  // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ。読み戻した時のカメラの位置・向きと深度を一緒に取っておく
   if (!busy && binding && view.camera) {
     busy = true;
+    const cap = { proj: Float32Array.from(view.projectionMatrix), toWorld: Float32Array.from(view.transform.matrix), depth: depth ? copyDepth(depth) : null };
     grab(view).then(async (bmp) => {
       drawPreview(bmp);
       const W = bmp.width, H = bmp.height; // 結果の枠は渡した画像の画素（渡すと bmp は使えなくなるので先に取る）
@@ -203,6 +207,7 @@ function onFrame(t, frame) {
       rec.dets++; rec.infer.push(r.infer_ms); rec.first ??= r; rec.last = r;
       for (const k of ["pre", "run", "post"]) if (r.breakdown?.[k] != null) rec[k].push(r.breakdown[k]);
       boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H], m: null }));
+      for (const b of boxes) placeBox(b, cap);
     }).catch((e) => { status.err = e.message; }).finally(() => { busy = false; });
   }
   push(times.frame, performance.now() - tf);
@@ -214,6 +219,45 @@ function onFrame(t, frame) {
     counts.xr = 0; counts.det = 0; counts.t0 = now;
     updatePanel(view);
   }
+}
+
+// ---------- 張り付け（枠を 3D に） ----------
+// 深度は読み戻したフレームの中でしか読めないので、写しを取っておき、検出の結果が届いた時に枠の中を引く
+function copyDepth(d) {
+  try {
+    const f32 = session.depthDataFormat === "float32";
+    return { w: d.width, h: d.height, k: d.rawValueToMeters, m: Float32Array.from(d.normDepthBufferFromNormView.matrix), data: f32 ? new Float32Array(d.data.slice(0)) : new Uint16Array(d.data.slice(0)) };
+  } catch { return null; }
+}
+// 写しの深度（m）。view の 0〜1 の座標 → 深度の画像の 0〜1（normDepthBufferFromNormView）→ 画素
+function depthAt(c, x, y) {
+  const u = c.m[0] * x + c.m[4] * y + c.m[12], v = c.m[1] * x + c.m[5] * y + c.m[13];
+  const col = Math.min(c.w - 1, Math.max(0, Math.floor(u * c.w))), row = Math.min(c.h - 1, Math.max(0, Math.floor(v * c.h)));
+  return c.data[row * c.w + col] * c.k;
+}
+// view の 0〜1 の点を、深度 d（m、カメラの前向きの距離）で部屋の座標の点にする。射影行列 P（列優先）から
+// ndc.x = (P0·x + P8·z) / −z（z = −d）なので x = (ndc.x + P8)·d / P0
+function unproject(cap, x, y, d) {
+  const P = cap.proj, nx = 2 * x - 1, ny = 1 - 2 * y;
+  const vx = ((nx + P[8]) * d) / P[0], vy = ((ny + P[9]) * d) / P[5], vz = -d, M = cap.toWorld;
+  return [M[0] * vx + M[4] * vy + M[8] * vz + M[12], M[1] * vx + M[5] * vy + M[9] * vz + M[13], M[2] * vx + M[6] * vy + M[10] * vz + M[14]];
+}
+// 部屋の座標の点を、今のカメラの view の 0〜1 に（カメラの後ろなら null）
+function project(p) {
+  const C = map.cur.toCam, P = map.cur.proj;
+  const x = C[0] * p[0] + C[4] * p[1] + C[8] * p[2] + C[12], y = C[1] * p[0] + C[5] * p[1] + C[9] * p[2] + C[13], z = C[2] * p[0] + C[6] * p[1] + C[10] * p[2] + C[14];
+  if (z > -0.05) return null;
+  const nx = (P[0] * x + P[8] * z) / -z, ny = (P[5] * y + P[9] * z) / -z;
+  return [(nx + 1) / 2, (1 - ny) / 2];
+}
+// 枠を、読み戻した時のカメラの前に、枠の中の深度の所に立てた板（4 隅の 3D の点）にする。深度が無い枠は 2 m に置く
+// （向きの変化の補正には距離はあまり効かない）
+function placeBox(b, cap) {
+  const v = b.n.map((x, i) => camToView(x, i % 2));
+  b.depth = cap.depth ? boxDepth({ getDepthInMeters: (x, y) => depthAt(cap.depth, x, y) }, v) : null;
+  const d = b.depth ?? 2;
+  b.world = [[v[0], v[1]], [v[2], v[1]], [v[2], v[3]], [v[0], v[3]]].map(([x, y]) => unproject(cap, x, y, d));
+  b.center = unproject(cap, (v[0] + v[2]) / 2, (v[1] + v[3]) / 2, d);
 }
 
 // 枠の中央 6 割の 5×5 点の深度の中央値（m）。背景を拾いにくくする（応用の rawOfBox と同じ考え方）
@@ -258,8 +302,20 @@ function drawOverlay() {
   }
   ctx.lineWidth = 3 * u; ctx.font = `600 ${Math.round(15 * u)}px system-ui, sans-serif`; ctx.textBaseline = "top";
   for (const b of boxes) {
-    const [x1, y1] = P(b.n[0], b.n[1]), [x2, y2] = P(b.n[2], b.n[3]);
-    ctx.strokeStyle = "#22c55e"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    let x1, y1, x2, y2;
+    if (stick && b.world && map.cur) {
+      // 4 隅を今のカメラで画面に。板が傾いて見える時もそのまま四角形で描く
+      const q2 = b.world.map(project);
+      if (q2.some((x) => !x)) continue;
+      const pts = q2.map(([x, y]) => [x * W, y * H]);
+      ctx.strokeStyle = b.depth != null ? "#22c55e" : "#facc15";
+      ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke();
+      [x1, y1] = [Math.min(...pts.map((p) => p[0])), Math.min(...pts.map((p) => p[1]))];
+      b.m = b.depth != null ? Math.hypot(b.center[0] - map.cur.pos.x, b.center[1] - map.cur.pos.y, b.center[2] - map.cur.pos.z) : null;
+    } else {
+      [x1, y1] = P(b.n[0], b.n[1]); [x2, y2] = P(b.n[2], b.n[3]);
+      ctx.strokeStyle = "#22c55e"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
     const text = `${b.label} ${(b.score * 100).toFixed(0)}%${b.m != null ? `  ${b.m.toFixed(2)} m` : ""}`;
     const tw = ctx.measureText(text).width + 8 * u, th = 21 * u, tx0 = Math.max(0, Math.min(x1, W - tw)), ty0 = Math.max(0, y1 - th - u);
     ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(tx0, ty0, tw, th);
@@ -311,7 +367,7 @@ function updatePanel(view) {
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
-    `${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
+    `${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
 
@@ -319,6 +375,7 @@ $("start").onclick = start;
 $("end").onclick = () => session?.end();
 $("flip").onclick = () => { flipY = !flipY; };
 $("align").onclick = () => { align = !align; };
+$("stick").onclick = () => { stick = !stick; };
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。

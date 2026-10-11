@@ -13,7 +13,13 @@
     #overlay.on { display: block; }
     #ov-panel { position: fixed; left: 8px; right: 8px; top: 8px; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 8px; padding: 6px 8px; font: 12px/1.45 system-ui, sans-serif; white-space: pre-wrap; }
     #ov-buttons { position: fixed; left: 8px; right: 8px; bottom: 16px; display: flex; gap: 8px; justify-content: center; }
-    #ov-buttons button { font-size: 15px; padding: 8px 14px; }
+    #ov-buttons button { font-size: 15px; padding: 8px 12px; }
+    #ov-strip { position: fixed; left: 8px; right: 34%; bottom: 72px; display: flex; flex-wrap: wrap-reverse; gap: 4px; }
+    #ov-strip figure, .coll figure { margin: 0; text-align: center; color: #fff; font: 11px system-ui, sans-serif; }
+    #ov-strip img { width: 48px; height: 48px; object-fit: cover; border: 2px solid #16a34a; border-radius: 6px; display: block; }
+    .coll { display: flex; flex-wrap: wrap; gap: 8px; }
+    .coll figure { width: 104px; color: inherit; }
+    .coll img { width: 96px; height: 96px; object-fit: contain; background: var(--chip); border-radius: 8px; }
     #ov-preview { position: fixed; right: 8px; bottom: 72px; width: 30%; border: 1px solid rgba(255, 255, 255, .6); }
   </style>
 </head>
@@ -25,17 +31,22 @@
     <p class="small">ARCore（WebXR）のカメラの映像を物体検出（YOLO26n）に渡し、枠の中の深度から物までの距離を m で出す。Android の Chrome で、https のページで開く。</p>
     <button type="button" class="primary" id="start" disabled>AR を始める</button>
     <pre id="support">確かめている…</pre>
+    <div id="collection" class="field" hidden>
+      <div id="collection-head"></div>
+      <div class="coll" id="collection-list"></div>
+    </div>
     <div id="rec" class="field" hidden>
       <div class="small" id="rec-text"></div>
       <button type="button" class="ghost" id="copy-md">Markdown の表をコピー</button>
       <pre id="rec-md" hidden></pre>
     </div>
-    <p class="small muted">AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。「位置合わせ」はその画像を枠と同じ写し方で画面に半透明で重ね、ずれを確かめる。「張り付け」は枠を部屋の中の位置（深度の所に立てた板）にして、端末を動かしても物に付いてくるように描き直す（距離はカメラからその点まで。深度が無い枠は黄色で 2 m に置く）。終わると記録を残す（普段の画面の実行履歴にも入る）。</p>
+    <p class="small muted">AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像が出る。「位置合わせ」はその画像を枠と同じ写し方で画面に半透明で重ね、ずれを確かめる。「張り付け」は枠を部屋の中の位置（深度の所に立てた板）にして、端末を動かしても物に付いてくるように描き直す（距離はカメラからその点まで。深度が無い枠は黄色で 2 m に置く）。何度も見えて確かさが 90% を超えた物は「集めた」になり（✓）、画面の外に出ても覚えておく（左下に切り抜き。終わるとこのページに一覧）。候補は確かさ（%）が出る。「集め直す」で空にする。終わると記録を残す（普段の画面の実行履歴にも入る）。</p>
   </div>
   <div id="overlay">
     <canvas id="ov-preview"></canvas>
+    <div id="ov-strip"></div>
     <div id="ov-panel"></div>
-    <div id="ov-buttons"><button type="button" class="ghost" id="flip">上下反転</button><button type="button" class="ghost" id="align">位置合わせ</button><button type="button" class="ghost" id="stick">張り付け</button><button type="button" class="primary" id="end">終わる</button></div>
+    <div id="ov-buttons"><button type="button" class="ghost" id="reset">集め直す</button><button type="button" class="ghost" id="align">位置合わせ</button><button type="button" class="ghost" id="stick">張り付け</button><button type="button" class="primary" id="end">終わる</button></div>
   </div>
   <script type="module" src="xr.js"></script>
 </body>

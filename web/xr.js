@@ -109,7 +109,8 @@ async function start() {
   setupGL();
   counts.t0 = performance.now();
   rec = newRec();
-  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; saveRecord(); });
+  objs = []; renderStrip();
+  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; saveRecord(); renderCollection(); });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -208,6 +209,7 @@ function onFrame(t, frame) {
       for (const k of ["pre", "run", "post"]) if (r.breakdown?.[k] != null) rec[k].push(r.breakdown[k]);
       boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H], m: null }));
       for (const b of boxes) placeBox(b, cap);
+      collect(boxes, performance.now());
     }).catch((e) => { status.err = e.message; }).finally(() => { busy = false; });
   }
   push(times.frame, performance.now() - tf);
@@ -258,6 +260,69 @@ function placeBox(b, cap) {
   const d = b.depth ?? 2;
   b.world = [[v[0], v[1]], [v[2], v[1]], [v[2], v[3]], [v[0], v[3]]].map(([x, y]) => unproject(cap, x, y, d));
   b.center = unproject(cap, (v[0] + v[2]) / 2, (v[1] + v[3]) / 2, d);
+}
+
+// ---------- 集める ----------
+// 検出した物を、部屋の中の位置つきで覚える。同じクラスで近い所（40 cm か板の幅の半分の大きい方）に検出が来たら同じ物とみなし、
+// 見えるたびに確かさを重ねる（p ← 1 − (1 − p)(1 − W·score)。W を小さくして、1 回の高い点数ではなく、何度も見えたことで上げる）。
+// 確かさが COLLECT_P を超え、COLLECT_N 回以上見えたら「集めた」にして、画面の外に出ても覚えておく。
+// 集めていない候補は FORGET_MS 見えなければ忘れる。深度の無い枠（位置が決まらない）は数えない
+const COLLECT_P = +q.get("collect") || 0.9, COLLECT_N = 5, W_OBS = 0.3, MATCH_M = 0.4, FORGET_MS = 15000;
+let objs = [], objSeq = 0;
+const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+function collect(list, t) {
+  for (const b of list) {
+    if (b.depth == null || !b.center) continue;
+    const r = Math.max(MATCH_M, dist3(b.world[0], b.world[1]) * 0.5);
+    let o = null, od = Infinity;
+    for (const x of objs) { const d = x.label === b.label ? dist3(x.pos, b.center) : Infinity; if (d < r && d < od) { o = x; od = d; } }
+    if (!o) objs.push((o = { id: ++objSeq, label: b.label, pos: b.center.slice(), n: 0, p: 0, best: 0, thumb: "", first: t, collected: false }));
+    o.n++;
+    const k = 1 / Math.min(o.n, 10); // 位置は見えた回数で平均する（10 回目からは移動平均）
+    o.pos = o.pos.map((v, i) => v + (b.center[i] - v) * k);
+    o.p = 1 - (1 - o.p) * (1 - W_OBS * b.score);
+    o.last = t; b.obj = o;
+    if (b.score > o.best) { o.best = b.score; o.thumb = crop(b.n); o.dist = b.depth; }
+    if (!o.collected && o.p >= COLLECT_P && o.n >= COLLECT_N) { o.collected = true; o.at = new Date(); renderStrip(); }
+  }
+  objs = objs.filter((o) => o.collected || t - o.last < FORGET_MS);
+}
+// 一番確かだった時の切り抜き（右下の画像は、検出に渡したフレームのまま）
+function crop(n) {
+  const src = $("ov-preview"), W = src.width, H = src.height;
+  const x = n[0] * W, y = n[1] * H, w = Math.max(1, (n[2] - n[0]) * W), h = Math.max(1, (n[3] - n[1]) * H), k = 96 / Math.max(w, h);
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+  c.getContext("2d").drawImage(src, x, y, w, h, 0, 0, c.width, c.height);
+  return c.toDataURL("image/jpeg", 0.8);
+}
+const collected = () => objs.filter((o) => o.collected);
+function renderStrip() {
+  $("ov-strip").innerHTML = collected().slice(-12).reverse().map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption>${esc(o.label)}</figcaption></figure>`).join("");
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+// 覚えている物の印: 集めた物は ✓ とラベル、候補は確かさ（%）。今のカメラで画面に投影する（後ろにある物は出さない）
+function drawPins(ctx, W, H, u) {
+  if (!map.cur) return;
+  for (const o of objs) {
+    const pt = project(o.pos);
+    if (!pt || pt[0] < 0 || pt[0] > 1 || pt[1] < 0 || pt[1] > 1) continue;
+    const [x, y] = [pt[0] * W, pt[1] * H];
+    ctx.beginPath(); ctx.arc(x, y, (o.collected ? 7 : 5) * u, 0, Math.PI * 2);
+    if (o.collected) { ctx.fillStyle = "#16a34a"; ctx.fill(); } else { ctx.strokeStyle = "#fff"; ctx.lineWidth = 2 * u; ctx.stroke(); }
+    const text = o.collected ? `✓ ${o.label}` : `${Math.round(o.p * 100)}%`;
+    const tw = ctx.measureText(text).width + 8 * u, th = 20 * u;
+    ctx.fillStyle = o.collected ? "rgba(22,163,74,.85)" : "rgba(0,0,0,.55)"; ctx.fillRect(x + 9 * u, y - th / 2, tw, th);
+    ctx.fillStyle = "#fff"; ctx.fillText(text, x + 13 * u, y - th / 2 + 3 * u);
+  }
+}
+// AR を終えた後の一覧
+function renderCollection() {
+  const list = collected();
+  $("collection").hidden = !list.length;
+  const byClass = {};
+  for (const o of list) byClass[o.label] = (byClass[o.label] || 0) + 1;
+  $("collection-head").textContent = tx("集めた物 {n}（{c}）", { n: list.length, c: Object.entries(byClass).map(([k, v]) => `${k} ${v}`).join("、") });
+  $("collection-list").innerHTML = list.map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption><b>${esc(o.label)}</b><br>${tx("{n} 回・確かさ {p}%・{d} m", { n: o.n, p: Math.round(o.p * 100), d: o.dist?.toFixed(2) ?? "-" })}</figcaption></figure>`).join("");
 }
 
 // 枠の中央 6 割の 5×5 点の深度の中央値（m）。背景を拾いにくくする（応用の rawOfBox と同じ考え方）
@@ -321,6 +386,7 @@ function drawOverlay() {
     ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(tx0, ty0, tw, th);
     ctx.fillStyle = "#fff"; ctx.fillText(text, tx0 + 4 * u, ty0 + 3 * u);
   }
+  drawPins(ctx, W, H, u);
   // テクスチャにして、XR の描画面の viewport に重ねる（canvas の上の行が画面の上になるよう上下を返して読む）
   if (!labProg) {
     const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
@@ -367,15 +433,15 @@ function updatePanel(view) {
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
-    `${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
+    `${tx("集めた")} ${collected().length}（${tx("候補")} ${objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
 
 $("start").onclick = start;
 $("end").onclick = () => session?.end();
-$("flip").onclick = () => { flipY = !flipY; };
 $("align").onclick = () => { align = !align; };
 $("stick").onclick = () => { stick = !stick; };
+$("reset").onclick = () => { objs = []; renderStrip(); };
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。
@@ -392,7 +458,7 @@ function saveRecord() {
     infer_ms: st?.mean, infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_p95_ms: st?.p95, infer_min_ms: st?.min, infer_max_ms: st?.max,
     pre_ms: avg(rec.pre), run_ms: avg(rec.run), post_ms: avg(rec.post), frames: rec.dets, fps: +(rec.dets / secs).toFixed(2), warmup: 0,
     xr_fps: +(rec.xrFrames / secs).toFixed(1), readback_ms: +(stats(rec.read)?.median ?? 0).toFixed(1), camera_size: rec.cam, depth_size: rec.depth || "",
-    xr_features: granted.join(" "), summary: `AR ${(rec.dets / secs).toFixed(1)}fps`,
+    xr_features: granted.join(" "), summary: `AR ${(rec.dets / secs).toFixed(1)}fps`, collected: collected().length,
   };
   try {
     const runs = JSON.parse(localStorage.getItem(RUNS_KEY) || "[]");

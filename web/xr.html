@@ -26,13 +26,18 @@
     <p class="small">ARCore（WebXR）のカメラの映像を物体検出（YOLO26n）に渡し、枠の中の深度から物までの距離を m で出す。Android の Chrome で、https のページで開く。</p>
     <button type="button" class="primary" id="start" disabled>AR を始める</button>
     <pre id="support">確かめている…</pre>
-    <p class="small muted">AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。</p>
+    <div id="rec" class="field" hidden>
+      <div class="small" id="rec-text"></div>
+      <button type="button" class="ghost" id="copy-md">Markdown の表をコピー</button>
+      <pre id="rec-md" hidden></pre>
+    </div>
+    <p class="small muted">AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。「位置合わせ」はその画像を枠と同じ写し方で画面に半透明で重ね、ずれを確かめる。終わると記録を残す（普段の画面の実行履歴にも入る）。</p>
   </div>
   <div id="overlay">
     <canvas id="ov-canvas"></canvas>
     <canvas id="ov-preview"></canvas>
     <div id="ov-panel"></div>
-    <div id="ov-buttons"><button type="button" class="ghost" id="flip">上下反転</button><button type="button" class="primary" id="end">終わる</button></div>
+    <div id="ov-buttons"><button type="button" class="ghost" id="flip">上下反転</button><button type="button" class="ghost" id="align">位置合わせ</button><button type="button" class="primary" id="end">終わる</button></div>
   </div>
   <script type="module" src="xr.js"></script>
 </body>

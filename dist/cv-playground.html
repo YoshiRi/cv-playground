@@ -2568,7 +2568,8 @@ const EN = {
   "ARCore（WebXR）のカメラの映像を物体検出（YOLO26n）に渡し、枠の中の深度から物までの距離を m で出す。Android の Chrome で、https のページで開く。": "Feeds the ARCore (WebXR) camera image to object detection (YOLO26n) and shows the distance to each object in meters from the depth inside its box. Open it in Chrome on Android, over https.",
   "AR を始める": "Start AR",
   "確かめている…": "Checking…",
-  "AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。": "In AR, the top shows the status (granted features, speed) and the lower right shows the image passed to detection (use \"Flip vertically\" if it is upside down).",
+  "AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。「位置合わせ」はその画像を枠と同じ写し方で画面に半透明で重ね、ずれを確かめる。終わると記録を残す（普段の画面の実行履歴にも入る）。": "In AR, the top shows the status (granted features, speed) and the lower right shows the image passed to detection (use \"Flip vertically\" if it is upside down). \"Alignment\" overlays that image on the screen, mapped the same way as the boxes, to check for offsets. When you exit, the session is recorded (also in the run history on the main page).",
+  "カメラ": "camera",
   "上下反転": "Flip vertically",
   "終わる": "Exit",
   "https のページ": "https page",
@@ -2586,6 +2587,13 @@ const EN = {
   "{name}（{mb} MB）": "{name} ({mb} MB)",
   "検出": "detection",
   "フレームの処理": "frame work",
+  "位置合わせ": "Alignment",
+  "写し方": "mapping",
+  "画面": "screen",
+  "Markdown の表をコピー": "Copy the Markdown table",
+  "コピーした": "Copied",
+  "AR（検出＋深度）": "AR (detection + depth)",
+  "記録した: 検出 {det} fps・XR {xr} fps・推論 {inf} ms（中央値）・読み戻し {rb} ms（{n} 回、{s} 秒）。普段の画面の実行履歴にも入れた": "Recorded: detection {det} fps, XR {xr} fps, inference {inf} ms (median), readback {rb} ms ({n} runs, {s} s). Also added to the run history on the main page",
   "エラー": "Error",
   // 受け手のページ（receiver.html）
   "CV Playground 受け手": "CV Playground receiver",
@@ -3937,7 +3945,7 @@ function toMarkdown(runs, env) {
   // テンプレートマッチング: 点の取り出し・対応・RANSAC（ms）と、インライア/対応、ベンチなら正解の四隅からの誤差
   // 言葉は tx で訳す（英語の画面なら英語の表）
   const w = (s) => tx(s), dec = (s) => String(s).split(" ").map((x) => x.replace(/^(.+)\((.+)\)$/, (_, v, p) => `${tx(v)}(${p})`)).join(" ");
-  const detail = (r) => (r.decisions ? `${w("判定")} ${dec(r.decisions)}` : r.match_ms == null ? "" : `${w("点")} ${ms(r.extract_ms)} / ${w("対応")} ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ ${w("四隅")} ${Number(r.quad_err_px).toFixed(1)}px` : ""}`
+  const detail = (r) => (r.xr_fps != null ? `XR ${r.xr_fps}fps ・ ${w("読み戻し")} ${ms(r.readback_ms)}ms ・ ${w("カメラ")} ${r.camera_size || "-"} ・ ${w("深度")} ${r.depth_size || w("無い")}` : r.decisions ? `${w("判定")} ${dec(r.decisions)}` : r.match_ms == null ? "" : `${w("点")} ${ms(r.extract_ms)} / ${w("対応")} ${ms(r.match_ms)} / RANSAC ${ms(r.ransac_ms)} ・ ${r.inliers}/${r.matches}${r.quad_err_px != null && r.quad_err_px !== "" ? ` ・ ${w("四隅")} ${Number(r.quad_err_px).toFixed(1)}px` : ""}`
     + (r.jitter_raw_px != null ? ` ・ ${r.stab_mode === "tripod" ? w("三脚") : r.stab_mode ? `${w("なめらか")}${w({ weak: "弱", mid: "中", strong: "強" }[r.stab_strength] ?? "")}` : ""}${r.stab_delay ? ` ${w("先読み")}${r.stab_delay}` : ""}${r.stab_crop != null ? ` ${Math.round(r.stab_crop * 100)}%` : ""} ${w("揺れ")} ${r.jitter_raw_px}px/${r.jitter_raw_deg}° → ${r.jitter_out_px}px/${r.jitter_out_deg}°${r.move_raw_px != null ? `（${w("動き")} ${r.move_raw_px} → ${r.move_out_px}px）` : ""}${r.stab_clamped ? ` ・ ${w("端")} ${r.stab_clamped}/${r.frames_total ?? ""}` : ""}` : ""));
   for (const r of runs) {
     lines.push(`| ${r.time.slice(5, 16).replace("T", " ")} | ${tx({ single: "1回", live: "連続", bench: "ベンチ" }[r.mode] || r.mode)} | ${tx(r.task)} | ${r.model_name.split(" + ").map(w).join(" + ")} | ${tx(r.where)} ${r.device}${r.runtime ? " " + tx(r.runtime) : ""} | ${r.input_size || `${r.frame_w}×${r.frame_h}`} | ${ms(r.infer_median_ms ?? r.infer_ms)} | ${ms(r.infer_p90_ms)} | ${ms(r.infer_p95_ms)} | ${ms(r.pre_ms)} | ${ms(r.run_ms)} | ${ms(r.post_ms)} | ${ms(r.gpu_ms)} | ${r.fps ? Number(r.fps).toFixed(1) : ""} | ${ms(r.load_ms)} | ${LANG_EN ? detail(r).replace(/ ・ /g, " · ").replace(/（/g, " (").replace(/）/g, ")") : detail(r)} |`);

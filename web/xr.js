@@ -4,6 +4,7 @@
 //   3. 使えた機能・カメラの画像の大きさ・XR の fps・読み戻しと推論の時間を画面の上に出す
 // カメラの画像は XRView と同じ範囲・向きなので、画像の 0〜1 の座標がそのまま画面（DOM overlay）と深度の座標になる
 import { CATALOG } from "./catalog.js";
+import { collectEnv, stats, toMarkdown } from "./export.js";
 import { startTranslate, tx } from "./i18n.js";
 
 startTranslate();
@@ -13,6 +14,7 @@ const MODEL = CATALOG.models.find((m) => m.key === (q.get("model") || "yolo26n")
 const IN_W = +q.get("w") || 640; // 検出に渡す画像の幅（高さはカメラの縦横比）
 const TH = +q.get("th") || 0.4;
 let flipY = q.get("flipy") !== "0";
+let align = false; // 位置合わせを確かめる: 検出に渡した画像を、枠と同じ写し方で画面に半透明で重ねる
 
 // ---------- 検出（worker.js をそのまま使う。前処理・後処理は普段の画面と同じ） ----------
 const WEB_ROOT = new URL("./", location.href).href;
@@ -66,6 +68,11 @@ let inW = 0, inH = 0, busy = false, boxes = [], lastSize = "";
 const times = { infer: [], read: [], frame: [] };
 const counts = { xr: 0, det: 0, t0: 0, xrFps: 0, detFps: 0 };
 let depthNote = "", granted = [];
+// セッション全体の記録（終わった時に実行の記録にする）
+let rec = null;
+const newRec = () => ({ t0: performance.now(), infer: [], read: [], pre: [], run: [], post: [], xrFps: [], dets: 0, xrFrames: 0, first: null, last: null, cam: "", depth: "" });
+// カメラの画像の 0〜1 → 画面（overlay の CSS px）の写し方。毎フレーム、XR の viewport とカメラの大きさから作り直す
+const map = { vp: null, fbW: 1, fbH: 1, camAspect: 0, mode: "" };
 
 async function start() {
   $("overlay").classList.add("on");
@@ -90,7 +97,8 @@ async function start() {
   refSpace = await session.requestReferenceSpace("local");
   setupGL();
   counts.t0 = performance.now();
-  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; });
+  rec = newRec();
+  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; saveRecord(); });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -143,7 +151,7 @@ async function grab(view) {
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
   gl.bindVertexArray(null);
-  push(times.read, performance.now() - t0);
+  push(times.read, performance.now() - t0); rec.read.push(performance.now() - t0);
   lastSize = `${cam.width}×${cam.height} → ${w}×${h}`;
   // readPixels は下の行から。flipY なら上下を入れ替えて、画面と同じ向きにする
   const img = new ImageData(w, h);
@@ -163,14 +171,16 @@ function onFrame(t, frame) {
   gl.clear(gl.COLOR_BUFFER_BIT);
   if (!pose) return;
   const view = pose.views[0];
-  counts.xr++;
+  counts.xr++; rec.xrFrames++;
+  map.vp = layer.getViewport(view); map.fbW = layer.framebufferWidth; map.fbH = layer.framebufferHeight;
+  if (view.camera) map.camAspect = view.camera.width / view.camera.height;
   // 深度（このフレームの中でだけ読める）。今の枠ごとに距離を引き直す
   let depth = null;
   if (granted.includes("depth-sensing")) {
     try { depth = frame.getDepthInformation(view); } catch (e) { depthNote = e.message; }
     if (depth) depthNote = `${depth.width}×${depth.height}`;
   }
-  for (const b of boxes) b.m = depth ? boxDepth(depth, b.n) : null;
+  for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
   // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ
   if (!busy && binding && view.camera) {
     busy = true;
@@ -180,6 +190,8 @@ function onFrame(t, frame) {
       const r = await detect(bmp);
       push(times.infer, r.infer_ms);
       counts.det++; status.load = ""; status.err = "";
+      rec.dets++; rec.infer.push(r.infer_ms); rec.first ??= r; rec.last = r;
+      for (const k of ["pre", "run", "post"]) if (r.breakdown?.[k] != null) rec[k].push(r.breakdown[k]);
       boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H], m: null }));
     }).catch((e) => { status.err = e.message; }).finally(() => { busy = false; });
   }
@@ -188,6 +200,7 @@ function onFrame(t, frame) {
   const now = performance.now();
   if (now - counts.t0 > 1000) {
     counts.xrFps = (counts.xr * 1000) / (now - counts.t0); counts.detFps = (counts.det * 1000) / (now - counts.t0);
+    rec.xrFps.push(counts.xrFps); rec.cam = lastSize; rec.depth = depthNote;
     counts.xr = 0; counts.det = 0; counts.t0 = now;
     updatePanel(view);
   }
@@ -205,15 +218,36 @@ function boxDepth(d, b) {
   return v[v.length >> 1];
 }
 
+// カメラの画像の座標（0〜1）→ XR の view の座標（0〜1、深度もこの座標）。普通は同じ。縦横比が違う時は、
+// カメラの画像が view を覆うように（はみ出す側を切って）写っているとみなす
+function camToView(v, axis) {
+  const vpA = map.vp ? map.vp.width / map.vp.height : map.camAspect, r = map.camAspect && vpA ? map.camAspect / vpA : 1;
+  if (Math.abs(r - 1) < 0.01) { map.mode = "same"; return v; }
+  map.mode = r > 1 ? "cover-x" : "cover-y";
+  if (axis === 0) return r > 1 ? 0.5 + (v - 0.5) * r : v;
+  return r > 1 ? v : 0.5 + (v - 0.5) / r;
+}
+// view の座標（0〜1、上が 0）→ 画面の CSS px。XR の framebuffer が画面全体に重なるとみなし、viewport の位置を足す
+function viewToScreen(x, y, W, H) {
+  const vp = map.vp || { x: 0, y: 0, width: map.fbW, height: map.fbH };
+  return [((vp.x + x * vp.width) * W) / map.fbW, ((map.fbH - vp.y - vp.height + y * vp.height) * H) / map.fbH];
+}
+const camToScreen = (u, v, W, H) => viewToScreen(camToView(u, 0), camToView(v, 1), W, H);
+
 function drawOverlay() {
   const c = $("ov-canvas"), dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
   if (c.width !== Math.round(W * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
   const ctx = c.getContext("2d");
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, W, H);
+  if (align) {
+    const [ax, ay] = camToScreen(0, 0, W, H), [bx, by] = camToScreen(1, 1, W, H);
+    ctx.globalAlpha = 0.45; ctx.drawImage($("ov-preview"), ax, ay, bx - ax, by - ay); ctx.globalAlpha = 1;
+    ctx.strokeStyle = "#f0f"; ctx.lineWidth = 2; ctx.strokeRect(ax, ay, bx - ax, by - ay);
+  }
   ctx.lineWidth = 3; ctx.font = "600 15px system-ui, sans-serif"; ctx.textBaseline = "top";
   for (const b of boxes) {
-    const [x1, y1, x2, y2] = [b.n[0] * W, b.n[1] * H, b.n[2] * W, b.n[3] * H];
+    const [x1, y1] = camToScreen(b.n[0], b.n[1], W, H), [x2, y2] = camToScreen(b.n[2], b.n[3], W, H);
     ctx.strokeStyle = "#22c55e"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     const text = `${b.label} ${(b.score * 100).toFixed(0)}%${b.m != null ? `  ${b.m.toFixed(2)} m` : ""}`;
     const tw = ctx.measureText(text).width + 8, tx0 = Math.max(0, Math.min(x1, W - tw)), ty0 = Math.max(0, y1 - 22);
@@ -235,6 +269,7 @@ function updatePanel(view) {
     `${tx("使えた機能")}: ${granted.join(", ") || "?"}`,
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms`,
+    `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
     `${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
@@ -242,4 +277,37 @@ function updatePanel(view) {
 $("start").onclick = start;
 $("end").onclick = () => session?.end();
 $("flip").onclick = () => { flipY = !flipY; };
+$("align").onclick = () => { align = !align; };
+
+// ---------- 記録 ----------
+// セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。
+// 普段の画面の実行履歴・書き出しにそのまま出る。このページでも Markdown の表をコピーできる
+const RUNS_KEY = "cvpg-runs", MAX_RUNS = 500;
+let lastRec = null;
+function saveRecord() {
+  if (!rec?.dets) return;
+  const st = stats(rec.infer), avg = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : undefined), r = rec.last;
+  const secs = (performance.now() - rec.t0) / 1000;
+  lastRec = {
+    time: new Date().toISOString(), mode: "live", task: "AR（検出＋深度）", model_key: MODEL.key, model_name: MODEL.name, where: "ブラウザ",
+    device: r.device, runtime: r.dtype || "", input_size: "", frame_w: inW, frame_h: inH, load_ms: rec.first.load_ms,
+    infer_ms: st?.mean, infer_mean_ms: st?.mean, infer_median_ms: st?.median, infer_p90_ms: st?.p90, infer_p95_ms: st?.p95, infer_min_ms: st?.min, infer_max_ms: st?.max,
+    pre_ms: avg(rec.pre), run_ms: avg(rec.run), post_ms: avg(rec.post), frames: rec.dets, fps: +(rec.dets / secs).toFixed(2), warmup: 0,
+    xr_fps: +(rec.xrFrames / secs).toFixed(1), readback_ms: +(stats(rec.read)?.median ?? 0).toFixed(1), camera_size: rec.cam, depth_size: rec.depth || "",
+    xr_features: granted.join(" "), summary: `AR ${(rec.dets / secs).toFixed(1)}fps`,
+  };
+  try {
+    const runs = JSON.parse(localStorage.getItem(RUNS_KEY) || "[]");
+    runs.push(lastRec);
+    localStorage.setItem(RUNS_KEY, JSON.stringify(runs.slice(-MAX_RUNS)));
+  } catch { /* 保存できない環境 */ }
+  $("rec").hidden = false;
+  $("rec-text").textContent = tx("記録した: 検出 {det} fps・XR {xr} fps・推論 {inf} ms（中央値）・読み戻し {rb} ms（{n} 回、{s} 秒）。普段の画面の実行履歴にも入れた", { det: lastRec.fps, xr: lastRec.xr_fps, inf: st?.median?.toFixed(1), rb: lastRec.readback_ms, n: rec.dets, s: secs.toFixed(0) });
+}
+$("copy-md").onclick = async () => {
+  if (!lastRec) return;
+  const md = toMarkdown([lastRec], await collectEnv(mirror ? "サーバー版" : "静的版"));
+  try { await navigator.clipboard.writeText(md); $("copy-md").textContent = tx("コピーした"); }
+  catch { $("rec-md").hidden = false; $("rec-md").textContent = md; } // コピーできない時は表を出す（長押しで選ぶ）
+};
 checkSupport();

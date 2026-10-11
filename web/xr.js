@@ -109,7 +109,7 @@ async function start() {
   setupGL();
   counts.t0 = performance.now();
   rec = newRec();
-  objs = []; renderStrip();
+  objs = []; renderStrip(); resetMap();
   session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; saveRecord(); renderCollection(); });
   session.requestAnimationFrame(onFrame);
 }
@@ -192,8 +192,10 @@ function onFrame(t, frame) {
     try { depth = frame.getDepthInformation(view); } catch (e) { depthNote = e.message; }
     if (depth) depthNote = `${depth.width}×${depth.height}`;
   }
-  map.cur = { proj: view.projectionMatrix, toCam: view.transform.inverse.matrix, pos: view.transform.position };
+  map.cur = { proj: view.projectionMatrix, toCam: view.transform.inverse.matrix, toWorld: view.transform.matrix, pos: view.transform.position };
   // 張り付けない時は、今のフレームの深度で枠ごとの距離を引き直す（張り付ける時は 3D の点と今のカメラの距離）
+  if (depth) mapDepth(depth, view);
+  if (counts.xr % 10 === 0) addTrack(view);
   if (!stick) for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
   // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ。読み戻した時のカメラの位置・向きと深度を一緒に取っておく
   if (!busy && binding && view.camera) {
@@ -315,13 +317,102 @@ function drawPins(ctx, W, H, u) {
     ctx.fillStyle = "#fff"; ctx.fillText(text, x + 13 * u, y - th / 2 + 3 * u);
   }
 }
+// ---------- 地図（上から見た間取り） ----------
+// ARCore の地図は WebXR から取れないので、位置・向きの分かった深度の画像を部屋の座標に戻して積む。
+// 上から見た CELL 角の升目ごとに、高さ 10 cm 刻みの点の数を持つ（床の高さの推定が後から変わっても塗り直せるように）。
+// 床は全部の点の高さの 3 パーセンタイル。床 ±10 cm を床、床から 10 cm〜1.8 m を障害物（壁・家具）として塗る。
+// 深度は 4 m まで（遠いほど粗い）。ARCore が後から自分の位置を直しても、積んだ点は直らない（壁が二重になることがある）
+const CELL = 0.05, Y0 = -2.5, YB = 40, MAP_EVERY = 3; // 高さは −2.5〜+1.5 m（原点は始めた時の端末の高さ）
+let grid, yHist, mapTick, track, floorY, mapCache;
+function resetMap() { grid = new Map(); yHist = new Uint32Array(YB * 5); mapTick = 0; track = []; floorY = null; mapCache = null; }
+resetMap();
+function mapDepth(depth, view) {
+  if (++mapTick % MAP_EVERY) return;
+  const cap = { proj: view.projectionMatrix, toWorld: view.transform.matrix };
+  for (let j = 0; j < 24; j++) for (let i = 0; i < 40; i++) {
+    const x = (i + 0.5) / 40, y = (j + 0.5) / 24;
+    let d;
+    try { d = depth.getDepthInMeters(x, y); } catch { continue; }
+    if (!(d > 0.2 && d < 4)) continue;
+    const p = unproject(cap, x, y, d), yb = Math.floor((p[1] - Y0) / 0.1);
+    if (yb < 0 || yb >= YB) continue;
+    yHist[Math.floor((p[1] - Y0) / 0.02)]++;
+    const key = `${Math.floor(p[0] / CELL)},${Math.floor(p[2] / CELL)}`;
+    let c = grid.get(key);
+    if (!c) grid.set(key, (c = new Uint16Array(YB)));
+    if (c[yb] < 65535) c[yb]++;
+  }
+  if (mapTick % 30 === 0) { // 床の高さ: 点の高さの 3 パーセンタイル（点が 2000 個たまってから）
+    let n = 0;
+    for (const v of yHist) n += v;
+    if (n > 2000) { let acc = 0, i = 0; while (i < yHist.length && (acc += yHist[i]) < n * 0.03) i++; floorY = Y0 + i * 0.02; }
+    mapCache = null;
+  }
+}
+function addTrack(view) { const p = view.transform.position; track.push([p.x, p.z]); if (track.length > 2000) track.shift(); }
+// 升目の種類: 2 = 障害物、1 = 床、0 = 分からない
+function cellKind(c) {
+  if (floorY == null) return 0;
+  const fb = Math.floor((floorY - Y0) / 0.1);
+  let f = 0, o = 0;
+  for (let b = Math.max(0, fb - 1); b <= fb + 1 && b < YB; b++) f += c[b];
+  for (let b = fb + 2; b <= fb + 18 && b < YB; b++) o += c[b];
+  return o >= 3 && o >= f * 0.5 ? 2 : f >= 2 ? 1 : 0;
+}
+// 地図を描く（x0, y0 から S 角）。間取りの升目は 0.5 秒ごとに描き直して取っておき、自分・物は毎回描く。
+// 向きは部屋に固定（始めた時の前が上）。x が右、z が下
+function drawMinimap(ctx, x0, y0, S, u) {
+  if (!grid.size && !objs.length) return;
+  const now = performance.now();
+  if (!mapCache || now - mapCache.t > 500 || mapCache.S !== S) {
+    let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
+    const ext = (x, z) => { mnx = Math.min(mnx, x); mxx = Math.max(mxx, x); mnz = Math.min(mnz, z); mxz = Math.max(mxz, z); };
+    const kinds = [];
+    for (const [key, c] of grid) { const k = cellKind(c); if (!k) continue; const [i, j] = key.split(",").map(Number); kinds.push([i, j, k]); ext(i * CELL, j * CELL); }
+    for (const [x, z] of track) ext(x, z);
+    for (const o of objs) ext(o.pos[0], o.pos[2]);
+    if (!Number.isFinite(mnx)) return;
+    const span = Math.max(mxx - mnx, mxz - mnz, 2) + 1, s = S / span, ox = (mnx + mxx) / 2 - span / 2, oz = (mnz + mxz) / 2 - span / 2;
+    const c = new OffscreenCanvas(S, S), g = c.getContext("2d");
+    g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(0, 0, S, S);
+    const cs = Math.max(1, CELL * s);
+    for (const [i, j, k] of kinds) { g.fillStyle = k === 2 ? "rgba(255,255,255,.85)" : "rgba(120,170,255,.35)"; g.fillRect((i * CELL - ox) * s, (j * CELL - oz) * s, cs, cs); }
+    g.strokeStyle = "rgba(250,204,21,.6)"; g.lineWidth = 1.5 * u; g.beginPath();
+    track.forEach(([x, z], i) => (i ? g.lineTo((x - ox) * s, (z - oz) * s) : g.moveTo((x - ox) * s, (z - oz) * s))); g.stroke();
+    mapCache = { t: now, S, s, ox, oz, img: c };
+  }
+  const { s, ox, oz } = mapCache, X = (x) => x0 + (x - ox) * s, Z = (z) => y0 + (z - oz) * s;
+  ctx.drawImage(mapCache.img, x0, y0);
+  ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = u; ctx.strokeRect(x0, y0, S, S);
+  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, S, S); ctx.clip();
+  ctx.font = `600 ${Math.round(11 * u)}px system-ui, sans-serif`; ctx.textBaseline = "middle";
+  for (const o of objs) {
+    ctx.beginPath(); ctx.arc(X(o.pos[0]), Z(o.pos[2]), (o.collected ? 4 : 2.5) * u, 0, Math.PI * 2);
+    ctx.fillStyle = o.collected ? "#22c55e" : "#fff"; ctx.fill();
+    if (o.collected) { ctx.fillStyle = "#fff"; ctx.fillText(o.label, X(o.pos[0]) + 5 * u, Z(o.pos[2])); }
+  }
+  if (map.cur) { // 自分: 位置と、向いている方（カメラの −z を上から見た向き）
+    const p = map.cur.pos, M = map.cur.toWorld, fx = -M[8], fz = -M[10], fl = Math.hypot(fx, fz) || 1, ax = fx / fl, az = fz / fl, L = 12 * u;
+    ctx.fillStyle = "#facc15"; ctx.beginPath();
+    ctx.moveTo(X(p.x) + ax * L, Z(p.z) + az * L);
+    ctx.lineTo(X(p.x) - az * L * 0.45, Z(p.z) + ax * L * 0.45); ctx.lineTo(X(p.x) + az * L * 0.45, Z(p.z) - ax * L * 0.45);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
 // AR を終えた後の一覧
 function renderCollection() {
   const list = collected();
-  $("collection").hidden = !list.length;
+  $("collection").hidden = !list.length && !grid.size;
   const byClass = {};
   for (const o of list) byClass[o.label] = (byClass[o.label] || 0) + 1;
   $("collection-head").textContent = tx("集めた物 {n}（{c}）", { n: list.length, c: Object.entries(byClass).map(([k, v]) => `${k} ${v}`).join("、") });
+  // 地図も、このページに大きく描く（自分の向きは出さない）
+  const mc = $("collection-map"), S = Math.min(360, document.body.clientWidth - 32), ctx = mc.getContext("2d"), cur = map.cur;
+  mc.width = S; mc.height = S; map.cur = null; mapCache = null;
+  drawMinimap(ctx, 0, 0, S, 1.4); map.cur = cur; mapCache = null;
+  mc.hidden = !grid.size;
   $("collection-list").innerHTML = list.map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption><b>${esc(o.label)}</b><br>${tx("{n} 回・確かさ {p}%・{d} m", { n: o.n, p: Math.round(o.p * 100), d: o.dist?.toFixed(2) ?? "-" })}</figcaption></figure>`).join("");
 }
 
@@ -387,6 +478,7 @@ function drawOverlay() {
     ctx.fillStyle = "#fff"; ctx.fillText(text, tx0 + 4 * u, ty0 + 3 * u);
   }
   drawPins(ctx, W, H, u);
+  drawMinimap(ctx, W - Math.round(W * 0.42) - 8 * u, Math.round(H * 0.3), Math.round(W * 0.42), u);
   // テクスチャにして、XR の描画面の viewport に重ねる（canvas の上の行が画面の上になるよう上下を返して読む）
   if (!labProg) {
     const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
@@ -442,6 +534,7 @@ $("end").onclick = () => session?.end();
 $("align").onclick = () => { align = !align; };
 $("stick").onclick = () => { stick = !stick; };
 $("reset").onclick = () => { objs = []; renderStrip(); };
+$("reset-map").onclick = () => resetMap();
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。

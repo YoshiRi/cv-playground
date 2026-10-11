@@ -58,7 +58,16 @@ async function checkSupport() {
   // ?selftest: AR なしで、見本の画像を検出の経路（Worker）に通して確かめる
   if (q.has("selftest")) {
     const img = await createImageBitmap(await (await fetch("https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/city-streets.jpg")).blob());
-    const W = img.width, r = await detect(img);
+    drawPreview(img);
+    const W = img.width, H0 = img.height, r = await detect(img);
+    // 重ね描きの経路（WebGL）も、AR なしで普通の canvas に描いて確かめる（位置合わせつき）
+    const c = document.createElement("canvas"); c.width = 360; c.height = 640; c.id = "selftest-canvas"; c.style.width = "180px";
+    gl = c.getContext("webgl2", { premultipliedAlpha: true }); setupGL();
+    map.vp = { x: 0, y: 0, width: 360, height: 640 }; map.fbW = 360; map.fbH = 640; map.camAspect = W / H0;
+    session = { renderState: { baseLayer: { framebuffer: null } } }; align = true;
+    boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H0, it.box[2] / W, it.box[3] / H0], m: 1.23 }));
+    drawOverlay(); session = null; align = false;
+    $("support").after(c);
     $("support").textContent += `\nselftest: ${r.items.length} items, ${r.infer_ms?.toFixed(1)} ms, ${r.items.slice(0, 3).map((it) => `${it.label} ${it.box.map((v) => (v / W).toFixed(2)).join(",")}`).join(" / ")}`;
   }
 }
@@ -228,33 +237,64 @@ function camToView(v, axis) {
   if (axis === 0) return r > 1 ? 0.5 + (v - 0.5) * r : v;
   return r > 1 ? v : 0.5 + (v - 0.5) / r;
 }
-// view の座標（0〜1、上が 0）→ 画面の CSS px。XR の framebuffer が画面全体に重なるとみなし、viewport の位置を足す
-function viewToScreen(x, y, W, H) {
-  const vp = map.vp || { x: 0, y: 0, width: map.fbW, height: map.fbH };
-  return [((vp.x + x * vp.width) * W) / map.fbW, ((map.fbH - vp.y - vp.height + y * vp.height) * H) / map.fbH];
-}
-const camToScreen = (u, v, W, H) => viewToScreen(camToView(u, 0), camToView(v, 1), W, H);
 
+// 枠・ラベル・位置合わせの画像は、2D の canvas（XR の viewport の半分の大きさ）に描き、テクスチャにして XR の描画面
+// （layer.framebuffer）に重ねる。XR の描画面はカメラの映像とそのまま重なるので、DOM overlay の要素の大きさ・位置
+// （端末によって画面と食い違う）に左右されない。座標は view の 0〜1 × canvas の大きさ
+const LABEL_SCALE = 0.5;
+let lab, labTex, labProg, labVao;
 function drawOverlay() {
-  const c = $("ov-canvas"), dpr = devicePixelRatio || 1, W = c.clientWidth, H = c.clientHeight;
-  if (c.width !== Math.round(W * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
-  const ctx = c.getContext("2d");
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const vp = map.vp;
+  if (!vp) return;
+  const W = Math.round(vp.width * LABEL_SCALE), H = Math.round(vp.height * LABEL_SCALE);
+  if (!lab || lab.width !== W || lab.height !== H) lab = new OffscreenCanvas(W, H);
+  const ctx = lab.getContext("2d"), u = W / 400; // 文字・線の太さは幅 400 の画面の px を基準に
   ctx.clearRect(0, 0, W, H);
+  const P = (a, b) => [camToView(a, 0) * W, camToView(b, 1) * H];
   if (align) {
-    const [ax, ay] = camToScreen(0, 0, W, H), [bx, by] = camToScreen(1, 1, W, H);
+    const [ax, ay] = P(0, 0), [bx, by] = P(1, 1);
     ctx.globalAlpha = 0.45; ctx.drawImage($("ov-preview"), ax, ay, bx - ax, by - ay); ctx.globalAlpha = 1;
-    ctx.strokeStyle = "#f0f"; ctx.lineWidth = 2; ctx.strokeRect(ax, ay, bx - ax, by - ay);
+    ctx.strokeStyle = "#f0f"; ctx.lineWidth = 2 * u; ctx.strokeRect(ax, ay, bx - ax, by - ay);
   }
-  ctx.lineWidth = 3; ctx.font = "600 15px system-ui, sans-serif"; ctx.textBaseline = "top";
+  ctx.lineWidth = 3 * u; ctx.font = `600 ${Math.round(15 * u)}px system-ui, sans-serif`; ctx.textBaseline = "top";
   for (const b of boxes) {
-    const [x1, y1] = camToScreen(b.n[0], b.n[1], W, H), [x2, y2] = camToScreen(b.n[2], b.n[3], W, H);
+    const [x1, y1] = P(b.n[0], b.n[1]), [x2, y2] = P(b.n[2], b.n[3]);
     ctx.strokeStyle = "#22c55e"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     const text = `${b.label} ${(b.score * 100).toFixed(0)}%${b.m != null ? `  ${b.m.toFixed(2)} m` : ""}`;
-    const tw = ctx.measureText(text).width + 8, tx0 = Math.max(0, Math.min(x1, W - tw)), ty0 = Math.max(0, y1 - 22);
-    ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(tx0, ty0, tw, 21);
-    ctx.fillStyle = "#fff"; ctx.fillText(text, tx0 + 4, ty0 + 3);
+    const tw = ctx.measureText(text).width + 8 * u, th = 21 * u, tx0 = Math.max(0, Math.min(x1, W - tw)), ty0 = Math.max(0, y1 - th - u);
+    ctx.fillStyle = "rgba(0,0,0,.65)"; ctx.fillRect(tx0, ty0, tw, th);
+    ctx.fillStyle = "#fff"; ctx.fillText(text, tx0 + 4 * u, ty0 + 3 * u);
   }
+  // テクスチャにして、XR の描画面の viewport に重ねる（canvas の上の行が画面の上になるよう上下を返して読む）
+  if (!labProg) {
+    const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
+    labProg = gl.createProgram();
+    gl.attachShader(labProg, sh(gl.VERTEX_SHADER, `#version 300 es
+in vec2 p; out vec2 uv; void main() { uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }`));
+    gl.attachShader(labProg, sh(gl.FRAGMENT_SHADER, `#version 300 es
+precision mediump float; uniform sampler2D t; in vec2 uv; out vec4 o; void main() { o = texture(t, uv); }`));
+    gl.bindAttribLocation(labProg, gl.getAttribLocation(prog, "p"), "p"); // 頂点は検出用の vao を共用する
+    gl.linkProgram(labProg);
+    labTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, labTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
+  gl.viewport(vp.x, vp.y, vp.width, vp.height);
+  gl.useProgram(labProg);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, labTex);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, lab);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.uniform1i(gl.getUniformLocation(labProg, "t"), 0);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+  gl.bindVertexArray(vao);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.bindVertexArray(null);
+  gl.disable(gl.BLEND);
 }
 function drawPreview(bmp) {
   const c = $("ov-preview");

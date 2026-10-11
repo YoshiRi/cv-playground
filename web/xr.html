@@ -11,11 +11,10 @@
     .xr pre { margin: 0; font-size: 12px; background: var(--chip); padding: 8px; border-radius: 8px; white-space: pre-wrap; word-break: break-all; }
     #overlay { position: fixed; inset: 0; display: none; }
     #overlay.on { display: block; }
-    #ov-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-    #ov-panel { position: absolute; left: 8px; right: 8px; top: 8px; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 8px; padding: 6px 8px; font: 12px/1.45 system-ui, sans-serif; white-space: pre-wrap; }
-    #ov-buttons { position: absolute; left: 8px; right: 8px; bottom: 16px; display: flex; gap: 8px; justify-content: center; }
+    #ov-panel { position: fixed; left: 8px; right: 8px; top: 8px; color: #fff; background: rgba(0, 0, 0, .55); border-radius: 8px; padding: 6px 8px; font: 12px/1.45 system-ui, sans-serif; white-space: pre-wrap; }
+    #ov-buttons { position: fixed; left: 8px; right: 8px; bottom: 16px; display: flex; gap: 8px; justify-content: center; }
     #ov-buttons button { font-size: 15px; padding: 8px 14px; }
-    #ov-preview { position: absolute; right: 8px; bottom: 72px; width: 30%; border: 1px solid rgba(255, 255, 255, .6); }
+    #ov-preview { position: fixed; right: 8px; bottom: 72px; width: 30%; border: 1px solid rgba(255, 255, 255, .6); }
   </style>
 </head>
 <body>
@@ -34,7 +33,6 @@
     <p class="small muted">AR の画面では、上に状態（使えた機能・速さ）、右下に検出に渡した画像（上下が逆なら「上下反転」）が出る。「位置合わせ」はその画像を枠と同じ写し方で画面に半透明で重ね、ずれを確かめる。終わると記録を残す（普段の画面の実行履歴にも入る）。</p>
   </div>
   <div id="overlay">
-    <canvas id="ov-canvas"></canvas>
     <canvas id="ov-preview"></canvas>
     <div id="ov-panel"></div>
     <div id="ov-buttons"><button type="button" class="ghost" id="flip">上下反転</button><button type="button" class="ghost" id="align">位置合わせ</button><button type="button" class="primary" id="end">終わる</button></div>

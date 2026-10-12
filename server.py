@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -213,6 +214,38 @@ async def ws_relay(ws: WebSocket):
         pass
     finally:
         WS_CLIENTS.discard(ws)
+
+
+# AR の記録（xr.html が書き出すセンサーの列。gzip の NDJSON）。logs/xr/ に保存し（git に入れない）、xr_replay.html で再生する
+XRLOG_DIR = ROOT / "logs" / "xr"
+XRLOG_NAME = re.compile(r"^[\w.-]+\.ndjson\.gz$")
+
+
+@app.post("/api/xrlog")
+async def xrlog_upload(request: Request):
+    body = await request.body()
+    if not body or len(body) > 300 * 1024 * 1024 or body[:2] != b"\x1f\x8b":
+        raise HTTPException(400, "gzip の記録を送る（300MB まで）")
+    XRLOG_DIR.mkdir(parents=True, exist_ok=True)
+    tag = re.sub(r"[^\w-]", "", request.query_params.get("tag", ""))[:40]
+    name = time.strftime("%Y%m%d-%H%M%S") + (f"_{tag}" if tag else "") + ".ndjson.gz"
+    (XRLOG_DIR / name).write_bytes(body)
+    return {"name": name, "bytes": len(body)}
+
+
+@app.get("/api/xrlogs")
+def xrlog_list():
+    if not XRLOG_DIR.exists():
+        return []
+    files = sorted(XRLOG_DIR.glob("*.ndjson.gz"), key=lambda f: f.stat().st_mtime, reverse=True)
+    return [{"name": f.name, "bytes": f.stat().st_size, "mtime": f.stat().st_mtime} for f in files]
+
+
+@app.get("/api/xrlogs/{name}")
+def xrlog_get(name: str):
+    if not XRLOG_NAME.match(name) or not (XRLOG_DIR / name).is_file():
+        raise HTTPException(404, "記録が無い")
+    return FileResponse(XRLOG_DIR / name, media_type="application/gzip")
 
 
 @app.get("/cv-playground.html")

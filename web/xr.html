@@ -29,14 +29,17 @@
   <div class="xr">
     <h1 style="margin:0;font-size:18px">CV Playground AR（試し）</h1>
     <p class="small">ARCore（WebXR）のカメラの映像を物体検出（YOLO26n）に渡し、枠の中の深度から物までの距離を m で出す。Android の Chrome で、https のページで開く。</p>
+    <label class="check small"><input type="checkbox" id="record" checked> 記録する（姿勢・深度・検出。サーバー版はサーバーに保存し、再生のページで地図を作り直せる。映像は残さない）</label>
     <button type="button" class="primary" id="start" disabled>AR を始める</button>
     <pre id="support">確かめている…</pre>
     <div id="collection" class="field" hidden>
       <div id="collection-head"></div>
+      <p class="small muted">ピンクの点はサブマップ（アンカー）、緑の線は姿勢グラフのループ閉じ。<a href="xr_replay.html">再生のページ</a></p>
       <canvas id="collection-map" hidden></canvas>
       <div><button type="button" class="ghost" id="save-map">地図と集めた物を保存（PNG）</button></div>
       <div class="coll" id="collection-list"></div>
     </div>
+    <div id="xrlog" class="field small" hidden><span id="xrlog-text"></span></div>
     <div id="rec" class="field" hidden>
       <div class="small" id="rec-text"></div>
       <button type="button" class="ghost" id="copy-md">Markdown の表をコピー</button>

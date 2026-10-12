@@ -2,10 +2,16 @@
 //   1. カメラの映像（camera-access）を WebGL のテクスチャで受け取り、縮めて読み戻して、物体検出（YOLO26n、worker.js）に渡す
 //   2. 深度（depth-sensing、CPU で読める形）から、枠の中の深度の中央値を引いて、物までの距離を m で出す
 //   3. 使えた機能・カメラの画像の大きさ・XR の fps・読み戻しと推論の時間を画面の上に出す
+//   4. 地図づくり（xr_pipeline.js: サブマップ・姿勢グラフ・物を集める）に渡し、同時に記録（xr_log.js）に書く。終わったら
+//      サーバー版はサーバーに保存し、再生のページ（xr_replay.html）で同じ地図を作り直せる
 // カメラの画像は XRView と同じ範囲・向きなので、画像の 0〜1 の座標がそのまま画面（DOM overlay）と深度の座標になる
 import { CATALOG } from "./catalog.js";
 import { collectEnv, stats, toMarkdown } from "./export.js";
 import { startTranslate, tx } from "./i18n.js";
+import { boxDepth, copyDepth, invRigid, project } from "./xr_geom.js";
+import { LogWriter } from "./xr_log.js";
+import { placeBox } from "./xr_objects.js";
+import { XrPipeline } from "./xr_pipeline.js";
 
 startTranslate();
 const $ = (id) => document.getElementById(id);
@@ -64,9 +70,10 @@ async function checkSupport() {
     // 重ね描きの経路（WebGL）も、AR なしで普通の canvas に描いて確かめる（位置合わせつき）
     const c = document.createElement("canvas"); c.width = 360; c.height = 640; c.id = "selftest-canvas"; c.style.width = "180px";
     gl = c.getContext("webgl2", { premultipliedAlpha: true }); setupGL();
-    map.vp = { x: 0, y: 0, width: 360, height: 640 }; map.fbW = 360; map.fbH = 640; map.camAspect = W / H0;
+    map.vp = { x: 0, y: 0, width: 360, height: 640 }; map.fbW = 360; map.fbH = 640; map.camAspect = W / H0; cur = null;
     session = { renderState: { baseLayer: { framebuffer: null } } }; align = true;
     boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H0, it.box[2] / W, it.box[3] / H0], m: 1.23 }));
+    pipe = new XrPipeline();
     drawOverlay(); session = null; align = false;
     $("support").after(c);
     $("support").textContent += `\nselftest: ${r.items.length} items, ${r.infer_ms?.toFixed(1)} ms, ${r.items.slice(0, 3).map((it) => `${it.label} ${it.box.map((v) => (v / W).toFixed(2)).join(",")}`).join(" / ")}`;
@@ -79,6 +86,8 @@ let inW = 0, inH = 0, busy = false, boxes = [], lastSize = "";
 const times = { infer: [], read: [], frame: [], map: [] };
 const counts = { xr: 0, det: 0, t0: 0, xrFps: 0, detFps: 0 };
 let depthNote = "", granted = [];
+// 地図づくり（ライブと再生で同じ）。アンカー（サブマップごと）は id → XRAnchor
+let pipe = new XrPipeline(), anchors = new Map(), anchorPending = false, aseq = 0, frameNo = 0, lastT = 0, cur = null;
 // セッション全体の記録（終わった時に実行の記録にする）
 let rec = null;
 const newRec = () => ({ t0: performance.now(), infer: [], read: [], pre: [], run: [], post: [], xrFps: [], dets: 0, xrFrames: 0, first: null, last: null, cam: "", depth: "" });
@@ -90,7 +99,7 @@ async function start() {
   try {
     session = await navigator.xr.requestSession("immersive-ar", {
       requiredFeatures: ["local"],
-      optionalFeatures: ["camera-access", "depth-sensing", "dom-overlay"],
+      optionalFeatures: ["camera-access", "depth-sensing", "dom-overlay", "anchors"],
       domOverlay: { root: $("overlay") },
       depthSensing: { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha", "float32"] },
     });
@@ -109,8 +118,10 @@ async function start() {
   setupGL();
   counts.t0 = performance.now();
   rec = newRec();
-  objs = []; renderStrip(); resetMap();
-  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; saveRecord(); renderCollection(); });
+  pipe = new XrPipeline({ log: $("record").checked ? new LogWriter() : null, collectP: +q.get("collect") || 0.9 });
+  pipe.meta({ date: new Date().toISOString(), ua: navigator.userAgent, granted, model: MODEL.key, depthFormat: session.depthDataFormat ?? null });
+  anchors = new Map(); anchorPending = false; aseq = 0; frameNo = 0; renderStrip();
+  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; pipe.end(lastT); saveRecord(); renderCollection(); finishLog(); });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -186,21 +197,37 @@ function onFrame(t, frame) {
   counts.xr++; rec.xrFrames++;
   map.vp = layer.getViewport(view); map.fbW = layer.framebufferWidth; map.fbH = layer.framebufferHeight;
   if (view.camera) map.camAspect = view.camera.width / view.camera.height;
-  // 深度（このフレームの中でだけ読める）。今の枠ごとに距離を引き直す
+  // 深度（このフレームの中でだけ読める）
   let depth = null;
   if (granted.includes("depth-sensing")) {
     try { depth = frame.getDepthInformation(view); } catch (e) { depthNote = e.message; }
     if (depth) depthNote = `${depth.width}×${depth.height}`;
   }
-  map.cur = { proj: view.projectionMatrix, toCam: view.transform.inverse.matrix, toWorld: view.transform.matrix, pos: view.transform.position };
+  const f32 = session.depthDataFormat === "float32", M = view.transform.matrix;
+  lastT = t; frameNo++;
+  cur = { P: view.projectionMatrix, M, C: view.transform.inverse.matrix };
+  // 地図づくり: 姿勢 → サブマップ（アンカー）→ アンカーの今の姿勢（10 フレームごと）→ 深度（3 フレームごと）
+  pipe.onProj(view.projectionMatrix);
+  pipe.onPose(t, M);
+  if (!anchorPending && pipe.map.wantSubmap([M[12], M[13], M[14]], pipe.t)) addSubmap(frame, M);
+  if (frameNo % 10 === 0 && anchors.size) {
+    const list = [];
+    for (const [id, a] of anchors) if (frame.trackedAnchors?.has(a)) { const p = frame.getPose(a.anchorSpace, refSpace); if (p) list.push([id, p.transform.matrix]); }
+    if (list.length) pipe.onAnchors(list);
+  }
+  let dc = null;
+  if (depth && frameNo % 3 === 0) {
+    const t0 = performance.now();
+    dc = copyDepth(depth, f32);
+    pipe.onDepth(dc);
+    push(times.map, performance.now() - t0);
+  }
   // 張り付けない時は、今のフレームの深度で枠ごとの距離を引き直す（張り付ける時は 3D の点と今のカメラの距離）
-  if (depth) { const t0 = performance.now(), did = mapDepth(depth, view); if (did) push(times.map, performance.now() - t0); }
-  if (counts.xr % 10 === 0) addTrack(view);
-  if (!stick) for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
-  // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ。読み戻した時のカメラの位置・向きと深度を一緒に取っておく
+  if (!stick && depth) { dc ??= copyDepth(depth, f32); for (const b of boxes) b.m = boxDepth(dc, b.v); }
+  // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ。読み戻した時のカメラの姿勢と深度を一緒に取っておく
   if (!busy && binding && view.camera) {
     busy = true;
-    const cap = { proj: Float32Array.from(view.projectionMatrix), toWorld: Float32Array.from(view.transform.matrix), depth: depth ? copyDepth(depth) : null };
+    const capT = pipe.t, cap = { P: Array.from(view.projectionMatrix), M: Array.from(M), depth: depth ? (dc ?? copyDepth(depth, f32)) : null };
     grab(view).then(async (bmp) => {
       drawPreview(bmp);
       const W = bmp.width, H = bmp.height; // 結果の枠は渡した画像の画素（渡すと bmp は使えなくなるので先に取る）
@@ -209,9 +236,13 @@ function onFrame(t, frame) {
       counts.det++; status.load = ""; status.err = "";
       rec.dets++; rec.infer.push(r.infer_ms); rec.first ??= r; rec.last = r;
       for (const k of ["pre", "run", "post"]) if (r.breakdown?.[k] != null) rec[k].push(r.breakdown[k]);
-      boxes = r.items.map((it) => ({ label: it.label, score: it.score, n: [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H], m: null }));
-      for (const b of boxes) placeBox(b, cap);
-      collect(boxes, performance.now());
+      if (!session) return;
+      const list = r.items.map((it) => {
+        const n = [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H];
+        return placeBox({ label: it.label, score: it.score, n, v: n.map((x, k) => camToView(x, k % 2)), m: null }, cap);
+      });
+      boxes = list;
+      if (pipe.onDetections(capT, list, (b) => crop(b.n)).length) renderStrip();
     }).catch((e) => { status.err = e.message; }).finally(() => { busy = false; });
   }
   push(times.frame, performance.now() - tf);
@@ -225,71 +256,20 @@ function onFrame(t, frame) {
   }
 }
 
-// ---------- 張り付け（枠を 3D に） ----------
-// 深度は読み戻したフレームの中でしか読めないので、写しを取っておき、検出の結果が届いた時に枠の中を引く
-function copyDepth(d) {
-  try {
-    const f32 = session.depthDataFormat === "float32";
-    return { w: d.width, h: d.height, k: d.rawValueToMeters, m: Float32Array.from(d.normDepthBufferFromNormView.matrix), data: f32 ? new Float32Array(d.data.slice(0)) : new Uint16Array(d.data.slice(0)) };
-  } catch { return null; }
-}
-// 写しの深度（m）。view の 0〜1 の座標 → 深度の画像の 0〜1（normDepthBufferFromNormView）→ 画素
-function depthAt(c, x, y) {
-  const u = c.m[0] * x + c.m[4] * y + c.m[12], v = c.m[1] * x + c.m[5] * y + c.m[13];
-  const col = Math.min(c.w - 1, Math.max(0, Math.floor(u * c.w))), row = Math.min(c.h - 1, Math.max(0, Math.floor(v * c.h)));
-  return c.data[row * c.w + col] * c.k;
-}
-// view の 0〜1 の点を、深度 d（m、カメラの前向きの距離）で部屋の座標の点にする。射影行列 P（列優先）から
-// ndc.x = (P0·x + P8·z) / −z（z = −d）なので x = (ndc.x + P8)·d / P0
-function unproject(cap, x, y, d) {
-  const P = cap.proj, nx = 2 * x - 1, ny = 1 - 2 * y;
-  const vx = ((nx + P[8]) * d) / P[0], vy = ((ny + P[9]) * d) / P[5], vz = -d, M = cap.toWorld;
-  return [M[0] * vx + M[4] * vy + M[8] * vz + M[12], M[1] * vx + M[5] * vy + M[9] * vz + M[13], M[2] * vx + M[6] * vy + M[10] * vz + M[14]];
-}
-// 部屋の座標の点を、今のカメラの view の 0〜1 に（カメラの後ろなら null）
-function project(p) {
-  const C = map.cur.toCam, P = map.cur.proj;
-  const x = C[0] * p[0] + C[4] * p[1] + C[8] * p[2] + C[12], y = C[1] * p[0] + C[5] * p[1] + C[9] * p[2] + C[13], z = C[2] * p[0] + C[6] * p[1] + C[10] * p[2] + C[14];
-  if (z > -0.05) return null;
-  const nx = (P[0] * x + P[8] * z) / -z, ny = (P[5] * y + P[9] * z) / -z;
-  return [(nx + 1) / 2, (1 - ny) / 2];
-}
-// 枠を、読み戻した時のカメラの前に、枠の中の深度の所に立てた板（4 隅の 3D の点）にする。深度が無い枠は 2 m に置く
-// （向きの変化の補正には距離はあまり効かない）
-function placeBox(b, cap) {
-  const v = b.n.map((x, i) => camToView(x, i % 2));
-  b.depth = cap.depth ? boxDepth({ getDepthInMeters: (x, y) => depthAt(cap.depth, x, y) }, v) : null;
-  const d = b.depth ?? 2;
-  b.world = [[v[0], v[1]], [v[2], v[1]], [v[2], v[3]], [v[0], v[3]]].map(([x, y]) => unproject(cap, x, y, d));
-  b.center = unproject(cap, (v[0] + v[2]) / 2, (v[1] + v[3]) / 2, d);
+// ---------- サブマップ（アンカー） ----------
+// 地図を SUBMAP_M 進むごとにサブマップに分け、それぞれにアンカーを置く（ARCore が自分の地図を直すと、アンカーと一緒に地図も動く）。
+// アンカーが使えない時は、置いた時の姿勢のまま動かない（仮の）アンカーにする（姿勢グラフだけで直す）
+function addSubmap(frame, M) {
+  const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, M[12], M[13], M[14], 1]; // 向きは部屋に合わせる（重力が上）
+  if (!granted.includes("anchors") || !frame.createAnchor) { pipe.onSubmap(`v${++aseq}`, T); return; }
+  anchorPending = true;
+  frame.createAnchor(new XRRigidTransform({ x: M[12], y: M[13], z: M[14] }), refSpace)
+    .then((a) => { const id = `a${++aseq}`; anchors.set(id, a); if (session) pipe.onSubmap(id, T); })
+    .catch(() => { if (session) pipe.onSubmap(`v${++aseq}`, T); })
+    .finally(() => { anchorPending = false; });
 }
 
-// ---------- 集める ----------
-// 検出した物を、部屋の中の位置つきで覚える。同じクラスで近い所（40 cm か板の幅の半分の大きい方）に検出が来たら同じ物とみなし、
-// 見えるたびに確かさを重ねる（p ← 1 − (1 − p)(1 − W·score)。W を小さくして、1 回の高い点数ではなく、何度も見えたことで上げる）。
-// 確かさが COLLECT_P を超え、COLLECT_N 回以上見えたら「集めた」にして、画面の外に出ても覚えておく。
-// 集めていない候補は FORGET_MS 見えなければ忘れる。深度の無い枠（位置が決まらない）は数えない
-const COLLECT_P = +q.get("collect") || 0.9, COLLECT_N = 5, W_OBS = 0.3, MATCH_M = 0.4, FORGET_MS = 15000;
-let objs = [], objSeq = 0;
-const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-function collect(list, t) {
-  if (floorY == null) return; // 床が決まるまで（ARCore の位置の推定が落ち着くまで）集めない。始めは床を映す
-  for (const b of list) {
-    if (b.depth == null || !b.center) continue;
-    const r = Math.max(MATCH_M, dist3(b.world[0], b.world[1]) * 0.5);
-    let o = null, od = Infinity;
-    for (const x of objs) { const d = x.label === b.label ? dist3(x.pos, b.center) : Infinity; if (d < r && d < od) { o = x; od = d; } }
-    if (!o) objs.push((o = { id: ++objSeq, label: b.label, pos: b.center.slice(), n: 0, p: 0, best: 0, thumb: "", first: t, collected: false }));
-    o.n++; o.sum = (o.sum || 0) + b.score;
-    const k = 1 / Math.min(o.n, 10); // 位置は見えた回数で平均する（10 回目からは移動平均）
-    o.pos = o.pos.map((v, i) => v + (b.center[i] - v) * k);
-    o.p = 1 - (1 - o.p) * (1 - W_OBS * b.score);
-    o.last = t; b.obj = o;
-    if (b.score > o.best) { o.best = b.score; o.thumb = crop(b.n); o.dist = b.depth; }
-    if (!o.collected && o.p >= COLLECT_P && o.n >= COLLECT_N) { o.collected = true; o.at = new Date(); renderStrip(); }
-  }
-  objs = objs.filter((o) => o.collected || t - o.last < FORGET_MS);
-}
+// ---------- 集める（中身は xr_objects.js） ----------
 // 一番確かだった時の切り抜き（右下の画像は、検出に渡したフレームのまま）
 function crop(n) {
   const src = $("ov-preview"), W = src.width, H = src.height;
@@ -298,16 +278,16 @@ function crop(n) {
   c.getContext("2d").drawImage(src, x, y, w, h, 0, 0, c.width, c.height);
   return c.toDataURL("image/jpeg", 0.8);
 }
-const collected = () => objs.filter((o) => o.collected);
+const collected = () => pipe.objects.collected();
 function renderStrip() {
   $("ov-strip").innerHTML = collected().slice(-12).reverse().map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption>${esc(o.label)}</figcaption></figure>`).join("");
 }
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const projectNow = (p) => (cur ? project(cur.P, cur.C, p) : null);
 // 覚えている物の印: 集めた物は ✓ とラベル、候補は確かさ（%）。今のカメラで画面に投影する（後ろにある物は出さない）
 function drawPins(ctx, W, H, u) {
-  if (!map.cur) return;
-  for (const o of objs) {
-    const pt = project(o.pos);
+  for (const o of pipe.objects.objs) {
+    const pt = projectNow(pipe.objects.pos(o, pipe.map));
     if (!pt || pt[0] < 0 || pt[0] > 1 || pt[1] < 0 || pt[1] > 1) continue;
     const [x, y] = [pt[0] * W, pt[1] * H];
     ctx.beginPath(); ctx.arc(x, y, (o.collected ? 7 : 5) * u, 0, Math.PI * 2);
@@ -318,148 +298,21 @@ function drawPins(ctx, W, H, u) {
     ctx.fillStyle = "#fff"; ctx.fillText(text, x + 13 * u, y - th / 2 + 3 * u);
   }
 }
-// ---------- 地図（上から見た間取り） ----------
-// ARCore の地図は WebXR から取れないので、位置・向きの分かった深度の画像を部屋の座標に戻して積む。
-// 上から見た CELL 角の升目ごとに、高さ 10 cm 刻みのボクセルの「物がある確からしさ」（log-odds）を持つ（OctoMap と同じ考え方）。
-// 深度の点が当たったボクセルは上げ（L_HIT）、カメラからその点までの光線が通り抜けたボクセルは下げる（L_MISS）。
-// 深度の誤差の点や、通り過ぎた人は、あとで向こうを見た時に消える。高さごとに持つのは、床の高さの推定が後から変わっても塗り直せるように。
-// 床は、始めた時の端末の高さより 0.5 m 以上低い所で、点が一番集まる高さ（床は一番広い水平面）。下の方のパーセンタイルだと、
-// 遠くの深度の誤差で床より下に外れた点に引っぱられ、床を低く見積もって床全体が障害物になった（SCG32）。
-// 床 ±10 cm のボクセルが当たり側なら床、床から 10 cm〜1.8 m のどれかが L_OCC を超えたら障害物（壁・家具）として塗る。
-// 深度は 3 m まで（遠いほど粗い）。ARCore が後から自分の位置を直しても、積んだ点は直らない（壁が二重になることがある）
-const CELL = 0.05, Y0 = -2.5, YB = 40, MAP_EVERY = 3; // 高さは −2.5〜+1.5 m（原点は始めた時の端末の高さ）
-const L_HIT = 0.85, L_MISS = -0.4, L_MIN = -2, L_MAX = 3.5, L_OCC = 1.2; // log-odds（当たり 1 回で p 0.7、通り抜け 1 回で 0.4）
-let grid, yHist, mapTick, track, floorY, mapCache;
-function resetMap() { grid = new Map(); yHist = new Uint32Array(YB * 5); mapTick = 0; track = []; floorY = null; mapCache = null; }
-resetMap();
-function mapDepth(depth, view) {
-  if (++mapTick % MAP_EVERY) return false;
-  const cap = { proj: view.projectionMatrix, toWorld: view.transform.matrix }, cp = view.transform.position, o = [cp.x, cp.y, cp.z];
-  for (let j = 0; j < 24; j++) for (let i = 0; i < 40; i++) {
-    const x = (i + 0.5) / 40, y = (j + 0.5) / 24;
-    let d;
-    try { d = depth.getDepthInMeters(x, y); } catch { continue; }
-    if (!(d > 0.2)) continue;
-    // 3 m より遠い点は当たりにしない（粗い）が、3 m までは光線が通り抜けた（空いている）として下げる
-    const doCarve = (i + j) % 2 === 0; // 光線は半分だけたどる（スマホで軽くするため。当たりは全部の点）
-    if (d >= 3) { if (d < 8 && doCarve) carve(o, unproject(cap, x, y, 3), 3.1); continue; }
-    const p = unproject(cap, x, y, d), yb = Math.floor((p[1] - Y0) / 0.1);
-    if (yb < 0 || yb >= YB) continue;
-    yHist[Math.floor((p[1] - Y0) / 0.02)]++;
-    if (doCarve) carve(o, p, d);
-    const c = cellAt(Math.floor(p[0] / CELL), Math.floor(p[2] / CELL));
-    c[yb] = Math.min(L_MAX, c[yb] + L_HIT);
-  }
-  if (mapTick % 30 === 0) { // 床の高さ: −0.5 m より下で、点の数（前後 2 cm をならす）が一番多い高さ。その高さに 500 点たまってから
-    let best = -1, bi = -1;
-    const top = Math.floor((-0.5 - Y0) / 0.02);
-    for (let i = 2; i < top; i++) { const v = yHist[i - 1] + yHist[i] + yHist[i + 1]; if (v > best) { best = v; bi = i; } }
-    if (best >= 500) floorY = Y0 + (bi + 0.5) * 0.02;
-    mapCache = null;
-  }
-  return true;
-}
-// 升目のキーは数（文字列より速い）。i, j は ±32768 升（±1.6 km）まで
-const cellKey = (i, j) => (i + 32768) * 65536 + (j + 32768);
-function cellAt(i, j) {
-  const key = cellKey(i, j);
-  let c = grid.get(key);
-  if (!c) grid.set(key, (c = new Float32Array(YB)));
-  return c;
-}
-// カメラ o から点 p までの光線が通り抜けたボクセルを下げる。5 cm 刻みにたどり、点の手前 10 cm（深度の誤差の分）で止める。
-// 同じボクセルを続けて下げないように、前のボクセルと同じなら飛ばす。床の帯（床 ±10 cm）とその下は下げない
-// （遠くの床へ浅い角度で入る光線が、床の帯を長く通り抜けて床を消してしまう）。床が決まるまでは下げない
-function carve(o, p, d) {
-  if (floorY == null) return;
-  const minYb = Math.floor((floorY - Y0) / 0.1) + 2, n = Math.floor((d - 0.1) / CELL);
-  let last = -1;
-  for (let k = 1; k < n; k++) {
-    const t = (k * CELL) / d, x = o[0] + (p[0] - o[0]) * t, y = o[1] + (p[1] - o[1]) * t, z = o[2] + (p[2] - o[2]) * t;
-    const i = Math.floor(x / CELL), j = Math.floor(z / CELL), yb = Math.floor((y - Y0) / 0.1), key = cellKey(i, j) * 64 + yb;
-    if (key === last || yb < minYb || yb >= YB) continue;
-    last = key;
-    const c = grid.get(cellKey(i, j));
-    if (c) c[yb] = Math.max(L_MIN, c[yb] + L_MISS); // 一度も当たっていない升目は作らない（分からないまま）
-  }
-}
-function addTrack(view) { const p = view.transform.position; track.push([p.x, p.z]); if (track.length > 2000) track.shift(); }
-// 升目の種類: 2 = 障害物、1 = 床、0 = 分からない
-function cellKind(c) {
-  if (floorY == null) return 0;
-  const fb = Math.floor((floorY - Y0) / 0.1);
-  let f = -Infinity, o = -Infinity;
-  for (let b = Math.max(0, fb - 1); b <= fb + 1 && b < YB; b++) f = Math.max(f, c[b]);
-  for (let b = fb + 2; b <= fb + 18 && b < YB; b++) o = Math.max(o, c[b]);
-  return o > L_OCC ? 2 : f > 0 ? 1 : 0;
-}
-// 地図を描く（x0, y0 から S 角）。間取りの升目は 0.5 秒ごとに描き直して取っておき、自分・物は毎回描く。
-// 向きは部屋に固定（始めた時の前が上）。x が右、z が下
-function drawMinimap(ctx, x0, y0, S, u) {
-  if (!grid.size && !objs.length) return;
-  const now = performance.now();
-  if (!mapCache || now - mapCache.t > 500 || mapCache.S !== S) {
-    let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
-    const ext = (x, z) => { mnx = Math.min(mnx, x); mxx = Math.max(mxx, x); mnz = Math.min(mnz, z); mxz = Math.max(mxz, z); };
-    const kinds = [];
-    for (const [key, c] of grid) { const k = cellKind(c); if (!k) continue; const i = Math.floor(key / 65536) - 32768, j = (key % 65536) - 32768; kinds.push([i, j, k]); ext(i * CELL, j * CELL); }
-    for (const [x, z] of track) ext(x, z);
-    for (const o of objs) ext(o.pos[0], o.pos[2]);
-    if (!Number.isFinite(mnx)) return;
-    const span = Math.max(mxx - mnx, mxz - mnz, 2) + 1, s = S / span, ox = (mnx + mxx) / 2 - span / 2, oz = (mnz + mxz) / 2 - span / 2;
-    const c = new OffscreenCanvas(S, S), g = c.getContext("2d");
-    g.fillStyle = "rgba(0,0,0,.6)"; g.fillRect(0, 0, S, S);
-    const cs = Math.max(1, CELL * s);
-    for (const [i, j, k] of kinds) { g.fillStyle = k === 2 ? "rgba(255,255,255,.85)" : "rgba(120,170,255,.35)"; g.fillRect((i * CELL - ox) * s, (j * CELL - oz) * s, cs, cs); }
-    g.strokeStyle = "rgba(250,204,21,.6)"; g.lineWidth = 1.5 * u; g.beginPath();
-    track.forEach(([x, z], i) => (i ? g.lineTo((x - ox) * s, (z - oz) * s) : g.moveTo((x - ox) * s, (z - oz) * s))); g.stroke();
-    mapCache = { t: now, S, s, ox, oz, img: c };
-  }
-  const { s, ox, oz } = mapCache, X = (x) => x0 + (x - ox) * s, Z = (z) => y0 + (z - oz) * s;
-  ctx.drawImage(mapCache.img, x0, y0);
-  ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = u; ctx.strokeRect(x0, y0, S, S);
-  ctx.save(); ctx.beginPath(); ctx.rect(x0, y0, S, S); ctx.clip();
-  ctx.font = `600 ${Math.round(11 * u)}px system-ui, sans-serif`; ctx.textBaseline = "middle";
-  for (const o of objs) {
-    ctx.beginPath(); ctx.arc(X(o.pos[0]), Z(o.pos[2]), (o.collected ? 4 : 2.5) * u, 0, Math.PI * 2);
-    ctx.fillStyle = o.collected ? "#22c55e" : "#fff"; ctx.fill();
-    if (o.collected) { ctx.fillStyle = "#fff"; ctx.fillText(o.label, X(o.pos[0]) + 5 * u, Z(o.pos[2])); }
-  }
-  if (map.cur) { // 自分: 位置と、向いている方（カメラの −z を上から見た向き）
-    const p = map.cur.pos, M = map.cur.toWorld, fx = -M[8], fz = -M[10], fl = Math.hypot(fx, fz) || 1, ax = fx / fl, az = fz / fl, L = 12 * u;
-    ctx.fillStyle = "#facc15"; ctx.beginPath();
-    ctx.moveTo(X(p.x) + ax * L, Z(p.z) + az * L);
-    ctx.lineTo(X(p.x) - az * L * 0.45, Z(p.z) + ax * L * 0.45); ctx.lineTo(X(p.x) + az * L * 0.45, Z(p.z) - ax * L * 0.45);
-    ctx.closePath(); ctx.fill();
-  }
-  ctx.restore();
-}
+const drawMap = (ctx, x0, y0, S, u, withCur = true) => pipe.map.draw(ctx, x0, y0, S, u, { objs: pipe.objects.forMap(pipe.map), cur: withCur ? cur?.M : null, showSubmaps: true, loops: pipe.graph.loops.map((L) => [L.j, L.i]) });
 
 // AR を終えた後の一覧
 function renderCollection() {
   const list = collected();
-  $("collection").hidden = !list.length && !grid.size;
+  $("collection").hidden = !list.length && !pipe.map.subs.length;
   const byClass = {};
   for (const o of list) byClass[o.label] = (byClass[o.label] || 0) + 1;
   $("collection-head").textContent = tx("集めた物 {n}（{c}）", { n: list.length, c: Object.entries(byClass).map(([k, v]) => `${k} ${v}`).join("、") });
   // 地図も、このページに大きく描く（自分の向きは出さない）
-  const mc = $("collection-map"), S = Math.min(360, document.body.clientWidth - 32), ctx = mc.getContext("2d"), cur = map.cur;
-  mc.width = S; mc.height = S; map.cur = null; mapCache = null;
-  drawMinimap(ctx, 0, 0, S, 1.4); map.cur = cur; mapCache = null;
-  mc.hidden = !grid.size;
+  const mc = $("collection-map"), S = Math.min(360, document.body.clientWidth - 32), ctx = mc.getContext("2d");
+  mc.width = S; mc.height = S; pipe.map.cache = null;
+  drawMap(ctx, 0, 0, S, 1.4, false); pipe.map.cache = null;
+  mc.hidden = !pipe.map.subs.length;
   $("collection-list").innerHTML = list.map((o) => `<figure><img src="${o.thumb}" alt=""><figcaption><b>${esc(o.label)}</b><br>${tx("{n} 回・確かさ {p}%・平均 {a}%・{d} m", { n: o.n, p: Math.round(o.p * 100), a: Math.round((o.sum / o.n) * 100), d: o.dist?.toFixed(2) ?? "-" })}</figcaption></figure>`).join("");
-}
-
-// 枠の中央 6 割の 5×5 点の深度の中央値（m）。背景を拾いにくくする（応用の rawOfBox と同じ考え方）
-function boxDepth(d, b) {
-  const v = [];
-  for (let i = 0; i < 5; i++) for (let j = 0; j < 5; j++) {
-    const x = b[0] + (b[2] - b[0]) * (0.2 + 0.15 * i), y = b[1] + (b[3] - b[1]) * (0.2 + 0.15 * j);
-    try { const m = d.getDepthInMeters(Math.min(0.999, Math.max(0, x)), Math.min(0.999, Math.max(0, y))); if (m > 0) v.push(m); } catch { /* 範囲外 */ }
-  }
-  if (!v.length) return null;
-  v.sort((p, q2) => p - q2);
-  return v[v.length >> 1];
 }
 
 // カメラの画像の座標（0〜1）→ XR の view の座標（0〜1、深度もこの座標）。普通は同じ。縦横比が違う時は、
@@ -493,15 +346,15 @@ function drawOverlay() {
   ctx.lineWidth = 3 * u; ctx.font = `600 ${Math.round(15 * u)}px system-ui, sans-serif`; ctx.textBaseline = "top";
   for (const b of boxes) {
     let x1, y1, x2, y2;
-    if (stick && b.world && map.cur) {
+    if (stick && b.world && cur) {
       // 4 隅を今のカメラで画面に。板が傾いて見える時もそのまま四角形で描く
-      const q2 = b.world.map(project);
+      const q2 = b.world.map(projectNow);
       if (q2.some((x) => !x)) continue;
       const pts = q2.map(([x, y]) => [x * W, y * H]);
       ctx.strokeStyle = b.depth != null ? "#22c55e" : "#facc15";
       ctx.beginPath(); pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y))); ctx.closePath(); ctx.stroke();
       [x1, y1] = [Math.min(...pts.map((p) => p[0])), Math.min(...pts.map((p) => p[1]))];
-      b.m = b.depth != null ? Math.hypot(b.center[0] - map.cur.pos.x, b.center[1] - map.cur.pos.y, b.center[2] - map.cur.pos.z) : null;
+      b.m = b.depth != null ? Math.hypot(b.center[0] - cur.M[12], b.center[1] - cur.M[13], b.center[2] - cur.M[14]) : null;
     } else {
       [x1, y1] = P(b.n[0], b.n[1]); [x2, y2] = P(b.n[2], b.n[3]);
       ctx.strokeStyle = "#22c55e"; ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
@@ -512,7 +365,7 @@ function drawOverlay() {
     ctx.fillStyle = "#fff"; ctx.fillText(text, tx0 + 4 * u, ty0 + 3 * u);
   }
   drawPins(ctx, W, H, u);
-  drawMinimap(ctx, W - Math.round(W * 0.42) - 8 * u, Math.round(H * 0.3), Math.round(W * 0.42), u);
+  drawMap(ctx, W - Math.round(W * 0.42) - 8 * u, Math.round(H * 0.3), Math.round(W * 0.42), u);
   // テクスチャにして、XR の描画面の viewport に重ねる（canvas の上の行が画面の上になるよう上下を返して読む）
   if (!labProg) {
     const sh = (type, src) => { const x = gl.createShader(type); gl.shaderSource(x, src); gl.compileShader(x); return x; };
@@ -559,7 +412,8 @@ function updatePanel(view) {
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms  ${tx("地図")} ${f(med(times.map))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
-    `${floorY == null ? tx("床を映す（床が決まるまで集めない）") : `${tx("床")} ${floorY.toFixed(2)} m`}  ${tx("集めた")} ${collected().length}（${tx("候補")} ${objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
+    `${tx("サブマップ")} ${pipe.map.subs.length}（${tx("アンカー")} ${anchors.size}）  ${tx("ループ閉じ")} ${pipe.graph.loops.length}  ${pipe.log ? `${tx("記録")} ${(pipe.log.bytes / 1e6).toFixed(1)} MB` : ""}`,
+    `${pipe.map.floorY == null ? tx("床を映す（床が決まるまで集めない）") : `${tx("床")} ${pipe.map.floorY.toFixed(2)} m`}  ${tx("集めた")} ${collected().length}（${tx("候補")} ${pipe.objects.objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
 
@@ -567,8 +421,8 @@ $("start").onclick = start;
 $("end").onclick = () => session?.end();
 $("align").onclick = () => { align = !align; };
 $("stick").onclick = () => { stick = !stick; };
-$("reset").onclick = () => { objs = []; renderStrip(); };
-$("reset-map").onclick = () => resetMap();
+$("reset").onclick = () => { pipe.objects.reset(); renderStrip(); };
+$("reset-map").onclick = () => { pipe.map.reset(); pipe.graph.reset(); pipe.objects.reset(); renderStrip(); };
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。
@@ -612,6 +466,23 @@ $("save-map").onclick = async () => {
   a.download = `cv-playground_ar-map_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.png`;
   a.href = c.toDataURL("image/png"); a.click();
 };
+// 記録を閉じて、サーバー版ならサーバーに送る（再生のページへのリンクを出す）。静的版は保存のボタンを出す
+async function finishLog() {
+  if (!pipe.log) return;
+  const blob = await pipe.log.close(), mb = (blob.size / 1e6).toFixed(1);
+  $("xrlog").hidden = false;
+  if (mirror) {
+    try {
+      const res = await (await fetch("api/xrlog", { method: "POST", body: blob, headers: { "Content-Type": "application/gzip" } })).json();
+      $("xrlog-text").innerHTML = `${esc(tx("記録をサーバーに保存した: {name}（{mb} MB）", { name: res.name, mb }))} <a href="xr_replay.html?log=${encodeURIComponent(res.name)}&auto">${esc(tx("再生のページで開く"))}</a>`;
+      return;
+    } catch (e) { $("xrlog-text").textContent = `${tx("サーバーに保存できない")}: ${e.message}`; }
+  }
+  const a = document.createElement("a"), d = new Date(), z = (n) => String(n).padStart(2, "0");
+  a.download = `cv-playground_ar_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.ndjson.gz`;
+  a.href = URL.createObjectURL(blob); a.className = "ghost button"; a.textContent = tx("記録を保存（{mb} MB）", { mb });
+  $("xrlog-text").append(" ", a);
+}
 $("copy-md").onclick = async () => {
   if (!lastRec) return;
   const md = toMarkdown([lastRec], await collectEnv(mirror ? "サーバー版" : "静的版"));

@@ -3,13 +3,15 @@
 //   姿勢 → 深度（地図に積む。直前の検出のうち動く物の枠の中は当たりにしない）→ 検出（物を集める）
 //   サブマップ（アンカー）を足す・アンカーが動く → 地図の座標が直る
 //   2 秒ごと（記録の時刻で）に姿勢グラフ: 書き終わったサブマップを近くの古いものと照合し、ループ閉じが増えたら解き直す
+import { p4Inv } from "./xr_geom.js";
 import { PoseGraph } from "./xr_graph.js";
 import { packDepth, roundM, unpackDepth } from "./xr_log.js";
 import { OccMap } from "./xr_map.js";
 import { ObjectStore, dynBoxes } from "./xr_objects.js";
+import { globalMatch } from "./xr_reloc.js";
 
 const r1 = (v) => Math.round(v * 10) / 10, r3 = (v) => Math.round(v * 1000) / 1000;
-const GRAPH_EVERY_MS = 2000;
+const GRAPH_EVERY_MS = 2000, RELOC_EVERY_MS = 3000;
 
 export class XrPipeline {
   // opts: { log（LogWriter）, graph（姿勢グラフを使うか）, dynamic（動く物を地図から除くか）, collectP }
@@ -35,6 +37,37 @@ export class XrPipeline {
     const dyn = this.opts.dynamic ? dynBoxes(this.dets, this.P, this.M) : [];
     this.map.integrate({ t: this.t, M: this.M, P: this.P, depth, dyn });
     if (this.opts.graph && this.t - this.lastGraph > GRAPH_EVERY_MS) { this.lastGraph = this.t; this.graph.update(this.map); }
+    this.tryReloc();
+  }
+
+  // ---------- 前回の地図 ----------
+  // saved = save() の中身。読み込んだら、今の地図に障害物がたまるたび（3 秒ごと）前回の地図と照合し、合ったら重ねる
+  loadPrior(saved) {
+    this.prior = { saved, map: OccMap.deserialize(saved.map) };
+    this.prior.ref = this.prior.map.cellsWorld().obst;
+    this.reloc = { state: "waiting", tries: 0, lastT: 0, last: null };
+  }
+  tryReloc() {
+    const R = this.reloc;
+    if (!this.prior || R.state === "done" || this.map.floorY == null || this.t - R.lastT < RELOC_EVERY_MS) return;
+    R.lastT = this.t;
+    const cur = this.map.cellsWorld().obst;
+    if (cur.length < 80) return;
+    R.tries++;
+    const t0 = performance.now(), m = globalMatch(cur, this.prior.ref);
+    R.last = m && { score: +m.score.toFixed(2), second: +m.second.toFixed(2), ms: Math.round(performance.now() - t0) };
+    if (!m?.ok) return;
+    // m.rel は 今 → 前回。前回 → 今 はその逆。高さは床の高さの差で合わせる
+    const T = p4Inv(m.rel);
+    T.y = this.map.floorY - this.prior.map.floorY;
+    this.map.setPrior(this.prior.map, T);
+    this.objects.addPrior(this.prior.saved.objs || [], this.prior.map.subs);
+    R.state = "done"; R.T = T;
+    this.w({ k: "reloc", t: this.t, T, score: R.last.score });
+  }
+  // 保存する中身（地図と集めた物。前回の地図を重ねていれば一緒に）
+  save(extra = {}) {
+    return { v: 1, date: new Date().toISOString(), ...extra, map: this.map.serialize(), objs: this.objects.serialize(this.map) };
   }
   // 検出の結果（placeBox で 3D にした後）。t は読み戻したフレームの時刻。thumb(b) は切り抜き（再生では無い）。新しく集めた物を返す
   onDetections(t, list, thumb) {

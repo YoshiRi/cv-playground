@@ -62,6 +62,14 @@ export class ObjectStore {
     this.objs = this.objs.filter((o) => o.collected || t - o.last < FORGET_MS);
     return fresh;
   }
+  // 保存（集めた物だけ。サブマップは map.allSubs() の順番で指す）と、前回の物を戻す（再位置合わせの後）
+  serialize(map) {
+    const subs = map.allSubs();
+    return this.collected().map((o) => ({ label: o.label, si: subs.indexOf(o.sub), local: o.local, n: o.n, sum: o.sum, p: o.p, best: o.best, thumb: o.thumb, dist: o.dist }));
+  }
+  addPrior(list, priorSubs) {
+    for (const o of list) if (priorSubs[o.si]) this.objs.push({ ...o, id: ++this.seq, sub: priorSubs[o.si], collected: true, prior: true, first: 0, last: 0 });
+  }
   // 地図に描く形
   forMap(map) { return this.objs.map((o) => ({ pos: this.pos(o, map), label: o.label, collected: o.collected })); }
 }

@@ -119,9 +119,10 @@ async function start() {
   counts.t0 = performance.now();
   rec = newRec();
   pipe = new XrPipeline({ log: $("record").checked ? new LogWriter() : null, collectP: +q.get("collect") || 0.9 });
-  pipe.meta({ date: new Date().toISOString(), ua: navigator.userAgent, granted, model: MODEL.key, depthFormat: session.depthDataFormat ?? null });
+  pipe.meta({ date: new Date().toISOString(), ua: navigator.userAgent, granted, model: MODEL.key, depthFormat: session.depthDataFormat ?? null, prior: !!(saved && $("continue").checked) });
+  if (saved && $("continue").checked) pipe.loadPrior(saved);
   anchors = new Map(); anchorPending = false; aseq = 0; frameNo = 0; renderStrip();
-  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; pipe.end(lastT); saveRecord(); renderCollection(); finishLog(); });
+  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; pipe.end(lastT); saveRecord(); renderCollection(); finishLog(); saveMap(); });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -413,6 +414,7 @@ function updatePanel(view) {
     `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms  ${tx("地図")} ${f(med(times.map))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
     `${tx("サブマップ")} ${pipe.map.subs.length}（${tx("アンカー")} ${anchors.size}）  ${tx("ループ閉じ")} ${pipe.graph.loops.length}  ${pipe.log ? `${tx("記録")} ${(pipe.log.bytes / 1e6).toFixed(1)} MB` : ""}`,
+    ...(pipe.reloc ? [`${tx("前回の地図")}: ${pipe.reloc.state === "done" ? tx("重ねた（スコア {s}）", { s: pipe.reloc.last.score }) : tx("合わせている（{n} 回、スコア {s}）", { n: pipe.reloc.tries, s: pipe.reloc.last?.score ?? "-" })}`] : []),
     `${pipe.map.floorY == null ? tx("床を映す（床が決まるまで集めない）") : `${tx("床")} ${pipe.map.floorY.toFixed(2)} m`}  ${tx("集めた")} ${collected().length}（${tx("候補")} ${pipe.objects.objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
 }
@@ -466,6 +468,31 @@ $("save-map").onclick = async () => {
   a.download = `cv-playground_ar-map_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.png`;
   a.href = c.toDataURL("image/png"); a.click();
 };
+// ---------- 地図の保存（IndexedDB。このブラウザに 1 つ） ----------
+// 終わったら地図と集めた物を保存し、次は「前回の地図に続ける」で、再位置合わせのあと重ねて続ける
+let saved = null;
+const idb = (mode, fn) => new Promise((res, rej) => {
+  const open = indexedDB.open("cvpg-xr", 1);
+  open.onupgradeneeded = () => open.result.createObjectStore("maps");
+  open.onerror = () => rej(open.error);
+  open.onsuccess = () => { const tr = open.result.transaction("maps", mode), r = fn(tr.objectStore("maps")); tr.oncomplete = () => res(r?.result); tr.onerror = () => rej(tr.error); };
+});
+async function loadSaved() {
+  try { saved = await idb("readonly", (st) => st.get("last")); } catch { saved = null; }
+  $("continue-row").hidden = !saved;
+  if (saved) $("continue-text").textContent = tx("前回の地図に続ける（{d}、サブマップ {n}、集めた物 {m}）", { d: new Date(saved.date).toLocaleString(), n: saved.map.subs.length, m: saved.objs.length });
+}
+async function saveMap() {
+  if (!pipe.map.allSubs().length) return;
+  try {
+    await idb("readwrite", (st) => st.put(pipe.save(), "last"));
+    $("map-saved").hidden = false;
+    $("map-saved").textContent = tx("この地図を保存した（次回「前回の地図に続ける」で重ねられる）");
+    loadSaved();
+  } catch (e) { $("map-saved").hidden = false; $("map-saved").textContent = `${tx("地図を保存できない")}: ${e.message}`; }
+}
+$("forget").onclick = async () => { try { await idb("readwrite", (st) => st.delete("last")); } catch { /* 無い */ } loadSaved(); };
+
 // 記録を閉じて、サーバー版ならサーバーに送る（再生のページへのリンクを出す）。静的版は保存のボタンを出す
 async function finishLog() {
   if (!pipe.log) return;
@@ -490,3 +517,4 @@ $("copy-md").onclick = async () => {
   catch { $("rec-md").hidden = false; $("rec-md").textContent = md; } // コピーできない時は表を出す（長押しで選ぶ）
 };
 checkSupport();
+loadSaved();

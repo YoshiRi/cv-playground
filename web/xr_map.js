@@ -9,6 +9,7 @@
 //   床: 部屋の座標の高さの分布で、始めた時の端末の高さより 0.5 m 以上低い所で一番点が集まる高さ（床は一番広い水平面）。
 //     床 ±10 cm を床、床から 10 cm〜1.8 m のボクセルのどれかが L_OCC を超えたら障害物（壁・家具）
 //   動く物: 人などの枠に入る深度の点は当たりにしない（光線の通り抜けは数えるので、人が去った所は空きになる）
+//   前回の地図（prior）: 保存した地図を、再位置合わせで求めた変換 T（前回の部屋の座標 → 今の部屋の座標）で重ねる。積み足しはしない
 import { P4, depthAt, p4Apply, p4Compose, p4FromMatrix, p4Inv, unproject } from "./xr_geom.js";
 
 export const CELL = 0.05, LY0 = -3, YB = 45; // サブマップの高さは −3〜+1.5 m（原点はアンカー。置いた時の端末の高さ）
@@ -21,10 +22,16 @@ const keyIJ = (k) => [Math.floor(k / 65536) - 32768, (k % 65536) - 32768];
 export class OccMap {
   constructor() { this.reset(); }
   reset() {
-    this.subs = []; this.yHist = new Uint32Array(250); this.floorY = null; this.n = 0; this.track = []; this.version = 0;
+    this.subs = []; this.yHist = new Uint32Array(250); this.floorY = null; this.n = 0; this.track = []; this.version = 0; this.prior = null;
   }
   get active() { return this.subs[this.subs.length - 1]; }
-  pose(s) { return p4Compose(s.corr, s.anchor); }
+  pose(s) { const p = p4Compose(s.corr, s.anchor); return s.prior ? p4Compose(this.prior.T, p) : p; }
+  // 前回の地図のサブマップ（今の座標に重ねる）と今のサブマップ
+  allSubs() { return this.prior ? [...this.prior.subs, ...this.subs] : this.subs; }
+  setPrior(priorMap, T) {
+    for (const s of priorMap.subs) s.prior = true;
+    this.prior = { subs: priorMap.subs, T }; this.version++;
+  }
   // サブマップを足す（id はアンカーの番号、M は置いた時のアンカーの姿勢）。以後の深度はこのサブマップに積む
   addSubmap(id, M, t) {
     const s = { id, anchor: p4FromMatrix(M), corr: P4(), grid: new Map(), t0: t, n: 0 };
@@ -129,7 +136,7 @@ export class OccMap {
   // 全部のサブマップの升目を部屋の座標で [x, z, 種類]（床を先、障害物を後に描けるよう分けて返す）
   cellsWorld() {
     const floor = [], obst = [];
-    for (const s of this.subs) {
+    for (const s of this.allSubs()) {
       const sp = this.pose(s);
       for (const [x, z, k] of this.cellsLocal(s)) { const w = p4Apply(sp, [x, 0, z]); (k === 2 ? obst : floor).push([w[0], w[2]]); }
     }
@@ -140,7 +147,7 @@ export class OccMap {
   // 向きは部屋に固定（始めた時の前が上）。x が右、z が下。opts = { objs: [{pos, label, collected}], cur: {pos, M} }
   draw(ctx, x0, y0, S, u, opts = {}) {
     const objs = opts.objs || [], now = performance.now();
-    if (!this.subs.length && !objs.length) return;
+    if (!this.allSubs().length && !objs.length) return;
     const c0 = this.cache;
     if (!c0 || c0.S !== S || (c0.version !== this.version && now - c0.t > 500)) {
       const { floor, obst } = this.cellsWorld();
@@ -163,7 +170,7 @@ export class OccMap {
       track.forEach(([x, z], i) => (i ? g.lineTo((x - ox) * s, (z - oz) * s) : g.moveTo((x - ox) * s, (z - oz) * s))); g.stroke();
       if (opts.showSubmaps) { // サブマップの原点と、つながり（姿勢グラフのループ閉じは緑）
         g.fillStyle = "#f472b6";
-        for (const sm of this.subs) { const p = this.pose(sm); g.beginPath(); g.arc((p.x - ox) * s, (p.z - oz) * s, 2.5 * u, 0, 7); g.fill(); }
+        for (const sm of this.allSubs()) { const p = this.pose(sm); g.fillStyle = sm.prior ? "#a78bfa" : "#f472b6"; g.beginPath(); g.arc((p.x - ox) * s, (p.z - oz) * s, 2.5 * u, 0, 7); g.fill(); }
         for (const [a, b] of opts.loops || []) {
           const pa = this.pose(this.subs[a]), pb = this.pose(this.subs[b]);
           g.strokeStyle = "#22c55e"; g.lineWidth = u; g.beginPath(); g.moveTo((pa.x - ox) * s, (pa.z - oz) * s); g.lineTo((pb.x - ox) * s, (pb.z - oz) * s); g.stroke();
@@ -190,11 +197,12 @@ export class OccMap {
     ctx.restore();
   }
 
-  // 保存（IndexedDB にそのまま入る形。ボクセルは Float32Array をつなげる）と読み込み
+  // 保存（IndexedDB にそのまま入る形。ボクセルは Float32Array をつなげる）と読み込み。前回の地図を重ねていれば、それも今の座標で一緒に
+  // 保存する（各サブマップの姿勢は補正込みの今の姿勢にし、補正は 0 にする）
   serialize() {
     return {
       v: 1, floorY: this.floorY, yHist: this.yHist.slice(),
-      subs: this.subs.map((s) => ({ id: s.id, anchor: s.anchor, corr: s.corr, t0: s.t0, keys: Float64Array.from(s.grid.keys()), data: concat(s.grid) })),
+      subs: this.allSubs().map((s) => ({ id: s.id, anchor: this.pose(s), corr: P4(), t0: s.t0, keys: Float64Array.from(s.grid.keys()), data: concat(s.grid) })),
     };
   }
   static deserialize(o) {

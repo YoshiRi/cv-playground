@@ -76,7 +76,7 @@ async function checkSupport() {
 // ---------- AR のセッション ----------
 let session, refSpace, gl, binding, prog, fbo, fboTex, vao, pixels;
 let inW = 0, inH = 0, busy = false, boxes = [], lastSize = "";
-const times = { infer: [], read: [], frame: [] };
+const times = { infer: [], read: [], frame: [], map: [] };
 const counts = { xr: 0, det: 0, t0: 0, xrFps: 0, detFps: 0 };
 let depthNote = "", granted = [];
 // セッション全体の記録（終わった時に実行の記録にする）
@@ -194,7 +194,7 @@ function onFrame(t, frame) {
   }
   map.cur = { proj: view.projectionMatrix, toCam: view.transform.inverse.matrix, toWorld: view.transform.matrix, pos: view.transform.position };
   // 張り付けない時は、今のフレームの深度で枠ごとの距離を引き直す（張り付ける時は 3D の点と今のカメラの距離）
-  if (depth) mapDepth(depth, view);
+  if (depth) { const t0 = performance.now(), did = mapDepth(depth, view); if (did) push(times.map, performance.now() - t0); }
   if (counts.xr % 10 === 0) addTrack(view);
   if (!stick) for (const b of boxes) b.m = depth ? boxDepth(depth, b.n.map((v, i) => camToView(v, i % 2))) : null;
   // 前の検出が終わっていれば、このフレームを読み戻して次の検出へ。読み戻した時のカメラの位置・向きと深度を一緒に取っておく
@@ -320,30 +320,35 @@ function drawPins(ctx, W, H, u) {
 }
 // ---------- 地図（上から見た間取り） ----------
 // ARCore の地図は WebXR から取れないので、位置・向きの分かった深度の画像を部屋の座標に戻して積む。
-// 上から見た CELL 角の升目ごとに、高さ 10 cm 刻みの点の数を持つ（床の高さの推定が後から変わっても塗り直せるように）。
+// 上から見た CELL 角の升目ごとに、高さ 10 cm 刻みのボクセルの「物がある確からしさ」（log-odds）を持つ（OctoMap と同じ考え方）。
+// 深度の点が当たったボクセルは上げ（L_HIT）、カメラからその点までの光線が通り抜けたボクセルは下げる（L_MISS）。
+// 深度の誤差の点や、通り過ぎた人は、あとで向こうを見た時に消える。高さごとに持つのは、床の高さの推定が後から変わっても塗り直せるように。
 // 床は、始めた時の端末の高さより 0.5 m 以上低い所で、点が一番集まる高さ（床は一番広い水平面）。下の方のパーセンタイルだと、
 // 遠くの深度の誤差で床より下に外れた点に引っぱられ、床を低く見積もって床全体が障害物になった（SCG32）。
-// 床 ±10 cm を床、床から 10 cm〜1.8 m で床の点より多い所を障害物（壁・家具）として塗る。
+// 床 ±10 cm のボクセルが当たり側なら床、床から 10 cm〜1.8 m のどれかが L_OCC を超えたら障害物（壁・家具）として塗る。
 // 深度は 3 m まで（遠いほど粗い）。ARCore が後から自分の位置を直しても、積んだ点は直らない（壁が二重になることがある）
 const CELL = 0.05, Y0 = -2.5, YB = 40, MAP_EVERY = 3; // 高さは −2.5〜+1.5 m（原点は始めた時の端末の高さ）
+const L_HIT = 0.85, L_MISS = -0.4, L_MIN = -2, L_MAX = 3.5, L_OCC = 1.2; // log-odds（当たり 1 回で p 0.7、通り抜け 1 回で 0.4）
 let grid, yHist, mapTick, track, floorY, mapCache;
 function resetMap() { grid = new Map(); yHist = new Uint32Array(YB * 5); mapTick = 0; track = []; floorY = null; mapCache = null; }
 resetMap();
 function mapDepth(depth, view) {
-  if (++mapTick % MAP_EVERY) return;
-  const cap = { proj: view.projectionMatrix, toWorld: view.transform.matrix };
+  if (++mapTick % MAP_EVERY) return false;
+  const cap = { proj: view.projectionMatrix, toWorld: view.transform.matrix }, cp = view.transform.position, o = [cp.x, cp.y, cp.z];
   for (let j = 0; j < 24; j++) for (let i = 0; i < 40; i++) {
     const x = (i + 0.5) / 40, y = (j + 0.5) / 24;
     let d;
     try { d = depth.getDepthInMeters(x, y); } catch { continue; }
-    if (!(d > 0.2 && d < 3)) continue;
+    if (!(d > 0.2)) continue;
+    // 3 m より遠い点は当たりにしない（粗い）が、3 m までは光線が通り抜けた（空いている）として下げる
+    const doCarve = (i + j) % 2 === 0; // 光線は半分だけたどる（スマホで軽くするため。当たりは全部の点）
+    if (d >= 3) { if (d < 8 && doCarve) carve(o, unproject(cap, x, y, 3), 3.1); continue; }
     const p = unproject(cap, x, y, d), yb = Math.floor((p[1] - Y0) / 0.1);
     if (yb < 0 || yb >= YB) continue;
     yHist[Math.floor((p[1] - Y0) / 0.02)]++;
-    const key = `${Math.floor(p[0] / CELL)},${Math.floor(p[2] / CELL)}`;
-    let c = grid.get(key);
-    if (!c) grid.set(key, (c = new Uint16Array(YB)));
-    if (c[yb] < 65535) c[yb]++;
+    if (doCarve) carve(o, p, d);
+    const c = cellAt(Math.floor(p[0] / CELL), Math.floor(p[2] / CELL));
+    c[yb] = Math.min(L_MAX, c[yb] + L_HIT);
   }
   if (mapTick % 30 === 0) { // 床の高さ: −0.5 m より下で、点の数（前後 2 cm をならす）が一番多い高さ。その高さに 500 点たまってから
     let best = -1, bi = -1;
@@ -352,16 +357,41 @@ function mapDepth(depth, view) {
     if (best >= 500) floorY = Y0 + (bi + 0.5) * 0.02;
     mapCache = null;
   }
+  return true;
+}
+// 升目のキーは数（文字列より速い）。i, j は ±32768 升（±1.6 km）まで
+const cellKey = (i, j) => (i + 32768) * 65536 + (j + 32768);
+function cellAt(i, j) {
+  const key = cellKey(i, j);
+  let c = grid.get(key);
+  if (!c) grid.set(key, (c = new Float32Array(YB)));
+  return c;
+}
+// カメラ o から点 p までの光線が通り抜けたボクセルを下げる。5 cm 刻みにたどり、点の手前 10 cm（深度の誤差の分）で止める。
+// 同じボクセルを続けて下げないように、前のボクセルと同じなら飛ばす。床の帯（床 ±10 cm）とその下は下げない
+// （遠くの床へ浅い角度で入る光線が、床の帯を長く通り抜けて床を消してしまう）。床が決まるまでは下げない
+function carve(o, p, d) {
+  if (floorY == null) return;
+  const minYb = Math.floor((floorY - Y0) / 0.1) + 2, n = Math.floor((d - 0.1) / CELL);
+  let last = -1;
+  for (let k = 1; k < n; k++) {
+    const t = (k * CELL) / d, x = o[0] + (p[0] - o[0]) * t, y = o[1] + (p[1] - o[1]) * t, z = o[2] + (p[2] - o[2]) * t;
+    const i = Math.floor(x / CELL), j = Math.floor(z / CELL), yb = Math.floor((y - Y0) / 0.1), key = cellKey(i, j) * 64 + yb;
+    if (key === last || yb < minYb || yb >= YB) continue;
+    last = key;
+    const c = grid.get(cellKey(i, j));
+    if (c) c[yb] = Math.max(L_MIN, c[yb] + L_MISS); // 一度も当たっていない升目は作らない（分からないまま）
+  }
 }
 function addTrack(view) { const p = view.transform.position; track.push([p.x, p.z]); if (track.length > 2000) track.shift(); }
 // 升目の種類: 2 = 障害物、1 = 床、0 = 分からない
 function cellKind(c) {
   if (floorY == null) return 0;
   const fb = Math.floor((floorY - Y0) / 0.1);
-  let f = 0, o = 0;
-  for (let b = Math.max(0, fb - 1); b <= fb + 1 && b < YB; b++) f += c[b];
-  for (let b = fb + 2; b <= fb + 18 && b < YB; b++) o += c[b];
-  return o >= 4 && o > f ? 2 : f >= 2 ? 1 : 0;
+  let f = -Infinity, o = -Infinity;
+  for (let b = Math.max(0, fb - 1); b <= fb + 1 && b < YB; b++) f = Math.max(f, c[b]);
+  for (let b = fb + 2; b <= fb + 18 && b < YB; b++) o = Math.max(o, c[b]);
+  return o > L_OCC ? 2 : f > 0 ? 1 : 0;
 }
 // 地図を描く（x0, y0 から S 角）。間取りの升目は 0.5 秒ごとに描き直して取っておき、自分・物は毎回描く。
 // 向きは部屋に固定（始めた時の前が上）。x が右、z が下
@@ -372,7 +402,7 @@ function drawMinimap(ctx, x0, y0, S, u) {
     let mnx = Infinity, mxx = -Infinity, mnz = Infinity, mxz = -Infinity;
     const ext = (x, z) => { mnx = Math.min(mnx, x); mxx = Math.max(mxx, x); mnz = Math.min(mnz, z); mxz = Math.max(mxz, z); };
     const kinds = [];
-    for (const [key, c] of grid) { const k = cellKind(c); if (!k) continue; const [i, j] = key.split(",").map(Number); kinds.push([i, j, k]); ext(i * CELL, j * CELL); }
+    for (const [key, c] of grid) { const k = cellKind(c); if (!k) continue; const i = Math.floor(key / 65536) - 32768, j = (key % 65536) - 32768; kinds.push([i, j, k]); ext(i * CELL, j * CELL); }
     for (const [x, z] of track) ext(x, z);
     for (const o of objs) ext(o.pos[0], o.pos[2]);
     if (!Number.isFinite(mnx)) return;
@@ -527,7 +557,7 @@ function updatePanel(view) {
   $("ov-panel").textContent = [
     `${tx("使えた機能")}: ${granted.join(", ") || "?"}`,
     `${tx("カメラの画像")}: ${view.camera ? lastSize || `${view.camera.width}×${view.camera.height}` : tx("無い（camera-access が使えない）")}  ${tx("深度")}: ${depthNote || tx("無い")}`,
-    `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms`,
+    `XR ${f(counts.xrFps)} fps  ${tx("検出")} ${f(counts.detFps)} fps  ${tx("読み戻し")} ${f(med(times.read))} ms  ${tx("推論")} ${f(med(times.infer))} ms  ${tx("フレームの処理")} ${f(med(times.frame))} ms  ${tx("地図")} ${f(med(times.map))} ms`,
     `${tx("画面")} ${innerWidth}×${innerHeight}（dpr ${devicePixelRatio}、screen ${screen.width}×${screen.height}） fb ${map.fbW}×${map.fbH} vp ${map.vp ? [map.vp.x, map.vp.y, map.vp.width, map.vp.height].join(",") : "-"} ${tx("写し方")} ${map.mode}`,
     `${floorY == null ? tx("床を映す（床が決まるまで集めない）") : `${tx("床")} ${floorY.toFixed(2)} m`}  ${tx("集めた")} ${collected().length}（${tx("候補")} ${objs.length - collected().length}）  ${tx("張り付け")}: ${stick ? "ON" : "OFF"}  ${tx("上下反転")}: ${flipY ? "ON" : "OFF"}${status.load ? `  ${tx("読み込み")} ${status.load}` : ""}${status.err ? `\n${tx("エラー")}: ${status.err}` : ""}`,
   ].join("\n");
@@ -565,6 +595,23 @@ function saveRecord() {
   $("rec").hidden = false;
   $("rec-text").textContent = tx("記録した: 検出 {det} fps・XR {xr} fps・推論 {inf} ms（中央値）・読み戻し {rb} ms（{n} 回、{s} 秒）。普段の画面の実行履歴にも入れた", { det: lastRec.fps, xr: lastRec.xr_fps, inf: st?.median?.toFixed(1), rb: lastRec.readback_ms, n: rec.dets, s: secs.toFixed(0) });
 }
+// 地図と集めた物を 1 枚の PNG に（地図の下に切り抜きを並べる）
+$("save-map").onclick = async () => {
+  const mc = $("collection-map"), list = collected(), cols = 4, cw = mc.width / cols, rows = Math.ceil(list.length / cols);
+  const c = document.createElement("canvas"); c.width = mc.width; c.height = mc.height + rows * (cw + 18) + 8;
+  const g = c.getContext("2d");
+  g.fillStyle = "#111"; g.fillRect(0, 0, c.width, c.height); g.drawImage(mc, 0, 0);
+  g.font = "12px system-ui, sans-serif"; g.fillStyle = "#fff"; g.textAlign = "center";
+  await Promise.all(list.map((o, i) => new Promise((res) => {
+    const img = new Image();
+    img.onload = () => { const x = (i % cols) * cw, y = mc.height + 8 + Math.floor(i / cols) * (cw + 18), k = Math.min((cw - 8) / img.width, (cw - 8) / img.height);
+      g.drawImage(img, x + (cw - img.width * k) / 2, y + (cw - 8 - img.height * k) / 2, img.width * k, img.height * k); g.fillText(o.label, x + cw / 2, y + cw + 4); res(); };
+    img.onerror = res; img.src = o.thumb;
+  })));
+  const a = document.createElement("a"), d = new Date(), z = (n) => String(n).padStart(2, "0");
+  a.download = `cv-playground_ar-map_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}.png`;
+  a.href = c.toDataURL("image/png"); a.click();
+};
 $("copy-md").onclick = async () => {
   if (!lastRec) return;
   const md = toMarkdown([lastRec], await collectEnv(mirror ? "サーバー版" : "静的版"));

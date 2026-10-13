@@ -8,6 +8,8 @@
 //     （姿勢は 4 自由度。重力の向きは XR で分かっているので、位置 3 つと y 軸まわりの向きだけ）
 //   床: 部屋の座標の高さの分布で、始めた時の端末の高さより 0.5 m 以上低い所で一番点が集まる高さ（床は一番広い水平面）。
 //     床 ±10 cm を床、床から 10 cm〜1.8 m のボクセルのどれかが L_OCC を超えたら障害物（壁・家具）
+//   床の許し: スマホの深度は遠いほど短めに出て、下を向いた光線の点は高めになる（実機の部屋で、床の点が 1 m で +3 cm、2〜2.5 m で
+//     +12 cm）。床から 10 cm + 5 cm/m 以内の点は床の帯に入れる（そうしないと遠くの床が障害物になり、部屋が白く埋まった）
 //   動く物: 人などの枠に入る深度の点は当たりにしない（光線の通り抜けは数えるので、人が去った所は空きになる）
 //   前回の地図（prior）: 保存した地図を、再位置合わせで求めた変換 T（前回の部屋の座標 → 今の部屋の座標）で重ねる。積み足しはしない
 import { P4, depthAt, p4Apply, p4Compose, p4FromMatrix, p4Inv, unproject } from "./xr_geom.js";
@@ -68,7 +70,12 @@ export class OccMap {
       const pL = p4Apply(inv, p);
       if (doCarve) this.carve(s, oL, pL, d, minYb);
       if (dyn.some((b) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])) continue; // 動く物の点は当たりにしない
-      const yb = Math.floor((pL[1] - LY0) / 0.1);
+      let yb = Math.floor((pL[1] - LY0) / 0.1);
+      if (this.floorY != null) { // 床の許し（遠いほど広く）。床より大きく下の点は誤り
+        const h = p[1] - this.floorY;
+        if (h < -0.3) continue;
+        if (h < 0.1 + 0.05 * d) yb = Math.floor((this.floorY - sp.y - LY0) / 0.1);
+      }
       if (yb < 0 || yb >= YB) continue;
       const c = this.cell(s, Math.floor(pL[0] / CELL), Math.floor(pL[2] / CELL));
       c[yb] = Math.min(L_MAX, c[yb] + L_HIT);

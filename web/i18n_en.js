@@ -347,6 +347,7 @@ export const EN = {
   "再生中 {k}/2: {n} 行": "Replaying {k}/2: {n} rows",
   "姿勢グラフあり: ループ閉じ {l}（外した {r}）": "With pose graph: {l} loop closures ({r} rejected)",
   "姿勢グラフなし": "Without pose graph",
+  "前回の地図にする記録": "Log to use as the previous map",
   "再生した": "Done",
   "地図": "map",
   "地図と集めた物を保存（PNG）": "Save the map and collection (PNG)",

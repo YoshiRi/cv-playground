@@ -46,6 +46,12 @@ function detect(bitmap) {
   });
 }
 
+// 地図の重い照合（姿勢グラフ・再位置合わせ）は別のスレッドで（XR のフレームを止めると画面がちらつく）
+const heavy = new Worker("xr_worker.js", { type: "module" }), heavyPending = new Map();
+let heavySeq = 0;
+heavy.onmessage = (e) => { const p = heavyPending.get(e.data.id); heavyPending.delete(e.data.id); if (!p) return; e.data.err ? p.reject(new Error(e.data.err)) : p.resolve(e.data); };
+function runHeavy(type, args) { const id = ++heavySeq; return new Promise((resolve, reject) => { heavyPending.set(id, { resolve, reject }); heavy.postMessage({ id, type, args }); }); }
+
 // ---------- 使えるかの確認 ----------
 const status = { load: "" };
 async function checkSupport() {
@@ -118,7 +124,7 @@ async function start() {
   setupGL();
   counts.t0 = performance.now();
   rec = newRec();
-  pipe = new XrPipeline({ log: $("record").checked ? new LogWriter() : null, collectP: +q.get("collect") || 0.9 });
+  pipe = new XrPipeline({ log: $("record").checked ? new LogWriter() : null, collectP: +q.get("collect") || 0.9, run: runHeavy });
   pipe.meta({ date: new Date().toISOString(), ua: navigator.userAgent, granted, model: MODEL.key, depthFormat: session.depthDataFormat ?? null, prior: !!(saved && $("continue").checked) });
   if (saved && $("continue").checked) pipe.loadPrior(saved);
   anchors = new Map(); anchorPending = false; aseq = 0; frameNo = 0; renderStrip();
@@ -424,7 +430,7 @@ $("end").onclick = () => session?.end();
 $("align").onclick = () => { align = !align; };
 $("stick").onclick = () => { stick = !stick; };
 $("reset").onclick = () => { pipe.objects.reset(); renderStrip(); };
-$("reset-map").onclick = () => { pipe.map.reset(); pipe.graph.reset(); pipe.objects.reset(); renderStrip(); };
+$("reset-map").onclick = () => { pipe.resetMap(); renderStrip(); };
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。

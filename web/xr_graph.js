@@ -3,41 +3,50 @@
 //   ノード: サブマップ（4 自由度の姿勢 x, y, z, yaw）。最初のサブマップを固定する
 //   辺: 1. つながり（オドメトリ）: 続くサブマップのアンカー同士の相対姿勢（ARCore の推定そのもの。ARCore が直すと変わる）
 //       2. ループ閉じ: 書き終わったサブマップを、近くの古いサブマップと照合して得た相対姿勢
-//   照合: 上から見た障害物の升目どうしを、今の推定のまわり（向き ±7°・位置 ±0.5 m）で総当たり（相関で合わせる。Cartographer 系の
-//       枯れたやり方）。合わせる先は升目とそのまわり 1 升をぼかした地図。点の 5 割以上が重なり、スコアが MATCH_MIN を超えたら採用
+//   照合: 上から見た障害物・床の升目どうしを、今の推定のまわり（向き ±7°・位置 ±0.5 m）で総当たり（相関で合わせる。Cartographer 系の
+//       枯れたやり方。点数は xr_match.js）。点の 5 割以上が相手の分かっている所に乗り、点数が MATCH_MIN を超えたら採用
 //   最適化: ガウス・ニュートン法（ヤコビアンは数値微分、正規方程式は密な行列のコレスキー分解。ノードが数百なら十分速い）。
 //       解いたあと、残差が大きいループ閉じは間違いとみなして外し、もう一度解く
 //   結果は各サブマップの補正 corr（corr ⊕ アンカー = 最適化した姿勢）として地図に書く（物の位置もサブマップと一緒に動く）
 import { P4, p4Apply, p4Between, p4Compose, p4Inv, wrap } from "./xr_geom.js";
-import { CELL } from "./xr_map.js";
+import { buildRef, search, thin } from "./xr_match.js";
 
-const NEAR_M = 4, MIN_CELLS = 60, MATCH_MIN = 0.5, OVERLAP_MIN = 0.5;
+const NEAR_M = 4, MIN_CELLS = 60, MATCH_MIN = 0.35, OVERLAP_MIN = 0.5; // 点数は xr_match.js（空いている所に乗ると減る）
 const SIG_ODO = [0.08, 0.05, 0.08, 0.03], SIG_LOOP = [0.05, 1, 0.05, 0.02]; // x, y, z（m）、yaw（rad）。ループ閉じは高さを決めない
-const key = (i, j) => (i + 32768) * 65536 + (j + 32768);
 
 export class PoseGraph {
   constructor() { this.reset(); }
   reset() { this.loops = []; this.tried = new Set(); this.stats = { tried: 0, accepted: 0, rejected: 0, ms: 0 }; }
 
-  // 書き終わったサブマップ（最後のもの以外。final なら最後も）を、まだ試していない近くの古いサブマップと照合し、ループ閉じが増えたら解き直す
-  update(map, final = false) {
-    const t0 = performance.now(), subs = map.subs, n = subs.length;
-    if (n < 3 || map.floorY == null) return false;
-    let added = 0;
-    for (let i = 2; i < (final ? n : n - 1); i++) {
-      for (let j = 0; j < i - 1; j++) {
-        const tag = `${j}-${i}`;
-        if (this.tried.has(tag)) continue;
-        const pi = map.pose(subs[i]), pj = map.pose(subs[j]);
-        if (Math.hypot(pi.x - pj.x, pi.z - pj.z) > NEAR_M) continue;
-        this.tried.add(tag); this.stats.tried++;
-        const m = matchSubmaps(map, subs[j], subs[i]);
-        if (m) { this.loops.push({ j, i, z: m.rel, score: m.score }); this.stats.accepted++; added++; }
-      }
+  // 照合する組（書き終わったサブマップ ＝ 最後のもの以外。final なら最後も）を、まだ試していない近くの古いサブマップと作る。
+  // 照合そのもの（matchJob）は重いので、ライブでは Worker で回す（xr_worker.js）。再生ではその場で回す（update）
+  jobs(map, final = false) {
+    const subs = map.subs, n = subs.length, out = [];
+    if (n < 3 || map.floorY == null) return out;
+    for (let i = 2; i < (final ? n : n - 1); i++) for (let j = 0; j < i - 1; j++) {
+      const tag = `${j}-${i}`;
+      if (this.tried.has(tag)) continue;
+      const pi = map.pose(subs[i]), pj = map.pose(subs[j]);
+      if (Math.hypot(pi.x - pj.x, pi.z - pj.z) > NEAR_M) continue;
+      this.tried.add(tag); this.stats.tried++;
+      const cells = (s) => { const c = map.cellsLocal(s); return { obst: c.filter((x) => x[2] === 2).map(([x, z]) => [x, z]), floor: c.filter((x) => x[2] === 1).map(([x, z]) => [x, z]) }; };
+      out.push({ j, i, A: cells(subs[j]), B: cells(subs[i]), guess: p4Between(pj, pi) });
     }
-    if (added) this.optimize(map);
+    return out;
+  }
+  // 照合の結果を足して解き直す
+  add(map, job, m) {
+    if (!m || job.i >= map.subs.length) return false;
+    this.loops.push({ j: job.j, i: job.i, z: m.rel, score: m.score }); this.stats.accepted++;
+    this.optimize(map);
+    return true;
+  }
+  update(map, final = false) {
+    const t0 = performance.now();
+    let added = false;
+    for (const job of this.jobs(map, final)) added = this.add(map, job, matchJob(job)) || added;
     this.stats.ms += performance.now() - t0;
-    return added > 0;
+    return added;
   }
 
   optimize(map) {
@@ -53,42 +62,15 @@ export class PoseGraph {
 }
 
 // ---------- 照合 ----------
-// サブマップ b を a に合わせる。今の推定 a⁻¹ ⊕ b のまわりで、b の障害物の升目が a の障害物（ぼかし）に一番重なる相対姿勢
-export function matchSubmaps(map, a, b, debug = false) {
-  const A = map.cellsLocal(a, [2]), B = map.cellsLocal(b, [2]);
-  if (A.length < MIN_CELLS || B.length < MIN_CELLS) return debug ? { nA: A.length, nB: B.length } : null;
-  const like = new Map(); // a の升目 → 重なりの点数（升目そのもの 1、まわり 1 升 0.5）
-  for (const [x, z] of A) {
-    const i = Math.floor(x / CELL), j = Math.floor(z / CELL);
-    for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
-      const k = key(i + di, j + dj), v = di || dj ? 0.5 : 1;
-      if ((like.get(k) || 0) < v) like.set(k, v);
-    }
-  }
-  const pts = B.length > 300 ? B.filter((_, k) => k % Math.ceil(B.length / 300) === 0) : B;
-  const guess = p4Between(map.pose(a), map.pose(b));
-  const score = (yaw, tx, tz) => {
-    const c = Math.cos(yaw), s = Math.sin(yaw);
-    let sum = 0, hit = 0;
-    for (const [x, z] of pts) {
-      const v = like.get(key(Math.floor((c * x + s * z + tx) / CELL), Math.floor((-s * x + c * z + tz) / CELL)));
-      if (v) { sum += v; hit++; }
-    }
-    return [sum / pts.length, hit / pts.length];
-  };
-  let best = { s: -1 };
-  for (let dy = -0.12; dy <= 0.1201; dy += 0.02) for (let dx = -0.5; dx <= 0.5001; dx += 0.05) for (let dz = -0.5; dz <= 0.5001; dz += 0.05) {
-    const [s, o] = score(guess.yaw + dy, guess.x + dx, guess.z + dz);
-    if (s > best.s) best = { s, o, dy, dx, dz };
-  }
-  // 細かく（向き 0.5°、位置 1 cm）
-  for (let ry = -0.01; ry <= 0.0101; ry += 0.005) for (let rx = -0.03; rx <= 0.0301; rx += 0.01) for (let rz = -0.03; rz <= 0.0301; rz += 0.01) {
-    const [s, o] = score(guess.yaw + best.dy + ry, guess.x + best.dx + rx, guess.z + best.dz + rz);
-    if (s > best.s) best = { s, o, dy: best.dy + ry, dx: best.dx + rx, dz: best.dz + rz };
-  }
-  if (debug) return { ...best, nA: A.length, nB: B.length, guess };
-  if (best.s < MATCH_MIN || best.o < OVERLAP_MIN) return null;
-  return { rel: P4(guess.x + best.dx, guess.y, guess.z + best.dz, wrap(guess.yaw + best.dy)), score: best.s, overlap: best.o };
+// サブマップ B を A に合わせる（job = { A, B: {obst, floor}（サブマップの座標）, guess: 今の推定 A⁻¹ ⊕ B }）。
+// 今の推定のまわり（向き ±7°・位置 ±0.5 m）を粗く、そのまわりを細かく探し、空いている所も使った点数（xr_match.js）で選ぶ
+export function matchJob({ A, B, guess }) {
+  if (A.obst.length < MIN_CELLS || B.obst.length < MIN_CELLS) return null;
+  const ref = buildRef(A.obst, A.floor), ob = thin(B.obst, 300), fl = thin(B.floor, 200);
+  const c = search(ref, ob, fl, guess.yaw, guess.x, guess.z, [0.12, 0.5], [0.02, 0.05]);
+  const f = search(ref, ob, fl, c.yaw, c.tx, c.tz, [0.01, 0.03], [0.005, 0.01]);
+  if (f.s < MATCH_MIN || f.o < OVERLAP_MIN) return null;
+  return { rel: P4(f.tx, guess.y, f.tz, wrap(f.yaw)), score: f.s, overlap: f.o };
 }
 
 // ---------- 最適化 ----------

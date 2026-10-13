@@ -13,7 +13,9 @@ async function listLogs() {
   try {
     const list = await (await fetch("api/xrlogs")).json();
     $("list").innerHTML = list.map((x) => `<option value="${x.name}">${x.name}（${(x.bytes / 1e6).toFixed(1)} MB）</option>`).join("");
+    $("prior").innerHTML = `<option value="">${tx("なし")}</option>` + list.map((x) => `<option value="${x.name}">${x.name}</option>`).join("");
     if (q.get("log")) $("list").value = q.get("log");
+    if (q.get("prior")) $("prior").value = q.get("prior");
   } catch { $("list").innerHTML = `<option value="">${tx("（サーバーが無い）")}</option>`; }
 }
 
@@ -28,8 +30,16 @@ async function run() {
   $("run").disabled = true;
   try {
     const blob = await getBlob(), out = [];
+    // 前回の地図: その記録を再生して保存した中身（ライブで終わった時に保存するのと同じ）
+    let saved = null;
+    if ($("prior").value) {
+      const pp = new XrPipeline({ graph: true });
+      for await (const r of readLog(await (await fetch(`api/xrlogs/${encodeURIComponent($("prior").value)}`)).blob())) pp.apply(r);
+      pp.finish(); saved = pp.save();
+    }
     for (const [k, graph] of [[0, false], [1, true]]) {
       const pipe = new XrPipeline({ graph, dynamic: $("dyn").checked }), t0 = performance.now();
+      if (saved) pipe.loadPrior(structuredClone(saved));
       let n = 0, meta = null, tFirst = null, tLast = 0;
       for await (const r of readLog(blob)) {
         if (r.k === "meta") meta = r;
@@ -46,7 +56,7 @@ async function run() {
       const res = {
         graph, rows: n, secs: +((tLast - tFirst) / 1000).toFixed(1), replay_ms: Math.round(ms), frames: pipe.stats.frames, depth: pipe.stats.depth, dets: pipe.stats.dets,
         submaps: map.subs.length, floorY: map.floorY, obstacle_cells: cells.obst.length, floor_cells: cells.floor.length,
-        collected: pipe.objects.collected().length, loops: pipe.graph.loops.length, graph_stats: pipe.graph.stats, meta,
+        collected: pipe.objects.collected().length, loops: pipe.graph.loops.length, graph_stats: pipe.graph.stats, meta, reloc: pipe.reloc,
       };
       $(`cap${k}`).textContent = graph ? tx("姿勢グラフあり: ループ閉じ {l}（外した {r}）", { l: res.loops, r: pipe.graph.stats.rejected }) : tx("姿勢グラフなし");
       out.push(res);

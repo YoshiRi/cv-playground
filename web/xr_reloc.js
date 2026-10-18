@@ -3,7 +3,9 @@
 //   1. 粗く（20 cm の升目）: 向き 3° ごとに、今の点と前回の点の全部の組の「ずらし」を投票し、票が一番多いずらしを候補にする
 //      （ハフ変換と同じ考え方。点の数 × 前回の升目の数 × 向きの数 だが、票は配列に数えるので速い）
 //   2. 細かく（5 cm、±3°・±0.3 m）: 上位の候補ごとに、空いている所も使った点数（xr_match.js）で選び直す
-//   3. 一番良い候補が、別の所（向き 15° 以上か位置 0.5 m 以上違う）の 2 番目の候補より十分良い時だけ採用（似た部屋の誤りを避ける）
+//   3. 一番良い候補が、別の所（向き 15° 以上か位置 0.5 m 以上違う）の 2 番目の候補より十分良い時だけ採用（似た部屋の誤りを避ける）。
+//      候補は、近い所（向き 10°・位置 0.4 m 以内）の重複を除いてから上位を選ぶ（除かないと同じ解の近くで枠が埋まり、別の所の候補を
+//      調べないまま「2 番目は 0」として採用してしまう。Codex のレビューで見つかった）。別の所の候補を 1 つも調べられなければ採用しない
 import { P4, wrap } from "./xr_geom.js";
 import { buildRef, search, thin } from "./xr_match.js";
 
@@ -33,15 +35,24 @@ export function globalMatch(cur, ref, { minScore = 0.3, minOverlap = 0.5, margin
         if (i >= 0 && j >= 0 && i < nx && j < nz) acc[j * nx + i]++;
       }
     }
-    let b1 = 0, i1 = 0, b2 = 0, i2 = 0;
-    for (let k = 0; k < acc.length; k++) { const v = acc[k]; if (v > b1) { b2 = b1; i2 = i1; b1 = v; i1 = k; } else if (v > b2 && Math.hypot((k % nx) - (i1 % nx), Math.floor(k / nx) - Math.floor(i1 / nx)) > 2) { b2 = v; i2 = k; } }
-    for (const [v, k] of [[b1, i1], [b2, i2]]) cands.push({ yaw, votes: v, tx: tx0 + (k % nx) * COARSE, tz: tz0 + Math.floor(k / nx) * COARSE });
+    // 1 位と、1 位から 2 升（40 cm）より離れた中での 1 位
+    let b1 = 0, i1 = 0;
+    for (let k = 0; k < acc.length; k++) if (acc[k] > b1) { b1 = acc[k]; i1 = k; }
+    let b2 = 0, i2 = -1;
+    for (let k = 0; k < acc.length; k++) if (acc[k] > b2 && Math.hypot((k % nx) - (i1 % nx), Math.floor(k / nx) - Math.floor(i1 / nx)) > 2) { b2 = acc[k]; i2 = k; }
+    for (const [v, k] of [[b1, i1], [b2, i2]]) if (k >= 0 && v > 0) cands.push({ yaw, votes: v, tx: tx0 + (k % nx) * COARSE, tz: tz0 + Math.floor(k / nx) * COARSE });
   }
   cands.sort((a, b) => b.votes - a.votes);
+  // 近い候補を除く（非最大値の抑制）
+  const kept = [];
+  for (const c of cands) {
+    if (kept.length >= top) break;
+    if (!kept.some((k) => Math.abs(wrap(k.yaw - c.yaw)) < 0.17 && Math.hypot(k.tx - c.tx, k.tz - c.tz) < 0.4)) kept.push(c);
+  }
   const g = buildRef(ref.obst, ref.floor), ob = thin(cur.obst, 300), fl = thin(cur.floor, 200);
-  const refined = cands.slice(0, top).map((k) => search(g, ob, fl, k.yaw, k.tx, k.tz, [0.05, 0.3], [0.01, 0.05])).sort((a, b) => b.s - a.s);
+  const refined = kept.map((k) => search(g, ob, fl, k.yaw, k.tx, k.tz, [0.05, 0.3], [0.01, 0.05])).sort((a, b) => b.s - a.s);
   const best = refined[0], far = (a) => Math.abs(wrap(a.yaw - best.yaw)) > 0.26 || Math.hypot(a.tx - best.tx, a.tz - best.tz) > 0.5;
-  const second = refined.find((a) => a !== best && far(a))?.s ?? 0;
-  const ok = best.s >= minScore && best.o >= minOverlap && best.s - second >= margin;
+  const rival = refined.find((a) => a !== best && far(a)), second = rival?.s ?? 0;
+  const ok = !!rival && best.s >= minScore && best.o >= minOverlap && best.s - second >= margin;
   return { ok, rel: P4(best.tx, 0, best.tz, wrap(best.yaw)), score: best.s, overlap: best.o, second };
 }

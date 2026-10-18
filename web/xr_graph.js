@@ -57,7 +57,7 @@ export class PoseGraph {
       if (!bad.length) break;
       this.loops = this.loops.filter((L) => !bad.includes(L)); this.stats.rejected += bad.length;
     }
-    map.version++;
+    map.version++; map.poseVersion++;
   }
 }
 

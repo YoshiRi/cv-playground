@@ -32,7 +32,8 @@ export function copyDepth(d, f32, step = 2) {
   const out = new Uint16Array(w * h), k = f32 ? 0.001 : d.rawValueToMeters;
   for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
     const v = src[j * step * d.width + i * step];
-    out[j * w + i] = f32 ? Math.min(65535, Math.round(v * 1000)) : v; // float32 の時は mm の整数にそろえる
+    // float32 の時も m にするには rawValueToMeters を掛ける（仕様。1 とは限らない）。そのあと mm の整数にそろえる
+    out[j * w + i] = f32 ? Math.min(65535, Math.round(v * d.rawValueToMeters * 1000)) : v;
   }
   return { w, h, k, m: Array.from(d.normDepthBufferFromNormView.matrix), data: out };
 }

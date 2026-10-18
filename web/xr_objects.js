@@ -4,7 +4,8 @@
 //   同一判定: 同じクラスで近い所（40 cm か板の幅の半分の大きい方）に来たら同じ物。位置は見えた回数で平均する
 //   確かさ: 見えるたびに p ← 1 − (1 − p)(1 − W·score) で重ねる。COLLECT_P を超え、COLLECT_N 回以上見えたら「集めた」
 //   動く物（人・動物）: 位置で同じ物かを決められない（歩くと別の物として何度も集まる）ので集めない。地図では深度を当たりにしない
-//   位置は、最初に見えた時のサブマップの座標で持つ（姿勢グラフ・ARCore の補正でサブマップが動くと一緒に動く）
+//   位置は、最初に見えた時のサブマップの座標で持つ（姿勢グラフ・ARCore の補正でサブマップが動くと一緒に動く）。比べるのは補正した
+//   地図の座標（map.toMap）。1 回の検出の中では、1 つの物に 1 つの枠だけ対応させる（同じ物に 2 つの枠を足さない）
 import { boxDepth, invRigid, p4Apply, p4Inv, project, unproject } from "./xr_geom.js";
 
 export const DYNAMIC = new Set(["person", "dog", "cat", "bird", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe"]);
@@ -42,17 +43,20 @@ export class ObjectStore {
   add(list, t, map, thumb) {
     const fresh = [];
     if (map.floorY == null || !map.active) return fresh;
+    const used = new Set();
     for (const b of list) {
       if (b.depth == null || !b.center || DYNAMIC.has(b.label)) continue;
-      const r = Math.max(MATCH_M, dist3(b.world[0], b.world[1]) * 0.5);
+      const r = Math.max(MATCH_M, dist3(b.world[0], b.world[1]) * 0.5), cm = map.toMap(b.center);
       let o = null, od = Infinity;
-      for (const x of this.objs) { const d = x.label === b.label ? dist3(this.pos(x, map), b.center) : Infinity; if (d < r && d < od) { o = x; od = d; } }
+      for (const x of this.objs) { const d = x.label === b.label ? dist3(this.pos(x, map), cm) : Infinity; if (d < r && d < od) { o = x; od = d; } }
+      if (o && used.has(o)) continue; // この検出の中で、もう別の枠が対応した物
       if (!o) {
         const sub = map.active;
-        this.objs.push((o = { id: ++this.seq, label: b.label, sub, local: p4Apply(p4Inv(map.pose(sub)), b.center), n: 0, sum: 0, p: 0, best: 0, thumb: "", first: t, collected: false }));
+        this.objs.push((o = { id: ++this.seq, label: b.label, sub, local: p4Apply(p4Inv(map.pose(sub)), cm), n: 0, sum: 0, p: 0, best: 0, thumb: "", first: t, collected: false }));
       }
+      used.add(o);
       o.n++; o.sum += b.score;
-      const k = 1 / Math.min(o.n, 10), nl = p4Apply(p4Inv(map.pose(o.sub)), b.center); // 位置は見えた回数で平均（10 回目からは移動平均）
+      const k = 1 / Math.min(o.n, 10), nl = p4Apply(p4Inv(map.pose(o.sub)), cm); // 位置は見えた回数で平均（10 回目からは移動平均）
       o.local = o.local.map((v, i) => v + (nl[i] - v) * k);
       o.p = 1 - (1 - o.p) * (1 - W_OBS * b.score);
       o.last = t; b.obj = o;

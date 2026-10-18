@@ -38,7 +38,7 @@ async function run() {
       pp.finish(); saved = pp.save();
     }
     for (const [k, graph] of [[0, false], [1, true]]) {
-      const pipe = new XrPipeline({ graph, dynamic: $("dyn").checked }), t0 = performance.now();
+      const pipe = new XrPipeline({ graph, dynamic: $("dyn").checked, faithful: $("faithful").checked }), t0 = performance.now();
       if (saved) pipe.loadPrior(structuredClone(saved));
       let n = 0, meta = null, tFirst = null, tLast = 0;
       for await (const r of readLog(blob)) {
@@ -73,5 +73,6 @@ async function run() {
 $("file").onchange = (e) => { fileBlob = e.target.files[0] || null; if (fileBlob) $("status").textContent = fileBlob.name; };
 $("run").onclick = run;
 if (q.get("dyn") === "0") $("dyn").checked = false;
+if (q.has("faithful")) $("faithful").checked = true;
 await listLogs();
 if (q.has("auto")) run();

@@ -128,7 +128,13 @@ async function start() {
   pipe.meta({ date: new Date().toISOString(), ua: navigator.userAgent, granted, model: MODEL.key, depthFormat: session.depthDataFormat ?? null, prior: !!(saved && $("continue").checked) });
   if (saved && $("continue").checked) pipe.loadPrior(saved);
   anchors = new Map(); anchorPending = false; aseq = 0; frameNo = 0; renderStrip();
-  session.addEventListener("end", () => { $("overlay").classList.remove("on"); session = null; pipe.end(lastT); saveRecord(); renderCollection(); finishLog(); saveMap(); });
+  // 終わり: 出している照合を待って最後の照合まで済ませてから（pipe.close）、記録を閉じ、地図を保存する（記録と保存した地図が同じ状態になる）
+  session.addEventListener("end", async () => {
+    $("overlay").classList.remove("on"); session = null;
+    saveRecord();
+    await pipe.close(lastT);
+    renderCollection(); finishLog(); saveMap();
+  });
   session.requestAnimationFrame(onFrame);
 }
 
@@ -235,6 +241,7 @@ function onFrame(t, frame) {
   if (!busy && binding && view.camera) {
     busy = true;
     const capT = pipe.t, cap = { P: Array.from(view.projectionMatrix), M: Array.from(M), depth: depth ? (dc ?? copyDepth(depth, f32)) : null };
+    const myPipe = pipe; // この読み戻しを始めた時の地図（終わった・消した後に届いた結果は捨てる）
     grab(view).then(async (bmp) => {
       drawPreview(bmp);
       const W = bmp.width, H = bmp.height; // 結果の枠は渡した画像の画素（渡すと bmp は使えなくなるので先に取る）
@@ -243,7 +250,7 @@ function onFrame(t, frame) {
       counts.det++; status.load = ""; status.err = "";
       rec.dets++; rec.infer.push(r.infer_ms); rec.first ??= r; rec.last = r;
       for (const k of ["pre", "run", "post"]) if (r.breakdown?.[k] != null) rec[k].push(r.breakdown[k]);
-      if (!session) return;
+      if (!session || pipe !== myPipe || myPipe.closed) return;
       const list = r.items.map((it) => {
         const n = [it.box[0] / W, it.box[1] / H, it.box[2] / W, it.box[3] / H];
         return placeBox({ label: it.label, score: it.score, n, v: n.map((x, k) => camToView(x, k % 2)), m: null }, cap);
@@ -270,9 +277,11 @@ function addSubmap(frame, M) {
   const T = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, M[12], M[13], M[14], 1]; // 向きは部屋に合わせる（重力が上）
   if (!granted.includes("anchors") || !frame.createAnchor) { pipe.onSubmap(`v${++aseq}`, T); return; }
   anchorPending = true;
+  const myPipe = pipe, gen = pipe.gen; // 作っている間に終わった・地図を消した時は、できたアンカーを捨てる
+  const live = () => session && pipe === myPipe && !myPipe.closed && myPipe.gen === gen;
   frame.createAnchor(new XRRigidTransform({ x: M[12], y: M[13], z: M[14] }), refSpace)
-    .then((a) => { const id = `a${++aseq}`; anchors.set(id, a); if (session) pipe.onSubmap(id, T); })
-    .catch(() => { if (session) pipe.onSubmap(`v${++aseq}`, T); })
+    .then((a) => { if (!live()) { a.delete?.(); return; } const id = `a${++aseq}`; anchors.set(id, a); pipe.onSubmap(id, T); })
+    .catch(() => { if (live()) pipe.onSubmap(`v${++aseq}`, T); })
     .finally(() => { anchorPending = false; });
 }
 
@@ -294,7 +303,7 @@ const projectNow = (p) => (cur ? project(cur.P, cur.C, p) : null);
 // 覚えている物の印: 集めた物は ✓ とラベル、候補は確かさ（%）。今のカメラで画面に投影する（後ろにある物は出さない）
 function drawPins(ctx, W, H, u) {
   for (const o of pipe.objects.objs) {
-    const pt = projectNow(pipe.objects.pos(o, pipe.map));
+    const pt = projectNow(pipe.map.toRaw(pipe.objects.pos(o, pipe.map))); // 画面は XR の座標（補正なし）
     if (!pt || pt[0] < 0 || pt[0] > 1 || pt[1] < 0 || pt[1] > 1) continue;
     const [x, y] = [pt[0] * W, pt[1] * H];
     ctx.beginPath(); ctx.arc(x, y, (o.collected ? 7 : 5) * u, 0, Math.PI * 2);
@@ -430,7 +439,7 @@ $("end").onclick = () => session?.end();
 $("align").onclick = () => { align = !align; };
 $("stick").onclick = () => { stick = !stick; };
 $("reset").onclick = () => { pipe.objects.reset(); renderStrip(); };
-$("reset-map").onclick = () => { pipe.resetMap(); renderStrip(); };
+$("reset-map").onclick = () => { for (const a of anchors.values()) a.delete?.(); anchors.clear(); pipe.resetMap(); renderStrip(); };
 
 // ---------- 記録 ----------
 // セッションが終わったら、普段の画面と同じ形の実行の記録（連続）を作り、同じ localStorage（cvpg-runs）に足す。
@@ -524,3 +533,4 @@ $("copy-md").onclick = async () => {
 };
 checkSupport();
 loadSaved();
+if (q.has("debug")) window.__xr = { get pipe() { return pipe; } }; // 確かめる用

@@ -228,8 +228,10 @@ async def xrlog_upload(request: Request):
         raise HTTPException(400, "gzip の記録を送る（300MB まで）")
     XRLOG_DIR.mkdir(parents=True, exist_ok=True)
     tag = re.sub(r"[^\w-]", "", request.query_params.get("tag", ""))[:40]
-    name = time.strftime("%Y%m%d-%H%M%S") + (f"_{tag}" if tag else "") + ".ndjson.gz"
-    (XRLOG_DIR / name).write_bytes(body)
+    # 同じ秒に 2 つ届いても上書きしない（乱数を足し、既にあれば作らない）
+    name = time.strftime("%Y%m%d-%H%M%S") + f"-{os.urandom(3).hex()}" + (f"_{tag}" if tag else "") + ".ndjson.gz"
+    with open(XRLOG_DIR / name, "xb") as f:
+        f.write(body)
     return {"name": name, "bytes": len(body)}
 
 

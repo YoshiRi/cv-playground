@@ -4,7 +4,8 @@
 //   ボクセル: 上から見た CELL 角の升目 × 高さ 10 cm 刻み。「物がある確からしさ」（log-odds）を持つ（OctoMap と同じ考え方）。
 //     深度の点が当たったら上げ、カメラからその点までの光線が通り抜けたら下げる（通り過ぎた人・深度の誤差の点は、向こうを見ると消える）
 //   サブマップ: 地図を SUBMAP_M 進むか SUBMAP_S 秒ごとに分け、それぞれをアンカー（ARCore が自分の地図を直すと一緒に動く点）に付ける。
-//     ボクセルはサブマップの座標で持つので、ARCore の補正が地図に反映される。今の姿勢 = 姿勢グラフの補正 corr ⊕ アンカーの姿勢
+//     ボクセルはアンカーの座標（補正なし）で持つので、ARCore の補正が地図に反映される。表示・照合に使う姿勢 = 姿勢グラフの補正 corr ⊕
+//     アンカーの姿勢。積む時は補正を掛けない（掛けると、補正の後に積んだ点だけ補正 1 回分ずれる。Codex のレビューで見つかった）
 //     （姿勢は 4 自由度。重力の向きは XR で分かっているので、位置 3 つと y 軸まわりの向きだけ）
 //   床: 部屋の座標の高さの分布で、始めた時の端末の高さより 0.5 m 以上低い所で一番点が集まる高さ（床は一番広い水平面）。
 //     床 ±10 cm を床、床から 10 cm〜1.8 m のボクセルのどれかが L_OCC を超えたら障害物（壁・家具）
@@ -25,9 +26,16 @@ export class OccMap {
   constructor() { this.reset(); }
   reset() {
     this.subs = []; this.yHist = new Uint32Array(250); this.floorY = null; this.n = 0; this.track = []; this.version = 0; this.prior = null;
+    this.poseVersion = 0; this.anchorsMoved = false; // poseVersion: サブマップの姿勢（アンカー・補正）が変わるたびに増やす
   }
   get active() { return this.subs[this.subs.length - 1]; }
   pose(s) { const p = p4Compose(s.corr, s.anchor); return s.prior ? p4Compose(this.prior.T, p) : p; }
+  // ボクセルを積んだ座標（今の XR の座標で）: 今のサブマップはアンカーそのもの（補正なし）、前回の地図は重ねた姿勢
+  frameOf(s) { return s.prior ? this.pose(s) : s.anchor; }
+  // XR の座標の点を、補正した地図の座標に（今のサブマップの補正を掛ける）
+  toMap(p) { const a = this.active; return a ? p4Apply(this.pose(a), p4Apply(p4Inv(a.anchor), p)) : p; }
+  // その逆（地図の座標 → 今の XR の座標。AR の画面に重ねる時）
+  toRaw(p) { const a = this.active; return a ? p4Apply(a.anchor, p4Apply(p4Inv(this.pose(a)), p)) : p; }
   // 前回の地図のサブマップ（今の座標に重ねる）と今のサブマップ
   allSubs() { return this.prior ? [...this.prior.subs, ...this.subs] : this.subs; }
   setPrior(priorMap, T) {
@@ -42,33 +50,47 @@ export class OccMap {
   }
   // アンカーの今の姿勢（ARCore が直すと変わる）
   setAnchors(list) {
-    for (const [id, M] of list) { const s = this.subs.find((x) => x.id === id); if (s) s.anchor = p4FromMatrix(M); }
+    for (const [id, M] of list) {
+      const s = this.subs.find((x) => x.id === id);
+      if (!s) continue;
+      const a = p4FromMatrix(M), d = Math.hypot(a.x - s.anchor.x, a.y - s.anchor.y, a.z - s.anchor.z) + Math.abs(a.yaw - s.anchor.yaw);
+      if (d > 0.005) { this.anchorsMoved = true; this.poseVersion++; } // ARCore が直した（姿勢グラフを解き直す）
+      s.anchor = a;
+    }
     this.version++;
   }
   // 新しいサブマップが要るか（まだ無い、置いた所から SUBMAP_M 離れた、SUBMAP_S 秒たった）
   wantSubmap(pos, t) {
     const a = this.active;
     if (!a) return true;
-    const p = this.pose(a);
+    const p = a.anchor; // カメラの位置も XR の座標なので、補正しないアンカーと比べる
     return Math.hypot(pos[0] - p.x, pos[2] - p.z) > SUBMAP_M || t - a.t0 > SUBMAP_S * 1000;
   }
   // 深度 1 枚を積む。fr = { t, M（カメラ → 部屋）, P（射影）, depth（深度の写し）, dyn（動く物の枠、view の 0〜1） }
   integrate(fr) {
     const s = this.active;
     if (!s || !fr.depth) return;
-    const sp = this.pose(s), inv = p4Inv(sp), oL = p4Apply(inv, [fr.M[12], fr.M[13], fr.M[14]]);
+    const sp = s.anchor, inv = p4Inv(sp), oL = p4Apply(inv, [fr.M[12], fr.M[13], fr.M[14]]);
     const minYb = this.floorY == null ? Infinity : Math.floor((this.floorY - sp.y - LY0) / 0.1) + 2;
+    // 1 つ前のサブマップにも光線を通す（切り替えた直後に、前のサブマップに残った人の跡なども消えるように）
+    const prev = this.subs.length > 1 ? this.subs[this.subs.length - 2] : null;
+    const pinv = prev && Math.hypot(prev.anchor.x - sp.x, prev.anchor.z - sp.z) < 4 ? p4Inv(prev.anchor) : null;
+    const pO = pinv && p4Apply(pinv, [fr.M[12], fr.M[13], fr.M[14]]), pMin = pinv && this.floorY != null ? Math.floor((this.floorY - prev.anchor.y - LY0) / 0.1) + 2 : Infinity;
+    const hit = new Set(); // 1 枚の深度で同じボクセルを何度も上げない（近い所ほど画素が集まって 1 枚で飽和する）
     const dyn = (fr.dyn || []).map((b) => { const w = (b[2] - b[0]) * 0.1, h = (b[3] - b[1]) * 0.1; return [b[0] - w, b[1] - h, b[2] + w, b[3] + h]; });
     for (let j = 0; j < 24; j++) for (let i = 0; i < 40; i++) {
       const x = (i + 0.5) / 40, y = (j + 0.5) / 24, d = depthAt(fr.depth, x, y);
       if (!(d > 0.2)) continue;
       const doCarve = (i + j) % 2 === 0; // 光線は半分だけたどる（スマホで軽くするため。当たりは全部の点）
       // 遠い点は当たりにしない（粗い）が、MAX_D までは光線が通り抜けた（空いている）として下げる
-      if (d >= MAX_D) { if (d < 8 && doCarve) this.carve(s, oL, p4Apply(inv, unproject(fr.P, fr.M, x, y, MAX_D)), MAX_D + 0.1, minYb); continue; }
+      if (d >= MAX_D) {
+        if (d < 8 && doCarve) { const q = unproject(fr.P, fr.M, x, y, MAX_D); this.carve(s, oL, p4Apply(inv, q), MAX_D + 0.1, minYb); if (pinv) this.carve(prev, pO, p4Apply(pinv, q), MAX_D + 0.1, pMin); }
+        continue;
+      }
       const p = unproject(fr.P, fr.M, x, y, d), hy = Math.floor((p[1] - FY0) / 0.02);
       if (hy >= 0 && hy < this.yHist.length) this.yHist[hy]++;
       const pL = p4Apply(inv, p);
-      if (doCarve) this.carve(s, oL, pL, d, minYb);
+      if (doCarve) { this.carve(s, oL, pL, d, minYb); if (pinv) this.carve(prev, pO, p4Apply(pinv, p), d, pMin); }
       if (dyn.some((b) => x >= b[0] && x <= b[2] && y >= b[1] && y <= b[3])) continue; // 動く物の点は当たりにしない
       let yb = Math.floor((pL[1] - LY0) / 0.1);
       if (this.floorY != null) { // 床の許し（遠いほど広く）。床より大きく下の点は誤り
@@ -77,7 +99,10 @@ export class OccMap {
         if (h < 0.1 + 0.05 * d) yb = Math.floor((this.floorY - sp.y - LY0) / 0.1);
       }
       if (yb < 0 || yb >= YB) continue;
-      const c = this.cell(s, Math.floor(pL[0] / CELL), Math.floor(pL[2] / CELL));
+      const ci = Math.floor(pL[0] / CELL), cj = Math.floor(pL[2] / CELL), hk = cellKey(ci, cj) * 64 + yb;
+      if (hit.has(hk)) continue;
+      hit.add(hk);
+      const c = this.cell(s, ci, cj);
       c[yb] = Math.min(L_MAX, c[yb] + L_HIT);
     }
     s.n++; this.n++; this.version++;
@@ -122,7 +147,7 @@ export class OccMap {
     for (let b = Math.max(0, fb + 2); b <= fb + 18 && b < YB; b++) o = Math.max(o, c[b]);
     return o > L_OCC ? 2 : f > 0 ? 1 : 0;
   }
-  floorBand(s, sp = this.pose(s)) { return Math.floor((this.floorY - sp.y - LY0) / 0.1); }
+  floorBand(s, sp = this.frameOf(s)) { return Math.floor((this.floorY - sp.y - LY0) / 0.1); }
   // サブマップの障害物・床の升目（サブマップの座標の升目の中心 [x, z, 種類]）
   cellsLocal(s, kinds = [1, 2]) {
     const out = [];
